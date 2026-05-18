@@ -57,3 +57,6 @@ openclaw/reports/
 
 # Local build outputs (not shipped)
 openclaw/dist/
+
+# Clawpatch local review state
+.clawpatch/
