@@ -60,3 +60,6 @@ openclaw/dist/
 
 # Clawpatch local review state
 .clawpatch/
+
+# Claude Code runtime artifacts
+.claude/scheduled_tasks.lock
