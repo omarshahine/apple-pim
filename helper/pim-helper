@@ -1,0 +1,46 @@
+#!/bin/zsh
+# Apple PIM Helper dispatcher.
+#
+# This script is the main executable of PIMHelper.app. When launched via
+# Launch Services (`open -W -a PIMHelper.app --args ...`), the .app becomes
+# the responsible process for TCC, which gives the Calendar / Reminders /
+# Contacts CLIs a path to authorization that does not depend on the calling
+# shell (e.g. an embedded agent runtime) having its own TCC entry.
+#
+# Args: <cli-name> <out-file> <err-file> [cli-args...]
+#   cli-name : one of calendar-cli, reminder-cli, contacts-cli
+#   out-file : absolute path to write the CLI's stdout to
+#   err-file : absolute path to write the CLI's stderr to
+#   cli-args : forwarded verbatim to the CLI
+
+set -u
+
+if (( $# < 3 )); then
+    echo "pim-helper: expected <cli> <out> <err> [args...]" >&2
+    exit 64
+fi
+
+CLI="$1"
+OUT="$2"
+ERR="$3"
+shift 3
+
+case "$CLI" in
+    calendar-cli|reminder-cli|contacts-cli) ;;
+    *)
+        echo "pim-helper: unsupported cli '$CLI'" >"$ERR"
+        : >"$OUT"
+        exit 64
+        ;;
+esac
+
+BIN_DIR="${APPLE_PIM_BIN_DIR:-$HOME/.local/bin}"
+CLI_PATH="$BIN_DIR/$CLI"
+
+if [[ ! -x "$CLI_PATH" ]]; then
+    echo "pim-helper: cli not found or not executable at $CLI_PATH" >"$ERR"
+    : >"$OUT"
+    exit 127
+fi
+
+"$CLI_PATH" "$@" >"$OUT" 2>"$ERR"

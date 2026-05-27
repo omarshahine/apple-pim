@@ -55,6 +55,10 @@ if [ "$1" = "--install" ]; then
             echo "  $cli --help"
         done
     fi
+
+    echo ""
+    echo "Installing PIMHelper.app (TCC bridge for embedded shells)..."
+    "$SCRIPT_DIR/scripts/build-helper-app.sh"
 else
     echo ""
     echo "Tip: Run './setup.sh --install' to make CLIs available globally."
