@@ -400,9 +400,19 @@ accounts silently drops AppleScript's `html content` property
 sends arrive as empty plain text.
 
 `mail-cli smtp-send` is the native Swift alternative: hand-rolled SMTP state
-machine over `NWConnection` + `NWProtocolTLS` (implicit TLS on port 465, AUTH
-LOGIN), with a `multipart/alternative` MIME builder. No Mail.app dependency,
-no third-party Swift deps.
+machine with a `multipart/alternative` MIME builder. No Mail.app dependency,
+no third-party Swift deps. Two TLS transports:
+
+- **Implicit TLS (default)** — `NWConnection` + `NWProtocolTLS` on port 465
+  (iCloud, Gmail, Fastmail, most modern hosts).
+- **STARTTLS** — `--tls-mode starttls` (defaults to port 587) for corporate
+  Exchange, self-hosted Postfix, and university/ISP relays that only expose
+  587. Backed by a POSIX socket upgraded to TLS via Secure Transport, since
+  `NWConnection` can't upgrade plaintext → TLS in place.
+
+When the HTML body is supplied without `--body`, a plain-text fallback is
+auto-derived from the HTML so the message is always `multipart/alternative`
+(better for screen readers, notification previews, and spam scoring).
 
 **Setup (one-time):**
 
@@ -434,10 +444,43 @@ mail-cli smtp-send --to you@example.com --from me@icloud.com \
 mail-cli smtp-send --to you@example.com --from me@icloud.com \
   --subject "Report" --html-file ./body.html --attachment ~/report.pdf
 
+# STARTTLS relay on port 587 (corporate Exchange / Postfix):
+mail-cli smtp-send --tls-mode starttls --host smtp.work.example --port 587 \
+  --to you@example.com --from me@work.example --subject "Hi" --body "hello"
+
+# Also APPEND the message to the IMAP Sent folder (default-on for iCloud):
+mail-cli smtp-send --imap-append-sent --to you@example.com --from me@icloud.com \
+  --subject "Archived in Sent" --body "hi"
+
 # Verbose mode logs the SMTP conversation to stderr (password redacted):
 mail-cli smtp-send --verbose --to you@example.com --from me@icloud.com \
   --subject "Debug" --body "hi"
 ```
+
+**STARTTLS, Sent-folder, and HTML fallback options:**
+
+| Flag | Effect |
+|---|---|
+| `--tls-mode implicit\|starttls` | TLS transport. `implicit` (default) = port 465; `starttls` = port 587. Also settable via `smtp.tls_mode` in config. |
+| `--tls-insecure-skip-verify` | Skip TLS cert verification (STARTTLS only; for self-signed test servers). |
+| `--imap-append-sent` / `--no-imap-append-sent` | APPEND the sent message to the IMAP Sent folder so it appears in Mail.app/iCloud. Defaults **on** for iCloud SMTP (`*.mail.me.com`), **off** otherwise. Configure non-iCloud servers via the `imap` config block. |
+
+**IMAP Sent-folder config** (`~/.config/apple-pim/config.json`) — only needed for non-iCloud, or to override defaults:
+
+```json
+{
+  "imap": {
+    "host": "imap.mail.me.com",
+    "port": 993,
+    "sent_folder": "Sent Messages",
+    "username": "me@icloud.com",
+    "secret_key": "imap.icloud.password",
+    "append_sent": true
+  }
+}
+```
+
+Folder names differ by provider: iCloud `"Sent Messages"`, Gmail `"[Gmail]/Sent Mail"`, generic `"Sent"`. If `imap.secret_key` is omitted, the SMTP password is reused (iCloud uses the same app-specific password for both). APPEND failures are **non-fatal** — the message was already delivered by SMTP, so the failure surfaces as a warning plus an `"imap_append": {"success": false, ...}` field in the JSON result.
 
 **Secrets management:**
 
@@ -455,8 +498,7 @@ mail-cli secrets set smtp.icloud.password --store openclaw
 
 | Limitation | Detail |
 |---|---|
-| **No Sent-folder entry** | `smtp-send` does not IMAP-APPEND to your Sent folder, so the message won't appear in Mail.app's Sent view. A stderr note is emitted at send time. Use `mail-cli send` instead if Sent-folder visibility is required. |
-| **STARTTLS not supported** | Only implicit TLS on port 465 in v1. Works for iCloud, Gmail, Fastmail, most modern hosts. A port-587 STARTTLS path could be added later. |
+| **Sent-folder APPEND is opt-in for non-iCloud** | `--imap-append-sent` APPENDs to the IMAP Sent folder (default-on for iCloud). For other providers you must configure the `imap` block. Without it, the message won't appear in Mail.app's Sent view and a stderr note is emitted. |
 | **AUTH LOGIN only** | AUTH PLAIN / CRAM-MD5 / OAUTHBEARER not implemented. Sufficient for iCloud app-specific passwords. |
 | **App-specific password required for iCloud** | The regular Apple ID password will return `535 5.7.8 Authentication failed`. Generate one at [appleid.apple.com](https://appleid.apple.com) → Sign-In and Security → App-Specific Passwords. |
 | **`--from` must match the authenticated account** | iCloud (and most relays) will silently rewrite or reject messages whose `From:` doesn't match the authenticating user. |

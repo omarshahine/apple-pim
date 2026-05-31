@@ -44,6 +44,37 @@ struct ConfigLoaderTests {
         #expect(decoded == config)
     }
 
+    @Test("SMTP tls_mode and IMAP block round-trip with snake_case keys")
+    func testSMTPAndIMAPRoundTrip() throws {
+        let config = PIMConfiguration(
+            smtp: SMTPDefaults(
+                host: "smtp.example.com", port: 587,
+                username: "me@example.com", secretKey: "smtp.example.password",
+                tlsMode: "starttls"
+            ),
+            imap: IMAPDefaults(
+                host: "imap.mail.me.com", port: 993,
+                username: "me@icloud.com", secretKey: "imap.icloud.password",
+                sentFolder: "Sent Messages", appendSent: true
+            )
+        )
+
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        let data = try encoder.encode(config)
+        let decoded = try JSONDecoder().decode(PIMConfiguration.self, from: data)
+        #expect(decoded == config)
+
+        let json = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        let smtp = json["smtp"] as! [String: Any]
+        #expect(smtp["tls_mode"] as? String == "starttls")
+        #expect(smtp["secret_key"] as? String == "smtp.example.password")
+        let imap = json["imap"] as! [String: Any]
+        #expect(imap["sent_folder"] as? String == "Sent Messages")
+        #expect(imap["append_sent"] as? Bool == true)
+        #expect(imap["secret_key"] as? String == "imap.icloud.password")
+    }
+
     @Test("Config uses snake_case JSON keys")
     func testSnakeCaseKeys() throws {
         let config = PIMConfiguration(

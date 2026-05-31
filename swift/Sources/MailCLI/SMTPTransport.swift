@@ -1,5 +1,7 @@
+import Darwin
 import Foundation
 import Network
+import Security
 
 /// Abstract I/O for the SMTP state machine. A real deployment uses `NWConnectionTransport`;
 /// unit tests use a `FakeTransport` that scripts a conversation.
@@ -294,6 +296,398 @@ private func withConnectTimeout<T: Sendable>(
         }
         group.cancelAll()
         return first
+    }
+}
+
+// MARK: - STARTTLS transport (plaintext → TLS upgrade on port 587)
+
+// Secure Transport (SSLContext) I/O callbacks. Top-level functions with C-compatible
+// signatures so they can be passed to `SSLSetIOFuncs`. The connection ref is a pointer
+// to the socket file descriptor (see `STARTTLSTransport.doTLSHandshake`).
+
+private func startTLSReadCallback(
+    _ connection: SSLConnectionRef,
+    _ data: UnsafeMutableRawPointer,
+    _ dataLength: UnsafeMutablePointer<Int>
+) -> OSStatus {
+    let fd = connection.assumingMemoryBound(to: Int32.self).pointee
+    let requested = dataLength.pointee
+    var read = 0
+    while read < requested {
+        let n = recv(fd, data.advanced(by: read), requested - read, 0)
+        if n > 0 { read += n; continue }
+        if n == 0 { dataLength.pointee = read; return errSSLClosedGraceful }
+        if errno == EINTR { continue }
+        if errno == EAGAIN || errno == EWOULDBLOCK {
+            dataLength.pointee = read
+            return errSSLWouldBlock
+        }
+        dataLength.pointee = read
+        return errSSLClosedAbort
+    }
+    dataLength.pointee = read
+    return noErr
+}
+
+private func startTLSWriteCallback(
+    _ connection: SSLConnectionRef,
+    _ data: UnsafeRawPointer,
+    _ dataLength: UnsafeMutablePointer<Int>
+) -> OSStatus {
+    let fd = connection.assumingMemoryBound(to: Int32.self).pointee
+    let total = dataLength.pointee
+    var wrote = 0
+    while wrote < total {
+        let n = Darwin.send(fd, data.advanced(by: wrote), total - wrote, 0)
+        if n > 0 { wrote += n; continue }
+        if n == 0 { dataLength.pointee = wrote; return errSSLClosedAbort }
+        if errno == EINTR { continue }
+        if errno == EAGAIN || errno == EWOULDBLOCK {
+            dataLength.pointee = wrote
+            return errSSLWouldBlock
+        }
+        dataLength.pointee = wrote
+        return errSSLClosedAbort
+    }
+    dataLength.pointee = wrote
+    return noErr
+}
+
+/// Plaintext-then-TLS SMTP transport for STARTTLS servers (typically port 587).
+///
+/// `Network.framework` has no `startTLS()` primitive — you cannot upgrade a live
+/// `NWConnection` from plaintext to TLS — so this transport is backed by a POSIX
+/// socket whose I/O path is swapped to Secure Transport (`SSLContext`) after the
+/// STARTTLS command is accepted.
+///
+/// `init` performs the full pre-TLS dance (greeting → EHLO → STARTTLS → 220), then
+/// upgrades the socket to TLS and seeds the read buffer with a synthetic `220`
+/// greeting. That lets the standard `SMTPClient` conversation run unchanged: its
+/// first read consumes the synthetic greeting, and its EHLO is the (required)
+/// re-EHLO over the now-encrypted channel. See issue #62.
+///
+/// `@unchecked Sendable`: all mutable state is serialized through `queue`.
+///
+/// Concurrency note: I/O is blocking, serialized on a single dedicated
+/// `DispatchQueue`. `receiveLine()` can hold that queue's thread in `recv()` for
+/// up to `timeout` seconds, and `send()` serializes behind it. This is fine for
+/// the intended single-shot, strictly-sequential SMTP conversation (one transport
+/// per `smtp-send` invocation, its own private queue — never a shared pool). It
+/// is NOT safe to reuse one instance for overlapping/concurrent sends.
+public final class STARTTLSTransport: SMTPTransport, @unchecked Sendable {
+
+    private let host: String
+    private let port: Int
+    private let timeout: TimeInterval
+    private let insecureSkipVerify: Bool
+    private let verbose: Bool
+    private let logSink: SMTPLogSink
+
+    private let queue: DispatchQueue
+    private var fd: Int32 = -1
+    private var fdPtr: UnsafeMutablePointer<Int32>?
+    private var sslContext: SSLContext?
+    private var tlsActive = false
+    private var buffer = Data()
+    private var closed = false
+
+    public init(
+        host: String,
+        port: Int,
+        ehloHostname: String,
+        insecureSkipVerify: Bool = false,
+        verbose: Bool = false,
+        logSink: SMTPLogSink = StderrSink(),
+        timeout: TimeInterval = 30
+    ) async throws {
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+        self.insecureSkipVerify = insecureSkipVerify
+        self.verbose = verbose
+        self.logSink = logSink
+        self.queue = DispatchQueue(label: "apple-pim.starttls.\(UUID().uuidString.prefix(8))")
+
+        try await connectPlaintext()
+        // Pre-TLS SMTP exchange runs over `self` (plaintext socket I/O).
+        try await negotiateSTARTTLS(over: self, ehloHostname: ehloHostname)
+        try await upgradeToTLS()
+        // Seed a synthetic greeting so SMTPClient.runConversation's first read (220) succeeds.
+        queue.sync { buffer.append(Data("220 STARTTLS handshake complete\r\n".utf8)) }
+        if verbose { logSink.log("S: 220 STARTTLS handshake complete (synthetic; TLS now active)") }
+    }
+
+    // MARK: SMTPTransport
+
+    public func send(_ data: Data) async throws {
+        if data.isEmpty { return }
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do { try self.writeAll(data); cont.resume() }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+    }
+
+    public func receiveLine() async throws -> String {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<String, Error>) in
+            queue.async {
+                do { cont.resume(returning: try self.readLineBlocking()) }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+    }
+
+    public func close() async {
+        await withCheckedContinuation { (cont: CheckedContinuation<Void, Never>) in
+            queue.async {
+                if !self.closed {
+                    self.closed = true
+                    if let ctx = self.sslContext { SSLClose(ctx) }
+                }
+                if self.fd >= 0 { Darwin.close(self.fd); self.fd = -1 }
+                self.fdPtr?.deallocate()
+                self.fdPtr = nil
+                self.sslContext = nil
+                cont.resume()
+            }
+        }
+    }
+
+    // MARK: - Connect (plaintext)
+
+    private func connectPlaintext() async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do { try self.doConnect(); cont.resume() }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func doConnect() throws {
+        var hints = addrinfo()
+        hints.ai_family = AF_UNSPEC
+        hints.ai_socktype = SOCK_STREAM
+        hints.ai_protocol = IPPROTO_TCP
+
+        var res: UnsafeMutablePointer<addrinfo>?
+        let gai = getaddrinfo(host, String(port), &hints, &res)
+        guard gai == 0, let first = res else {
+            throw SMTPTransportError.connectFailed(
+                host: host, port: port,
+                underlying: posixError("getaddrinfo failed (\(gai))"))
+        }
+        defer { freeaddrinfo(res) }
+
+        var lastErr: Error = posixError("no usable address")
+        var node: UnsafeMutablePointer<addrinfo>? = first
+        while let cur = node {
+            let s = socket(cur.pointee.ai_family, cur.pointee.ai_socktype, cur.pointee.ai_protocol)
+            if s >= 0 {
+                if connectWithTimeout(s, cur.pointee.ai_addr, cur.pointee.ai_addrlen) {
+                    configureSocket(s)
+                    self.fd = s
+                    return
+                }
+                lastErr = posixError("connect failed: \(String(cString: strerror(errno)))")
+                Darwin.close(s)
+            }
+            node = cur.pointee.ai_next
+        }
+        throw SMTPTransportError.connectFailed(host: host, port: port, underlying: lastErr)
+    }
+
+    /// Non-blocking connect bounded by `timeout`, then restore blocking mode.
+    private func connectWithTimeout(_ s: Int32, _ addr: UnsafeMutablePointer<sockaddr>?, _ addrlen: socklen_t) -> Bool {
+        let flags = fcntl(s, F_GETFL, 0)
+        _ = fcntl(s, F_SETFL, flags | O_NONBLOCK)
+        defer { _ = fcntl(s, F_SETFL, flags) }
+
+        let rc = connect(s, addr, addrlen)
+        if rc == 0 { return true }
+        if errno != EINPROGRESS { return false }
+
+        var pfd = pollfd(fd: s, events: Int16(POLLOUT), revents: 0)
+        let ms = Int32(min(timeout, Double(Int32.max) / 1000) * 1000)
+        let pr = poll(&pfd, 1, ms)
+        guard pr > 0 else { return false }
+
+        var soErr: Int32 = 0
+        var len = socklen_t(MemoryLayout<Int32>.size)
+        guard getsockopt(s, SOL_SOCKET, SO_ERROR, &soErr, &len) == 0, soErr == 0 else {
+            errno = soErr
+            return false
+        }
+        return true
+    }
+
+    private func configureSocket(_ s: Int32) {
+        var tv = timeval(tv_sec: Int(timeout), tv_usec: 0)
+        setsockopt(s, SOL_SOCKET, SO_RCVTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        setsockopt(s, SOL_SOCKET, SO_SNDTIMEO, &tv, socklen_t(MemoryLayout<timeval>.size))
+        var on: Int32 = 1
+        setsockopt(s, SOL_SOCKET, SO_NOSIGPIPE, &on, socklen_t(MemoryLayout<Int32>.size))
+    }
+
+    // MARK: - TLS upgrade
+
+    private func upgradeToTLS() async throws {
+        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
+            queue.async {
+                do { try self.doTLSHandshake(); cont.resume() }
+                catch { cont.resume(throwing: error) }
+            }
+        }
+    }
+
+    private func doTLSHandshake() throws {
+        guard let ctx = SSLCreateContext(nil, .clientSide, .streamType) else {
+            throw tlsError(errSecAllocate, stage: "create-context")
+        }
+        sslContext = ctx
+
+        let holder = UnsafeMutablePointer<Int32>.allocate(capacity: 1)
+        holder.pointee = fd
+        fdPtr = holder
+
+        var status = SSLSetIOFuncs(ctx, startTLSReadCallback, startTLSWriteCallback)
+        guard status == noErr else { throw tlsError(status, stage: "set-io-funcs") }
+        status = SSLSetConnection(ctx, holder)
+        guard status == noErr else { throw tlsError(status, stage: "set-connection") }
+
+        // SNI + hostname for certificate validation.
+        host.withCString { ptr in
+            _ = SSLSetPeerDomainName(ctx, ptr, strlen(ptr))
+        }
+        if insecureSkipVerify {
+            // Defer trust evaluation to us, then accept unconditionally. This
+            // disables MITM protection for a connection over which credentials
+            // (AUTH LOGIN) are about to be sent — warn loudly and unconditionally,
+            // regardless of verbose mode. Intended only for self-signed test relays.
+            let warning = "WARNING: --tls-insecure-skip-verify is set — TLS certificate verification is DISABLED for \(host):\(port). "
+                + "Credentials will be sent over an UNAUTHENTICATED channel vulnerable to man-in-the-middle. "
+                + "Use only against trusted test servers.\n"
+            FileHandle.standardError.write(Data(warning.utf8))
+            SSLSetSessionOption(ctx, .breakOnServerAuth, true)
+        }
+
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            status = SSLHandshake(ctx)
+            if status == noErr { break }
+            // errSSLServerAuthCompleted is a C #define alias for errSSLPeerAuthCompleted
+            // (not visible to Swift) — use the canonical name.
+            if status == errSSLPeerAuthCompleted && insecureSkipVerify {
+                continue  // skip verification, resume handshake
+            }
+            if status == errSSLWouldBlock {
+                if Date() > deadline { throw SMTPTransportError.timedOut(stage: "tls-handshake") }
+                continue
+            }
+            throw tlsError(status, stage: "handshake")
+        }
+        tlsActive = true
+    }
+
+    // MARK: - Blocking I/O (runs on `queue`)
+
+    private func writeAll(_ data: Data) throws {
+        if closed { throw SMTPTransportError.connectionClosed }
+        try data.withUnsafeBytes { (raw: UnsafeRawBufferPointer) in
+            guard let base = raw.baseAddress else { return }
+            var total = 0
+            while total < data.count {
+                if tlsActive, let ctx = sslContext {
+                    var processed = 0
+                    let status = SSLWrite(ctx, base.advanced(by: total), data.count - total, &processed)
+                    total += processed
+                    if status == noErr { continue }
+                    if status == errSSLWouldBlock { throw SMTPTransportError.timedOut(stage: "send") }
+                    throw tlsError(status, stage: "write")
+                } else {
+                    let n = Darwin.send(fd, base.advanced(by: total), data.count - total, 0)
+                    if n > 0 { total += n; continue }
+                    if n < 0 && errno == EINTR { continue }
+                    if n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK) {
+                        throw SMTPTransportError.timedOut(stage: "send")
+                    }
+                    throw SMTPTransportError.sendFailed(posixError("send: \(String(cString: strerror(errno)))"))
+                }
+            }
+        }
+    }
+
+    private func readLineBlocking() throws -> String {
+        let deadline = Date().addingTimeInterval(timeout)
+        while true {
+            if let line = try takeLineFromBuffer() { return line }
+            if closed {
+                if buffer.isEmpty { throw SMTPTransportError.connectionClosed }
+            }
+            if Date() > deadline { throw SMTPTransportError.timedOut(stage: "receiveLine") }
+            try readMore()
+        }
+    }
+
+    private func takeLineFromBuffer() throws -> String? {
+        guard let range = buffer.range(of: Data("\r\n".utf8)) else {
+            if closed && buffer.isEmpty { throw SMTPTransportError.connectionClosed }
+            return nil
+        }
+        let lineData = buffer.subdata(in: 0..<range.lowerBound)
+        buffer.removeSubrange(0..<range.upperBound)
+        guard let s = String(data: lineData, encoding: .utf8) else {
+            throw SMTPTransportError.invalidResponse("non-UTF8 SMTP reply")
+        }
+        return s
+    }
+
+    private func readMore() throws {
+        var chunk = [UInt8](repeating: 0, count: 8192)
+        let count: Int = try chunk.withUnsafeMutableBytes { rawBuf in
+            let base = rawBuf.baseAddress!
+            if tlsActive, let ctx = sslContext {
+                var processed = 0
+                let status = SSLRead(ctx, base, 8192, &processed)
+                if status == errSSLClosedGraceful || status == errSSLClosedNoNotify {
+                    closed = true
+                    return processed
+                }
+                if status == errSSLWouldBlock {
+                    if processed > 0 { return processed }
+                    throw SMTPTransportError.timedOut(stage: "receive")
+                }
+                if status != noErr && processed == 0 {
+                    throw tlsError(status, stage: "read")
+                }
+                return processed
+            } else {
+                let r = recv(fd, base, 8192, 0)
+                if r == 0 { closed = true; return 0 }
+                if r < 0 {
+                    if errno == EINTR { return 0 }
+                    if errno == EAGAIN || errno == EWOULDBLOCK {
+                        throw SMTPTransportError.timedOut(stage: "receive")
+                    }
+                    throw SMTPTransportError.connectionClosed
+                }
+                return r
+            }
+        }
+        if count > 0 { buffer.append(contentsOf: chunk[0..<count]) }
+    }
+
+    // MARK: - Errors
+
+    private func posixError(_ msg: String) -> Error {
+        NSError(domain: "STARTTLSTransport", code: Int(errno),
+                userInfo: [NSLocalizedDescriptionKey: msg])
+    }
+
+    private func tlsError(_ status: OSStatus, stage: String) -> Error {
+        NSError(domain: NSOSStatusErrorDomain, code: Int(status),
+                userInfo: [NSLocalizedDescriptionKey: "TLS \(stage) failed (OSStatus \(status))"])
     }
 }
 

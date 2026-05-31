@@ -10,6 +10,8 @@ public enum SMTPClientError: Error, CustomStringConvertible {
     case rcptRejected(address: String, response: SMTPResponse)
     case dataRejected(SMTPResponse)
     case dataEndRejected(SMTPResponse)
+    case starttlsNotSupported(SMTPResponse)
+    case starttlsRejected(SMTPResponse)
     case transport(SMTPTransportError)
 
     public var description: String {
@@ -22,8 +24,44 @@ public enum SMTPClientError: Error, CustomStringConvertible {
         case .rcptRejected(let a, let r): return "RCPT TO <\(a)> rejected: \(r)"
         case .dataRejected(let r):       return "DATA rejected: \(r)"
         case .dataEndRejected(let r):    return "message body rejected: \(r)"
+        case .starttlsNotSupported(let r): return "server does not advertise STARTTLS: \(r)"
+        case .starttlsRejected(let r):   return "STARTTLS rejected: \(r)"
         case .transport(let e):          return "transport: \(e)"
         }
+    }
+}
+
+/// Drive the pre-TLS SMTP exchange for a STARTTLS connection: read the greeting,
+/// send EHLO, confirm the STARTTLS capability is advertised, issue STARTTLS, and
+/// read its 220 acceptance. On successful return the caller must upgrade the
+/// underlying transport to TLS and then proceed with the normal conversation
+/// (which re-issues EHLO over the encrypted channel).
+///
+/// This is expressed purely over the `SMTPTransport` abstraction so it can be
+/// exercised by `FakeTransport` without real TLS (see issue #62).
+public func negotiateSTARTTLS(over transport: SMTPTransport, ehloHostname: String) async throws {
+    // 1. Greeting
+    let greeting = try await readSMTPResponse(from: transport)
+    guard greeting.code == 220 else {
+        throw SMTPClientError.unexpectedGreeting(greeting)
+    }
+
+    // 2. EHLO (plaintext) and capability parse
+    try await transport.send(Data("EHLO \(ehloHostname)\r\n".utf8))
+    let ehlo = try await readSMTPResponse(from: transport)
+    guard ehlo.code == 250 else {
+        throw SMTPClientError.ehloFailed(ehlo)
+    }
+    let starttlsAdvertised = ehlo.lines.contains { $0.uppercased().contains("STARTTLS") }
+    guard starttlsAdvertised else {
+        throw SMTPClientError.starttlsNotSupported(ehlo)
+    }
+
+    // 3. STARTTLS
+    try await transport.send(Data("STARTTLS\r\n".utf8))
+    let resp = try await readSMTPResponse(from: transport)
+    guard resp.code == 220 else {
+        throw SMTPClientError.starttlsRejected(resp)
     }
 }
 
@@ -66,6 +104,14 @@ public struct SMTPClient: Sendable {
         }
     }
 
+    /// How TLS is established. `implicit` connects with TLS already active (port 465,
+    /// iCloud default). `starttls` connects in plaintext and upgrades via the STARTTLS
+    /// command (port 587, corporate Exchange / Postfix / university relays).
+    public enum TLSMode: String, Sendable, CaseIterable {
+        case implicit
+        case starttls
+    }
+
     public let host: String
     public let port: Int
     public let credentials: Credentials
@@ -73,6 +119,8 @@ public struct SMTPClient: Sendable {
     public let verbose: Bool
     public let logSink: SMTPLogSink
     public let timeout: TimeInterval
+    public let tlsMode: TLSMode
+    public let insecureSkipVerify: Bool
 
     public init(
         host: String,
@@ -81,7 +129,9 @@ public struct SMTPClient: Sendable {
         ehloHostname: String? = nil,
         verbose: Bool = false,
         logSink: SMTPLogSink = StderrSink(),
-        timeout: TimeInterval = 30
+        timeout: TimeInterval = 30,
+        tlsMode: TLSMode = .implicit,
+        insecureSkipVerify: Bool = false
     ) {
         self.host = host
         self.port = port
@@ -90,11 +140,29 @@ public struct SMTPClient: Sendable {
         self.verbose = verbose
         self.logSink = logSink
         self.timeout = timeout
+        self.tlsMode = tlsMode
+        self.insecureSkipVerify = insecureSkipVerify
     }
 
     /// Open a transport, run the full conversation, and close cleanly.
+    ///
+    /// For `implicit` TLS this is a plain `NWConnectionTransport`. For `starttls`
+    /// the `STARTTLSTransport` performs the plaintext greeting/EHLO/STARTTLS
+    /// exchange and TLS upgrade during `init`, then presents a synthetic 220
+    /// greeting so the standard conversation (which re-issues EHLO over the now
+    /// encrypted channel) proceeds unchanged.
     public func sendMessage(_ msg: MIMEMessage) async throws -> SMTPSendResult {
-        let transport = try await NWConnectionTransport(host: host, port: port, timeout: timeout)
+        let transport: SMTPTransport
+        switch tlsMode {
+        case .implicit:
+            transport = try await NWConnectionTransport(host: host, port: port, timeout: timeout)
+        case .starttls:
+            transport = try await STARTTLSTransport(
+                host: host, port: port, ehloHostname: ehloHostname,
+                insecureSkipVerify: insecureSkipVerify, verbose: verbose,
+                logSink: logSink, timeout: timeout
+            )
+        }
         defer { Task { await transport.close() } }
         return try await runConversation(transport: transport, message: msg)
     }

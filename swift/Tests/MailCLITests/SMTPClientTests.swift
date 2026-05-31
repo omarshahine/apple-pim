@@ -202,6 +202,78 @@ struct SMTPClientTests {
     }
 }
 
+@Suite("STARTTLS negotiation")
+struct STARTTLSNegotiationTests {
+
+    // MARK: - Happy path
+
+    @Test("negotiateSTARTTLS drives greeting → EHLO → STARTTLS → 220")
+    func testHappyPath() async throws {
+        let fake = FakeTransport([
+            .reply(lines: ["220 smtp.example.com ESMTP ready"]),
+            .expectSend({ $0 == "EHLO mail.test\r\n" }, label: "EHLO"),
+            .reply(lines: ["250-smtp.example.com greets mail.test",
+                           "250-STARTTLS",
+                           "250 8BITMIME"]),
+            .expectSend({ $0 == "STARTTLS\r\n" }, label: "STARTTLS"),
+            .reply(lines: ["220 2.0.0 Ready to start TLS"]),
+        ])
+
+        try await negotiateSTARTTLS(over: fake, ehloHostname: "mail.test")
+        try fake.verifyComplete()
+    }
+
+    // MARK: - Failure modes
+
+    @Test("Non-220 greeting fails fast")
+    func testBadGreeting() async throws {
+        let fake = FakeTransport([
+            .reply(lines: ["554 go away"]),
+        ])
+        await #expect(throws: SMTPClientError.self) {
+            try await negotiateSTARTTLS(over: fake, ehloHostname: "mail.test")
+        }
+    }
+
+    @Test("EHLO without STARTTLS capability is rejected")
+    func testNoStarttlsCapability() async throws {
+        let fake = FakeTransport([
+            .reply(lines: ["220 ready"]),
+            .expectSend({ $0.hasPrefix("EHLO ") }, label: "EHLO"),
+            .reply(lines: ["250-hello", "250 8BITMIME"]),
+        ])
+        await #expect(throws: SMTPClientError.self) {
+            try await negotiateSTARTTLS(over: fake, ehloHostname: "mail.test")
+        }
+    }
+
+    @Test("STARTTLS command rejection surfaces as error")
+    func testStarttlsRejected() async throws {
+        let fake = FakeTransport([
+            .reply(lines: ["220 ready"]),
+            .expectSend({ $0.hasPrefix("EHLO ") }, label: "EHLO"),
+            .reply(lines: ["250-hello", "250 STARTTLS"]),
+            .expectSend({ $0 == "STARTTLS\r\n" }, label: "STARTTLS"),
+            .reply(lines: ["454 4.7.0 TLS not available"]),
+        ])
+        await #expect(throws: SMTPClientError.self) {
+            try await negotiateSTARTTLS(over: fake, ehloHostname: "mail.test")
+        }
+    }
+
+    @Test("EHLO failure (non-250) is rejected")
+    func testEhloFailure() async throws {
+        let fake = FakeTransport([
+            .reply(lines: ["220 ready"]),
+            .expectSend({ $0.hasPrefix("EHLO ") }, label: "EHLO"),
+            .reply(lines: ["502 command not implemented"]),
+        ])
+        await #expect(throws: SMTPClientError.self) {
+            try await negotiateSTARTTLS(over: fake, ehloHostname: "mail.test")
+        }
+    }
+}
+
 /// Test sink that captures log lines for assertion.
 final class CollectorSink: SMTPLogSink, @unchecked Sendable {
     private let queue = DispatchQueue(label: "collector")

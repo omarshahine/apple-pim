@@ -8,7 +8,21 @@ import PIMConfig
 private enum SMTPDefaultsConstants {
     static let iCloudHost = "smtp.mail.me.com"
     static let iCloudPort = 465
+    static let starttlsPort = 587
     static let defaultSecretKey = "smtp.icloud.password"
+}
+
+/// CLI-facing TLS mode argument. Bridges to `SMTPClient.TLSMode`.
+enum TLSModeArg: String, ExpressibleByArgument, CaseIterable {
+    case implicit
+    case starttls
+
+    var asClientMode: SMTPClient.TLSMode {
+        switch self {
+        case .implicit: return .implicit
+        case .starttls: return .starttls
+        }
+    }
 }
 
 // MARK: - smtp-send
@@ -18,9 +32,12 @@ struct SMTPSend: AsyncParsableCommand {
         commandName: "smtp-send",
         abstract: "Send an email via direct SMTP (no Mail.app).",
         discussion: """
-        Uses implicit TLS on port 465 (iCloud default) and AUTH LOGIN with an
-        app-specific password. The password is resolved in order: environment
-        variable → ~/.openclaw/secrets.json → ~/.config/apple-pim/secrets.json.
+        Defaults to implicit TLS on port 465 (iCloud) with AUTH LOGIN and an
+        app-specific password. For servers that only expose STARTTLS on port 587
+        (corporate Exchange, self-hosted Postfix, some university/ISP relays) pass
+        --tls-mode starttls (port defaults to 587). The password is resolved in
+        order: environment variable → ~/.openclaw/secrets.json →
+        ~/.config/apple-pim/secrets.json.
 
         Messages sent via this path do NOT appear in Mail.app's Sent folder.
         Use `mail-cli send` if Sent-folder visibility is required.
@@ -56,8 +73,19 @@ struct SMTPSend: AsyncParsableCommand {
     @Option(name: .long, help: "SMTP host. Default: smtp.mail.me.com.")
     var host: String?
 
-    @Option(name: .long, help: "SMTP port. Default: 465 (implicit TLS).")
+    @Option(name: .long, help: "SMTP port. Default: 465 (implicit TLS) or 587 (starttls).")
     var port: Int?
+
+    @Option(name: .customLong("tls-mode"), help: "TLS transport: implicit (port 465, default) or starttls (port 587).")
+    var tlsMode: TLSModeArg?
+
+    @Flag(name: .customLong("tls-insecure-skip-verify"),
+          help: "Skip TLS certificate verification (starttls only; for self-signed test servers).")
+    var tlsInsecureSkipVerify = false
+
+    @Flag(inversion: .prefixedNo, exclusivity: .chooseLast,
+          help: "APPEND the sent message to the IMAP Sent folder so it appears in Mail.app/iCloud. Defaults on for iCloud SMTP (*.mail.me.com), off otherwise.")
+    var imapAppendSent: Bool?
 
     @Option(name: .customLong("secret-key"), help: "Secret key for password lookup. Default: smtp.icloud.password.")
     var secretKey: String?
@@ -94,7 +122,7 @@ struct SMTPSend: AsyncParsableCommand {
 
     func run() async throws {
         let config = pimOptions.loadConfig()
-        let (host, port, fromAddr) = try resolveConnectionSettings(config: config)
+        let (host, port, fromAddr, resolvedTLSMode) = try resolveConnectionSettings(config: config)
         let effectiveSecretKey = secretKey
             ?? config.smtp?.secretKey
             ?? SMTPDefaultsConstants.defaultSecretKey
@@ -145,7 +173,9 @@ struct SMTPSend: AsyncParsableCommand {
             port: port,
             credentials: .init(username: smtpUser, password: password),
             verbose: verbose,
-            timeout: timeout
+            timeout: timeout,
+            tlsMode: resolvedTLSMode,
+            insecureSkipVerify: tlsInsecureSkipVerify
         )
 
         let result: SMTPSendResult
@@ -162,28 +192,123 @@ struct SMTPSend: AsyncParsableCommand {
             throw ExitCode(1)
         }
 
-        // Print Sent-folder note (non-iCloud hosts get the same note).
-        FileHandle.standardError.write(Data(
-            "note: message will not appear in Mail.app Sent folder; use 'mail-cli send' if Sent-folder visibility is required.\n".utf8
-        ))
+        // Optionally APPEND the sent message to the IMAP Sent folder so it shows
+        // up in Mail.app / iCloud.com. APPEND failures are non-fatal — the message
+        // was already delivered by SMTP.
+        var imapAppendResult: [String: Any]? = nil
+        if let appendCfg = resolveIMAPAppend(config: config, smtpHost: host, smtpUser: smtpUser, smtpPassword: password) {
+            // Use the wire Message-ID and original date so the Sent copy matches.
+            var sentCopy = message
+            sentCopy.messageID = result.messageID
+            do {
+                let rendered = try sentCopy.render()
+                let imap = IMAPClient(
+                    host: appendCfg.host,
+                    port: appendCfg.port,
+                    credentials: .init(username: appendCfg.username, password: appendCfg.password),
+                    sentFolder: appendCfg.sentFolder,
+                    verbose: verbose,
+                    timeout: timeout
+                )
+                try await imap.appendToSent(rendered, internalDate: sentCopy.date)
+                imapAppendResult = ["success": true, "folder": appendCfg.sentFolder, "host": appendCfg.host]
+            } catch {
+                imapAppendResult = ["success": false, "error": String(describing: error)]
+                FileHandle.standardError.write(Data(
+                    "warning: SMTP delivery succeeded but IMAP APPEND to Sent failed: \(error)\n".utf8
+                ))
+            }
+        } else {
+            // No APPEND — keep the existing Sent-folder note.
+            FileHandle.standardError.write(Data(
+                "note: message will not appear in Mail.app Sent folder; pass --imap-append-sent (or use 'mail-cli send') if Sent-folder visibility is required.\n".utf8
+            ))
+        }
 
-        outputJSON([
+        var json: [String: Any] = [
             "success": result.allSucceeded,
             "accepted": result.accepted,
             "rejected": result.rejected.map { ["address": $0.address, "code": $0.response.code, "message": $0.response.firstText] },
             "messageId": result.messageID,
             "host": host,
             "port": port,
-        ])
+        ]
+        if let imapAppendResult { json["imap_append"] = imapAppendResult }
+        outputJSON(json)
     }
 
-    private func resolveConnectionSettings(config: PIMConfiguration) throws -> (host: String, port: Int, from: String) {
+    private func resolveConnectionSettings(config: PIMConfiguration) throws
+        -> (host: String, port: Int, from: String, tlsMode: SMTPClient.TLSMode)
+    {
+        // TLS mode: explicit flag → config (tls_mode) → implicit default.
+        let tlsMode: SMTPClient.TLSMode
+        if let arg = self.tlsMode {
+            tlsMode = arg.asClientMode
+        } else if let configMode = config.smtp?.tlsMode,
+                  let parsed = SMTPClient.TLSMode(rawValue: configMode.lowercased()) {
+            tlsMode = parsed
+        } else {
+            tlsMode = .implicit
+        }
+
         let host = self.host ?? config.smtp?.host ?? SMTPDefaultsConstants.iCloudHost
-        let port = self.port ?? config.smtp?.port ?? SMTPDefaultsConstants.iCloudPort
+        // Port: explicit flag → config → mode-appropriate default (465 implicit, 587 starttls).
+        let defaultPort = tlsMode == .starttls
+            ? SMTPDefaultsConstants.starttlsPort
+            : SMTPDefaultsConstants.iCloudPort
+        let port = self.port ?? config.smtp?.port ?? defaultPort
+
         guard let fromAddr = self.from ?? config.smtp?.username else {
             throw ValidationError("--from required (or set smtp.username in config.json)")
         }
-        return (host, port, fromAddr)
+        return (host, port, fromAddr, tlsMode)
+    }
+
+    private struct ResolvedIMAP {
+        let host: String
+        let port: Int
+        let username: String
+        let password: String
+        let sentFolder: String
+    }
+
+    /// Resolve whether and how to APPEND the sent message to the IMAP Sent folder.
+    /// Returns nil when APPEND is disabled or under-configured (a non-iCloud host
+    /// with no `imap.host` set can't be guessed, so we skip rather than fail).
+    ///
+    /// Enablement: `--imap-append-sent`/`--no-imap-append-sent` → `imap.append_sent`
+    /// config → default-on only for iCloud SMTP (`*.mail.me.com`).
+    private func resolveIMAPAppend(
+        config: PIMConfiguration,
+        smtpHost: String,
+        smtpUser: String,
+        smtpPassword: String
+    ) -> ResolvedIMAP? {
+        let isICloud = smtpHost.hasSuffix(".mail.me.com")
+
+        let enabled = imapAppendSent
+            ?? config.imap?.appendSent
+            ?? isICloud
+        guard enabled else { return nil }
+
+        // Host: explicit imap.host → iCloud default → can't guess (skip).
+        guard let imapHost = config.imap?.host ?? (isICloud ? "imap.mail.me.com" : nil) else {
+            FileHandle.standardError.write(Data(
+                "warning: --imap-append-sent requested but no imap.host configured for a non-iCloud server; skipping APPEND.\n".utf8
+            ))
+            return nil
+        }
+        let imapPort = config.imap?.port ?? 993
+        let username = config.imap?.username ?? smtpUser
+        // Password: dedicated imap secret key if set, else reuse the SMTP password
+        // (iCloud uses the same app-specific password for SMTP and IMAP).
+        let password = config.imap?.secretKey.flatMap { SecretsStore.resolve($0) } ?? smtpPassword
+        let sentFolder = config.imap?.sentFolder ?? "Sent Messages"
+
+        return ResolvedIMAP(
+            host: imapHost, port: imapPort, username: username,
+            password: password, sentFolder: sentFolder
+        )
     }
 
     /// Lightweight content-type guesser. The heavy-handed alternative would be to

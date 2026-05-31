@@ -420,6 +420,59 @@ func findMessageJXA(targetId: String, mailbox: String?, account: String?) -> Str
     """
 }
 
+/// Build the AppleScript that locates the original message by its numeric Apple Mail
+/// id within an account and sends a reply.
+///
+/// The message is located via a recursive search over the account's mailbox tree
+/// rather than a `mailbox "<name>" of account "<acct>"` by-name specifier. The
+/// by-name form only resolves DIRECT children of the account, so it fails with
+/// -1728 (errAENoSuchObject) for nested mailboxes — notably Gmail/Workspace, where
+/// "All Mail" is nested under the "[Gmail]" container. See issue #67.
+///
+/// `attachmentLines` is the pre-built `make new attachment …` snippet (may be empty).
+func buildReplyAppleScript(bodyPath: String, accountName: String, appleMailId: Int, attachmentLines: String) -> String {
+    let escapedAccount = escapeForAppleScript(accountName)
+    let escapedBodyPath = escapeForAppleScript(bodyPath)
+    let attachmentBlock = attachmentLines.isEmpty ? "" : """
+
+        tell replyMsg\(attachmentLines)
+        end tell
+    """
+
+    return """
+    on findMsgById(theId, mboxList)
+        tell application "Mail"
+            repeat with mb in mboxList
+                try
+                    set matchList to (messages of mb whose id is theId)
+                    if (count of matchList) > 0 then return (item 1 of matchList)
+                end try
+            end repeat
+            repeat with mb in mboxList
+                try
+                    set subList to (mailboxes of mb)
+                    if (count of subList) > 0 then
+                        set found to my findMsgById(theId, subList)
+                        if found is not missing value then return found
+                    end if
+                end try
+            end repeat
+        end tell
+        return missing value
+    end findMsgById
+
+    set replyBody to read POSIX file "\(escapedBodyPath)" as «class utf8»
+    tell application "Mail"
+        set theAccount to (first account whose name is "\(escapedAccount)")
+        set origMsg to my findMsgById(\(appleMailId), (mailboxes of theAccount))
+        if origMsg is missing value then error "Could not locate the original message (id \(appleMailId)) in account \\"\(escapedAccount)\\" to reply to"
+        set replyMsg to reply origMsg with opening window
+        set content of replyMsg to replyBody & return & return & content of replyMsg\(attachmentBlock)
+        send replyMsg
+    end tell
+    """
+}
+
 /// Generates the JXA `findMsg(targetId)` function for batch operations.
 /// Unlike `findMessageJXA`, the target ID is a parameter (not hardcoded).
 func batchFindMessageJXA(mailbox: String?, account: String?) -> String {
@@ -1533,31 +1586,23 @@ struct ReplyMessage: AsyncParsableCommand {
               let mailboxName = dict["mailbox"] as? String else {
             throw CLIError.jxaError("Could not extract message details for reply")
         }
+        _ = mailboxName  // retained for diagnostics; no longer used to address the message
 
         // Step 2: Write body to temp file
         let bodyFile = FileManager.default.temporaryDirectory.appendingPathComponent("mail-reply-\(UUID().uuidString).txt")
         try body.write(to: bodyFile, atomically: true, encoding: .utf8)
         defer { try? FileManager.default.removeItem(at: bodyFile) }
 
-        // Step 3: Use AppleScript to reply using the numeric ID
-        let escapedAccount = escapeForAppleScript(accountName)
-        let escapedMailbox = escapeForAppleScript(mailboxName)
-
-        let attachmentBlock = attachmentLines.isEmpty ? "" : """
-
-            tell replyMsg\(attachmentLines)
-            end tell
-        """
-
-        let replyScript = """
-        set replyBody to read POSIX file "\(bodyFile.path)" as «class utf8»
-        tell application "Mail"
-            set origMsg to first message of mailbox "\(escapedMailbox)" of account "\(escapedAccount)" whose id is \(appleMailId)
-            set replyMsg to reply origMsg with opening window
-            set content of replyMsg to replyBody & return & return & content of replyMsg\(attachmentBlock)
-            send replyMsg
-        end tell
-        """
+        // Step 3: Use AppleScript to reply using the numeric ID. The reply script
+        // locates the message via a recursive mailbox-tree search rather than a
+        // brittle `mailbox "<name>" of account` by-name specifier (which fails on
+        // nested Gmail mailboxes with -1728). See buildReplyAppleScript / issue #67.
+        let replyScript = buildReplyAppleScript(
+            bodyPath: bodyFile.path,
+            accountName: accountName,
+            appleMailId: appleMailId,
+            attachmentLines: attachmentLines
+        )
 
         _ = try runAppleScript(replyScript)
 

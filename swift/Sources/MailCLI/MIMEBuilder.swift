@@ -57,6 +57,12 @@ public struct MIMEMessage: Sendable {
     public var messageID: String?
     public var date: Date
 
+    /// When `true` (default) and the message has `html` but no `text`, a plain-text
+    /// fallback is synthesized from the HTML so the message is emitted as
+    /// `multipart/alternative` rather than a single `text/html` part. Set to `false`
+    /// to preserve the legacy single-part `text/html` shape.
+    public var autoDeriveTextFallback: Bool = true
+
     // Injection points for deterministic tests. Never surfaced via the public init.
     var boundaryFactory: @Sendable () -> String = { "=_Part_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))" }
     var messageIDFactory: @Sendable (_ domain: String) -> String = { domain in "<\(UUID().uuidString)@\(domain)>" }
@@ -71,7 +77,8 @@ public struct MIMEMessage: Sendable {
         html: String? = nil,
         attachments: [Attachment] = [],
         messageID: String? = nil,
-        date: Date = Date()
+        date: Date = Date(),
+        autoDeriveTextFallback: Bool = true
     ) {
         self.from = from
         self.to = to
@@ -83,6 +90,7 @@ public struct MIMEMessage: Sendable {
         self.attachments = attachments
         self.messageID = messageID
         self.date = date
+        self.autoDeriveTextFallback = autoDeriveTextFallback
     }
 
     /// All recipients (To + Cc + Bcc) for the SMTP `RCPT TO` phase.
@@ -127,8 +135,21 @@ public struct MIMEMessage: Sendable {
 
     // MARK: - Body construction
 
+    /// The plain-text content to use for rendering. When the caller supplied no
+    /// `text` but did supply `html` and `autoDeriveTextFallback` is on, a fallback
+    /// is synthesized from the HTML (see `htmlToPlainText`). Otherwise this is the
+    /// caller's `text` verbatim (possibly nil).
+    private var effectiveText: String? {
+        if let t = text { return t }
+        if let h = html, autoDeriveTextFallback { return Self.htmlToPlainText(h) }
+        return nil
+    }
+
     /// Returns (top-level Content-Type + CTE headers, body bytes).
     private func buildBody() throws -> ([(String, String)], Data) {
+        // Resolve the plain-text part once (may be derived from HTML).
+        let plainText = effectiveText
+
         // Case 1: attachments present → multipart/mixed wrapping either a single
         // content part or a multipart/alternative sub-part.
         //
@@ -139,10 +160,10 @@ public struct MIMEMessage: Sendable {
         if !attachments.isEmpty {
             var boundary = boundaryFactory()
             let contentPart: Data = try {
-                if text != nil && html != nil {
+                if plainText != nil && html != nil {
                     // Nested multipart/alternative for the content side.
-                    return try renderAlternative()
-                } else if let t = text {
+                    return try renderAlternative(text: plainText!, html: html!)
+                } else if let t = plainText {
                     return renderTextPart(t, subtype: "plain")
                 } else if let h = html {
                     return renderTextPart(h, subtype: "html")
@@ -164,15 +185,10 @@ public struct MIMEMessage: Sendable {
 
             var body = Data()
             // First part: the content (already formatted if multipart/alternative, else wrap).
+            // When both text and html exist, contentPart is a complete multipart/alternative
+            // section (its own Content-Type line + sub-parts); otherwise it's a single part.
             body.append(Self.boundaryLine(boundary))
-            if text != nil && html != nil {
-                // contentPart already starts with its own Content-Type line for the nested part;
-                // use the nested approach: a sub-multipart with its OWN boundary is inlined.
-                // renderAlternative produces the complete part including sub-headers.
-                body.append(contentPart)
-            } else {
-                body.append(contentPart)
-            }
+            body.append(contentPart)
             // Attachment parts.
             for att in attachments {
                 body.append(Self.crlf)
@@ -191,10 +207,10 @@ public struct MIMEMessage: Sendable {
         }
 
         // Case 2: text + html with no attachments → multipart/alternative at the top level.
-        if text != nil && html != nil {
+        if let t = plainText, let h = html {
             var boundary = boundaryFactory()
-            let textData = Data(Self.normalizeLineEndings(text!).utf8)
-            let htmlData = Data(Self.normalizeLineEndings(html!).utf8)
+            let textData = Data(Self.normalizeLineEndings(t).utf8)
+            let htmlData = Data(Self.normalizeLineEndings(h).utf8)
             var attempts = 0
             while Self.boundaryCollides(boundary, with: textData)
                     || Self.boundaryCollides(boundary, with: htmlData) {
@@ -205,10 +221,10 @@ public struct MIMEMessage: Sendable {
 
             var body = Data()
             body.append(Self.boundaryLine(boundary))
-            body.append(renderTextPart(text!, subtype: "plain"))
+            body.append(renderTextPart(t, subtype: "plain"))
             body.append(Self.crlf)
             body.append(Self.boundaryLine(boundary))
-            body.append(renderTextPart(html!, subtype: "html"))
+            body.append(renderTextPart(h, subtype: "html"))
             body.append(Self.crlf)
             body.append(Self.finalBoundaryLine(boundary))
 
@@ -218,8 +234,9 @@ public struct MIMEMessage: Sendable {
             )
         }
 
-        // Case 3: single part (text OR html).
-        if let t = text {
+        // Case 3: single part (text OR html). HTML reaches here only when
+        // autoDeriveTextFallback is off (otherwise plainText is non-nil → Case 2).
+        if let t = plainText {
             let bodyBytes = renderTextPartPayload(t)
             return (
                 [
@@ -244,10 +261,10 @@ public struct MIMEMessage: Sendable {
 
     /// Build a complete multipart/alternative section (part headers + both sub-parts +
     /// closing boundary) as used inside a multipart/mixed wrapper.
-    private func renderAlternative() throws -> Data {
+    private func renderAlternative(text: String, html: String) throws -> Data {
         var innerBoundary = boundaryFactory()
-        let textData = Data(Self.normalizeLineEndings(text ?? "").utf8)
-        let htmlData = Data(Self.normalizeLineEndings(html ?? "").utf8)
+        let textData = Data(Self.normalizeLineEndings(text).utf8)
+        let htmlData = Data(Self.normalizeLineEndings(html).utf8)
         var attempts = 0
         while Self.boundaryCollides(innerBoundary, with: textData)
                 || Self.boundaryCollides(innerBoundary, with: htmlData) {
@@ -260,10 +277,10 @@ public struct MIMEMessage: Sendable {
         out.append(Self.headerLine("Content-Type", "multipart/alternative; boundary=\"\(innerBoundary)\""))
         out.append(Self.crlf)
         out.append(Self.boundaryLine(innerBoundary))
-        out.append(renderTextPart(text!, subtype: "plain"))
+        out.append(renderTextPart(text, subtype: "plain"))
         out.append(Self.crlf)
         out.append(Self.boundaryLine(innerBoundary))
-        out.append(renderTextPart(html!, subtype: "html"))
+        out.append(renderTextPart(html, subtype: "html"))
         out.append(Self.crlf)
         out.append(Self.finalBoundaryLine(innerBoundary))
         return out
@@ -490,6 +507,107 @@ public struct MIMEMessage: Sendable {
             }
         }
         return out
+    }
+
+    // MARK: - HTML → plain-text fallback
+
+    /// Derive a plain-text fallback from an HTML body. Deterministic, no DOM (see issue #61).
+    ///
+    /// Rules:
+    /// - `<script>` / `<style>` blocks (and their contents) are dropped entirely.
+    /// - Block-closing tags (`</p>`, `</div>`, `</tr>`, `</li>`, `</h1>`–`</h6>`) → newline.
+    /// - `<br>` / `<br/>` / `<br />` → newline.
+    /// - All other tags are stripped.
+    /// - HTML entities (named + numeric) are decoded.
+    /// - Horizontal whitespace runs collapse to one space; 3+ blank lines collapse to two.
+    /// - Leading/trailing whitespace is trimmed.
+    ///
+    /// This is intentionally NOT a "pretty" converter (no link/blockquote/alignment
+    /// preservation) — just a reasonable, readable text alternative.
+    static func htmlToPlainText(_ html: String) -> String {
+        var s = html
+
+        // 1. Remove <script>…</script> and <style>…</style> including their contents.
+        s = replaceRegex(s, pattern: "<(script|style)\\b[^>]*>[\\s\\S]*?</\\1\\s*>", with: "", dotAll: true)
+
+        // 2. <br> variants → newline.
+        s = replaceRegex(s, pattern: "<br\\s*/?>", with: "\n")
+
+        // 3. Block-closing tags → newline.
+        s = replaceRegex(s, pattern: "</(p|div|tr|li|h[1-6])\\s*>", with: "\n")
+
+        // 4. Strip all remaining tags.
+        s = replaceRegex(s, pattern: "<[^>]+>", with: "")
+
+        // 5. Decode HTML entities.
+        s = decodeHTMLEntities(s)
+
+        // 6. Collapse horizontal whitespace, tidy newlines.
+        s = replaceRegex(s, pattern: "[ \\t\\x0B\\f\\r]+", with: " ", caseInsensitive: false)
+        s = replaceRegex(s, pattern: " *\\n *", with: "\n", caseInsensitive: false)
+        s = replaceRegex(s, pattern: "\\n{3,}", with: "\n\n", caseInsensitive: false)
+
+        // 7. Trim.
+        return s.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// NSRegularExpression-backed replace. Returns the input unchanged if the pattern
+    /// fails to compile (defensive — patterns here are all literals).
+    static func replaceRegex(
+        _ s: String,
+        pattern: String,
+        with template: String,
+        caseInsensitive: Bool = true,
+        dotAll: Bool = false
+    ) -> String {
+        var opts: NSRegularExpression.Options = []
+        if caseInsensitive { opts.insert(.caseInsensitive) }
+        if dotAll { opts.insert(.dotMatchesLineSeparators) }
+        guard let re = try? NSRegularExpression(pattern: pattern, options: opts) else { return s }
+        let range = NSRange(s.startIndex..., in: s)
+        // `template` is passed through verbatim — callers here use literal characters
+        // (real newline / space / empty), never `$`/`\` backreference syntax.
+        return re.stringByReplacingMatches(in: s, options: [], range: range, withTemplate: template)
+    }
+
+    /// Decode the common named HTML entities plus numeric (`&#NN;` / `&#xHH;`) forms.
+    /// Unrecognized entities are left verbatim.
+    static func decodeHTMLEntities(_ s: String) -> String {
+        let named: [String: String] = [
+            "amp": "&", "lt": "<", "gt": ">", "quot": "\"", "apos": "'",
+            "nbsp": " ", "mdash": "—", "ndash": "–", "hellip": "…",
+            "copy": "©", "reg": "®", "trade": "™",
+            "lsquo": "\u{2018}", "rsquo": "\u{2019}", "ldquo": "\u{201C}", "rdquo": "\u{201D}",
+        ]
+        var result = ""
+        result.reserveCapacity(s.count)
+        var i = s.startIndex
+        while i < s.endIndex {
+            let c = s[i]
+            if c == "&",
+               let semi = s[i...].firstIndex(of: ";"),
+               s.distance(from: i, to: semi) <= 32 {
+                let entity = String(s[s.index(after: i)..<semi])
+                if entity.hasPrefix("#") {
+                    let numStr = entity.dropFirst()
+                    let scalarVal: UInt32? = (numStr.first == "x" || numStr.first == "X")
+                        ? UInt32(numStr.dropFirst(), radix: 16)
+                        : UInt32(numStr, radix: 10)
+                    if let v = scalarVal, let scalar = Unicode.Scalar(v) {
+                        result.unicodeScalars.append(scalar)
+                        i = s.index(after: semi)
+                        continue
+                    }
+                } else if let rep = named[entity] {
+                    result += rep
+                    i = s.index(after: semi)
+                    continue
+                }
+            }
+            result.append(c)
+            i = s.index(after: i)
+        }
+        return result
     }
 
     // MARK: - Address + date helpers

@@ -19,12 +19,14 @@ struct MIMEBuilderTests {
         html: String? = nil,
         attachments: [Attachment] = [],
         boundary: String = "=_Part_TEST0001",
-        messageID: String = "<test-message-id@icloud.com>"
+        messageID: String = "<test-message-id@icloud.com>",
+        autoDeriveTextFallback: Bool = true
     ) -> MIMEMessage {
         var msg = MIMEMessage(
             from: from, to: to, cc: cc, bcc: bcc,
             subject: subject, text: text, html: html, attachments: attachments,
-            messageID: messageID, date: Self.fixedDate
+            messageID: messageID, date: Self.fixedDate,
+            autoDeriveTextFallback: autoDeriveTextFallback
         )
         msg.boundaryFactory = { boundary }
         return msg
@@ -72,12 +74,62 @@ struct MIMEBuilderTests {
         #expect(out.contains("\r\n\r\nHello world\r\nLine two."))
     }
 
-    @Test("HTML-only message produces text/html")
-    func testHTMLOnly() throws {
-        let msg = makeMessage(html: "<p>hi</p>")
+    @Test("HTML-only message with fallback opt-out produces single-part text/html")
+    func testHTMLOnlySinglePartOptOut() throws {
+        let msg = makeMessage(html: "<p>hi</p>", autoDeriveTextFallback: false)
         let out = try renderString(msg)
         #expect(out.contains("Content-Type: text/html; charset=utf-8\r\n"))
         #expect(out.contains("\r\n\r\n<p>hi</p>"))
+        #expect(!out.contains("multipart/alternative"))
+    }
+
+    // MARK: - HTML → text fallback (issue #61)
+
+    @Test("HTML-only message defaults to multipart/alternative with derived text part")
+    func testHTMLOnlyDerivesTextFallback() throws {
+        let msg = makeMessage(html: "<p>Hello</p>", boundary: "=_Part_ALT")
+        let out = try renderString(msg)
+        #expect(out.contains("Content-Type: multipart/alternative; boundary=\"=_Part_ALT\"\r\n"))
+        #expect(out.contains("--=_Part_ALT\r\nContent-Type: text/plain; charset=utf-8\r\n"))
+        #expect(out.contains("--=_Part_ALT\r\nContent-Type: text/html; charset=utf-8\r\n"))
+        #expect(out.contains("--=_Part_ALT--\r\n"))
+        // The derived plain part contains the text content, the HTML part the markup.
+        #expect(out.contains("Hello"))
+        #expect(out.contains("<p>Hello</p>"))
+    }
+
+    @Test("Derived fallback preserves paragraph breaks and decodes entities")
+    func testHTMLToTextStructureAndEntities() {
+        let html = "<h1>Title &amp; Co</h1><p>First para.</p><p>Second &lt;para&gt;</p>"
+        let text = MIMEMessage.htmlToPlainText(html)
+        #expect(text == "Title & Co\nFirst para.\nSecond <para>")
+    }
+
+    @Test("Derived fallback converts <br> to newline and decodes numeric entities")
+    func testHTMLToTextBreaksAndNumericEntities() {
+        let html = "Line one<br>Line two<br/>caf&#233;&#x21;"
+        let text = MIMEMessage.htmlToPlainText(html)
+        #expect(text == "Line one\nLine two\ncafé!")
+    }
+
+    @Test("Derived fallback excludes <script> and <style> blocks")
+    func testHTMLToTextDropsScriptAndStyle() {
+        let html = """
+        <style>.a { color: red; }</style><p>Visible</p><script>alert('x');</script><p>Also visible</p>
+        """
+        let text = MIMEMessage.htmlToPlainText(html)
+        #expect(text == "Visible\nAlso visible")
+        #expect(!text.contains("color"))
+        #expect(!text.contains("alert"))
+    }
+
+    @Test("Derived fallback collapses whitespace and blank-line runs")
+    func testHTMLToTextCollapsesWhitespace() {
+        let html = "<p>too    many     spaces</p>\n\n\n\n<div>after gap</div>"
+        let text = MIMEMessage.htmlToPlainText(html)
+        // Horizontal runs collapse to one space; the 5-newline run collapses to a
+        // single blank line (\n\n), never a single \n.
+        #expect(text == "too many spaces\n\nafter gap")
     }
 
     @Test("text + html produces multipart/alternative with declared boundary")

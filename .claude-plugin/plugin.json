@@ -1,6 +1,6 @@
 {
   "name": "apple-pim",
-  "version": "3.7.24",
+  "version": "3.8.0",
   "description": "Native macOS integration for Calendar, Reminders, Contacts, and Mail using EventKit, Contacts, and JXA frameworks",
   "author": {
     "name": "Omar Shahine",

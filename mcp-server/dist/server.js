@@ -77276,7 +77276,7 @@ function getDatamarkingPreamble(toolName) {
 
 // ../lib/cli-runner.js
 import { join } from "path";
-import { existsSync, mkdtempSync, readFileSync, unlinkSync, rmdirSync } from "fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync } from "fs";
 import { homedir, tmpdir } from "os";
 
 // ../lib/safe-shell.js
@@ -77358,14 +77358,8 @@ function runViaHelper(cli, args, env, timeoutMs, binDir) {
     const outFile = join(scratch, "out");
     const errFile = join(scratch, "err");
     const cleanup = () => {
-      for (const f of [outFile, errFile]) {
-        try {
-          unlinkSync(f);
-        } catch {
-        }
-      }
       try {
-        rmdirSync(scratch);
+        rmSync(scratch, { recursive: true, force: true });
       } catch {
       }
     };
@@ -77407,15 +77401,16 @@ function runViaHelper(cli, args, env, timeoutMs, binDir) {
       } catch {
       }
       cleanup();
-      if (code === 0) {
-        try {
-          resolve2(JSON.parse(stdout));
-        } catch {
-          resolve2({ success: true, output: stdout });
-        }
-      } else {
+      const isFailure = code !== 0 || stdout === "" && stderr !== "";
+      if (isFailure) {
         const msg = stderr || openStderr || `Helper exited with code ${code}`;
         reject(new Error(msg));
+        return;
+      }
+      try {
+        resolve2(JSON.parse(stdout));
+      } catch {
+        resolve2({ success: true, output: stdout });
       }
     });
     proc.on("error", (err) => {
@@ -77445,32 +77440,24 @@ function createCLIRunner(binDir, envOverrides = {}, { timeoutMs = DEFAULT_TIMEOU
     return env;
   }
   async function probeRoute(cli) {
-    if (!HELPER_ELIGIBLE_CLIS.has(cli)) {
-      route.set(cli, "direct");
+    if (!HELPER_ELIGIBLE_CLIS.has(cli))
       return "direct";
-    }
-    if (!existsSync(helperAppPath())) {
-      route.set(cli, "direct");
+    if (!existsSync(helperAppPath()))
       return "direct";
-    }
     const cliPath = join(binDir, cli);
     try {
       const result = await runDirect(cliPath, ["auth-status"], childEnv(), timeoutMs);
       const auth = result?.authorization;
-      const useHelper = auth === "notDetermined" || auth === "denied";
-      const decision = useHelper ? "helper" : "direct";
-      route.set(cli, decision);
-      return decision;
+      return auth === "notDetermined" || auth === "denied" ? "helper" : "direct";
     } catch {
-      route.set(cli, "helper");
       return "helper";
     }
   }
   async function runCLI2(cli, args) {
-    let decision = route.get(cli);
-    if (decision === void 0) {
-      decision = await probeRoute(cli);
+    if (!route.has(cli)) {
+      route.set(cli, probeRoute(cli));
     }
+    const decision = await route.get(cli);
     if (decision === "helper") {
       return runViaHelper(cli, args, childEnv(), timeoutMs, binDir);
     }
