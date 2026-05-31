@@ -554,7 +554,14 @@ public final class STARTTLSTransport: SMTPTransport, @unchecked Sendable {
             _ = SSLSetPeerDomainName(ctx, ptr, strlen(ptr))
         }
         if insecureSkipVerify {
-            // Defer trust evaluation to us, then accept unconditionally.
+            // Defer trust evaluation to us, then accept unconditionally. This
+            // disables MITM protection for a connection over which credentials
+            // (AUTH LOGIN) are about to be sent — warn loudly and unconditionally,
+            // regardless of verbose mode. Intended only for self-signed test relays.
+            let warning = "WARNING: --tls-insecure-skip-verify is set — TLS certificate verification is DISABLED for \(host):\(port). "
+                + "Credentials will be sent over an UNAUTHENTICATED channel vulnerable to man-in-the-middle. "
+                + "Use only against trusted test servers.\n"
+            FileHandle.standardError.write(Data(warning.utf8))
             SSLSetSessionOption(ctx, .breakOnServerAuth, true)
         }
 
