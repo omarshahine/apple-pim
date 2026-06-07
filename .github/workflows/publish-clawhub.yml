@@ -51,6 +51,15 @@ jobs:
           npm install --force
           npm run build
 
+      - name: Sync manifest version to tag (tag is source of truth)
+        run: |
+          cd openclaw
+          V="${{ steps.version.outputs.version }}"
+          for f in package.json openclaw.plugin.json .claude-plugin/plugin.json; do
+            [ -f "$f" ] || continue
+            node -e "const fs=require('fs'),p='$f',j=JSON.parse(fs.readFileSync(p));if('version' in j){j.version='$V';fs.writeFileSync(p,JSON.stringify(j,null,2)+'\n');console.log('synced '+p+' -> $V')}"
+          done
+
       - name: Publish to ClawHub
         run: |
           clawhub package publish openclaw/ \
