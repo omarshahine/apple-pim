@@ -40,6 +40,11 @@ jobs:
           fi
           echo "text=$MSG" >> "$GITHUB_OUTPUT"
 
+      - name: Install dependencies
+        run: |
+          cd openclaw
+          npm install --force
+
       - name: Resolve lib/ symlink for packaging
         run: |
           cd openclaw
@@ -48,7 +53,6 @@ jobs:
       - name: Install + build (compile TS so clawhub validator finds dist/)
         run: |
           cd openclaw
-          npm install --force
           npm run build
 
       - name: Sync manifest version to tag (tag is source of truth)
