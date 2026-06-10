@@ -4,21 +4,22 @@
   "description": "OpenClaw plugin for macOS Calendar, Reminders, Contacts, and Mail. macOS-only; depends on four native Swift CLIs (calendar-cli, reminder-cli, contacts-cli, mail-cli) you build locally from source via ./setup.sh. The registry does not download or install binaries.",
   "type": "module",
   "scripts": {
-    "prepack": "rm -rf lib && cp -R ../lib .",
-    "postpack": "rm -rf lib && ln -s ../lib .",
+    "prepack": "node -e \"const fs=require('node:fs'); fs.rmSync('lib', { recursive: true, force: true }); fs.cpSync('../lib', 'lib', { recursive: true });\" && npm run build",
+    "postpack": "node -e \"const fs=require('node:fs'); fs.rmSync('lib', { recursive: true, force: true }); fs.symlinkSync('../lib', 'lib', 'dir');\"",
     "plugin:check": "npx --yes @openclaw/plugin-inspector inspect --no-openclaw",
     "plugin:ci": "npx --yes @openclaw/plugin-inspector ci --no-openclaw --runtime --mock-sdk --allow-execute",
-    "build": "tsup src/index.ts --format esm --out-dir dist --dts --clean --target node20"
+    "build": "tsup src/index.ts --format esm --out-dir dist --clean --target node20"
   },
   "openclaw": {
     "extensions": [
       "./src/index.ts"
     ],
     "compat": {
-      "pluginApi": ">=2026.3.23"
+      "pluginApi": ">=2026.6.5"
     },
     "build": {
-      "openclawVersion": "2026.3.28"
+      "openclawVersion": "2026.6.5",
+      "pluginSdkVersion": "2026.6.5"
     },
     "environment": {
       "binaries": [
@@ -78,11 +79,11 @@
     "darwin"
   ],
   "engines": {
-    "node": ">=18"
+    "node": ">=22.19.0"
   },
   "dependencies": {
     "mailparser": "^3.9.3",
-    "openclaw": "^2026.3.23",
+    "openclaw": "^2026.6.5",
     "turndown": "^7.2.2"
   },
   "main": "./dist/index.js",

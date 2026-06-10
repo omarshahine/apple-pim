@@ -8,9 +8,14 @@
     "strict": true,
     "outDir": "dist",
     "rootDir": ".",
-    "declaration": true,
+    "declaration": false,
     "skipLibCheck": true
   },
-  "include": ["src/**/*.ts"],
-  "exclude": ["node_modules", "dist"]
+  "include": [
+    "src/**/*.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "dist"
+  ]
 }

@@ -3,31 +3,6 @@
   "name": "Apple PIM",
   "description": "macOS-only. Wraps four native Swift CLIs (calendar-cli, reminder-cli, contacts-cli, mail-cli) you build locally from source via ./setup.sh — no binaries are downloaded by the registry. Grants the agent read/write access to Calendar, Reminders, Contacts, and Mail.app (including send/delete) once you approve the corresponding macOS TCC and Automation prompts.",
   "version": "3.8.0",
-  "platforms": [
-    "darwin"
-  ],
-  "requires": {
-    "binaries": [
-      "calendar-cli",
-      "reminder-cli",
-      "contacts-cli",
-      "mail-cli"
-    ],
-    "osPermissions": [
-      "macos:calendars",
-      "macos:reminders",
-      "macos:contacts",
-      "macos:mail-automation"
-    ],
-    "envVars": {
-      "optional": {
-        "APPLE_PIM_PROFILE": "Selects a named PIM profile under ~/.config/apple-pim/profiles/{name}.json. Filters calendars/lists/contacts.",
-        "APPLE_PIM_CONFIG_DIR": "Overrides the PIM config root directory (default: ~/.config/apple-pim/).",
-        "APPLE_PIM_DATE_FORMAT": "Calendar date output format. One of: utc (default), local, day-utc, day-local.",
-        "APPLE_PIM_MAIL_ATTACHMENTS_CONFIG": "Overrides the path to the mail attachment policy file (default: ~/.config/apple-pim/mail-attachments.json). Mail send/reply attachments are default-denied; this file is the opt-in mechanism."
-      }
-    }
-  },
   "configSchema": {
     "type": "object",
     "properties": {
