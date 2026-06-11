@@ -1,8 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
 import { homedir, tmpdir } from "node:os";
+import { join } from "node:path";
 import { validateAttachment, validateAttachments, validateDestDir } from "../../lib/safe-attachments.js";
 
 let workdir;
@@ -143,22 +142,36 @@ describe("safe-attachments", () => {
 });
 
 describe("validateDestDir (save_attachment write confinement)", () => {
+  // The validator canonicalizes symlinks on the deepest existing ancestor, so
+  // expected values are computed against the realpath'd home/temp roots.
+  const canonHome = realpathSync(homedir());
+  const canonTmp = realpathSync(tmpdir());
+
   it("accepts a directory under the home directory", () => {
     const dir = join(homedir(), "Downloads", "pim-test");
-    expect(validateDestDir(dir)).toBe(dir);
+    expect(validateDestDir(dir)).toBe(join(canonHome, "Downloads", "pim-test"));
   });
 
   it("expands ~ and accepts the result", () => {
-    expect(validateDestDir("~/Downloads")).toBe(join(homedir(), "Downloads"));
+    const got = validateDestDir("~/Downloads");
+    expect(got).toBe(join(canonHome, "Downloads"));
   });
 
   it("accepts a directory under system temp", () => {
     const dir = join(tmpdir(), "pim-att");
-    expect(validateDestDir(dir)).toBe(dir);
+    expect(validateDestDir(dir)).toBe(join(canonTmp, "pim-att"));
   });
 
   it("rejects a path outside home and temp", () => {
     expect(() => validateDestDir("/etc/cron.d")).toThrow(/within your home directory or system temp/i);
+  });
+
+  it("resolves symlinks — a symlinked dir escaping home/temp is rejected", () => {
+    const dir = mkdtempSync(join(tmpdir(), "pim-dest-"));
+    const link = join(dir, "escape");
+    symlinkSync("/etc", link); // target is outside home and temp
+    expect(() => validateDestDir(link)).toThrow(/within your home directory or system temp/i);
+    rmSync(dir, { recursive: true, force: true });
   });
 
   it("rejects login-persistence directories even inside home", () => {

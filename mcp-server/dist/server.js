@@ -36673,8 +36673,8 @@ var require_core3 = __commonJS({
     function many1(p) {
       return ab(p, many(p), (head, tail) => [head, ...tail]);
     }
-    function ab(pa, pb, join3) {
-      return (data, i) => mapOuter(pa(data, i), (ma) => mapInner(pb(data, ma.position), (vb, j) => join3(ma.value, vb, data, i, j)));
+    function ab(pa, pb, join4) {
+      return (data, i) => mapOuter(pa(data, i), (ma) => mapInner(pb(data, ma.position), (vb, j) => join4(ma.value, vb, data, i, j)));
     }
     function left(pa, pb) {
       return ab(pa, pb, (va) => va);
@@ -36682,8 +36682,8 @@ var require_core3 = __commonJS({
     function right(pa, pb) {
       return ab(pa, pb, (va, vb) => vb);
     }
-    function abc(pa, pb, pc, join3) {
-      return (data, i) => mapOuter(pa(data, i), (ma) => mapOuter(pb(data, ma.position), (mb) => mapInner(pc(data, mb.position), (vc, j) => join3(ma.value, mb.value, vc, data, i, j))));
+    function abc(pa, pb, pc, join4) {
+      return (data, i) => mapOuter(pa(data, i), (ma) => mapOuter(pb(data, ma.position), (mb) => mapInner(pc(data, mb.position), (vc, j) => join4(ma.value, mb.value, vc, data, i, j))));
     }
     function middle(pa, pb, pc) {
       return abc(pa, pb, pc, (ra, rb) => rb);
@@ -63223,14 +63223,14 @@ var require_turndown_cjs = __commonJS({
         } else if (node.nodeType === 1) {
           replacement = replacementForNode.call(self, node);
         }
-        return join3(output, replacement);
+        return join4(output, replacement);
       }, "");
     }
     function postProcess(output) {
       var self = this;
       this.rules.forEach(function(rule) {
         if (typeof rule.append === "function") {
-          output = join3(output, rule.append(self.options));
+          output = join4(output, rule.append(self.options));
         }
       });
       return output.replace(/^[\t\r\n]+/, "").replace(/[\t\r\n\s]+$/, "");
@@ -63243,7 +63243,7 @@ var require_turndown_cjs = __commonJS({
         content = content.trim();
       return whitespace.leading + rule.replacement(content, node, this.options) + whitespace.trailing;
     }
-    function join3(output, replacement) {
+    function join4(output, replacement) {
       var s1 = trimTrailingNewlines(output);
       var s2 = trimLeadingNewlines(replacement);
       var nls = Math.max(output.length - s1.length, replacement.length - s2.length);
@@ -77121,7 +77121,7 @@ var StdioServerTransport = class {
 };
 
 // server.js
-import { dirname, join as join2 } from "path";
+import { dirname as dirname2, join as join3 } from "path";
 import { fileURLToPath } from "url";
 
 // ../lib/sanitize.js
@@ -78562,7 +78562,7 @@ async function formatMailGetResult(result, format) {
 // ../lib/safe-attachments.js
 import { existsSync as existsSync2, readFileSync as readFileSync2, realpathSync, statSync } from "node:fs";
 import { homedir as homedir2, tmpdir as tmpdir2 } from "node:os";
-import { resolve, sep } from "node:path";
+import { basename, dirname, join as join2, resolve, sep } from "node:path";
 function configPath() {
   return process.env.APPLE_PIM_MAIL_ATTACHMENTS_CONFIG || `${homedir2()}/.config/apple-pim/mail-attachments.json`;
 }
@@ -78648,14 +78648,14 @@ function isWithinRoot(canonicalPath, root) {
 }
 function failsHardDenylist(canonicalPath, policy) {
   const parts = canonicalPath.split(sep);
-  const basename = parts[parts.length - 1];
-  if (DEFAULT_DENIED_BASENAMES.has(basename))
-    return `denylisted filename: ${basename}`;
-  if (policy.extraDeniedBasenames?.includes(basename))
-    return `denylisted filename: ${basename}`;
+  const basename2 = parts[parts.length - 1];
+  if (DEFAULT_DENIED_BASENAMES.has(basename2))
+    return `denylisted filename: ${basename2}`;
+  if (policy.extraDeniedBasenames?.includes(basename2))
+    return `denylisted filename: ${basename2}`;
   for (const re of DEFAULT_DENIED_BASENAME_REGEX) {
-    if (re.test(basename))
-      return `denylisted filename pattern: ${basename}`;
+    if (re.test(basename2))
+      return `denylisted filename pattern: ${basename2}`;
   }
   for (const comp of parts.slice(0, -1)) {
     if (DEFAULT_DENIED_DIR_COMPONENTS.has(comp))
@@ -78724,12 +78724,32 @@ var DENIED_DEST_COMPONENTS = /* @__PURE__ */ new Set([
   "LaunchAgents",
   "LaunchDaemons"
 ]);
+function canonicalizeIntendedPath(absPath) {
+  let existing = absPath;
+  const tail = [];
+  while (!existsSync2(existing)) {
+    const parent = dirname(existing);
+    if (parent === existing)
+      break;
+    tail.unshift(basename(existing));
+    existing = parent;
+  }
+  let canonical;
+  try {
+    canonical = realpathSync(existing);
+  } catch {
+    canonical = existing;
+  }
+  for (const comp of tail)
+    canonical = join2(canonical, comp);
+  return canonical;
+}
 function validateDestDir(rawDir) {
   if (typeof rawDir !== "string" || rawDir.length === 0) {
     throw new TypeError("destDir must be a non-empty string");
   }
   const expanded = expandHome(rawDir);
-  const resolved = resolve(expanded);
+  const resolved = canonicalizeIntendedPath(resolve(expanded));
   const home = canonicalizeRoot(homedir2());
   const tmpRoots = [canonicalizeRoot(tmpdir2()), "/tmp", "/private/tmp", "/var/folders", "/private/var/folders"];
   const inHome = resolved === home || resolved.startsWith(home + sep);
@@ -79046,10 +79066,10 @@ async function handleApplePim(args, runCLI2) {
 }
 
 // server.js
-var __dirname = dirname(fileURLToPath(import.meta.url));
+var __dirname = dirname2(fileURLToPath(import.meta.url));
 var mcpLocations = [
-  join2(__dirname, "..", "swift", ".build", "release"),
-  join2(__dirname, "..", "..", "swift", ".build", "release")
+  join3(__dirname, "..", "swift", ".build", "release"),
+  join3(__dirname, "..", "..", "swift", ".build", "release")
 ];
 var SWIFT_BIN_DIR = findSwiftBinDir(mcpLocations);
 var { runCLI } = createCLIRunner(SWIFT_BIN_DIR);
