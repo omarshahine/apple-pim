@@ -1,6 +1,6 @@
 {
   "name": "apple-pim-cli",
-  "version": "3.8.2",
+  "version": "3.8.3",
   "description": "OpenClaw plugin for macOS Calendar, Reminders, Contacts, and Mail. macOS-only; depends on four native Swift CLIs (calendar-cli, reminder-cli, contacts-cli, mail-cli) you build locally from source via ./setup.sh. The registry does not download or install binaries.",
   "type": "module",
   "scripts": {

@@ -61,8 +61,26 @@ final class ScriptHelpersTests: XCTestCase {
         XCTAssertTrue(script.contains("first account whose name is \"Google\""))
         XCTAssertTrue(script.contains("messages of mb whose id is theId"))
         XCTAssertTrue(script.contains("mailboxes of mb"))
-        XCTAssertTrue(script.contains("reply origMsg with opening window"))
+        XCTAssertTrue(script.contains("reply origMsg without opening window"))
         XCTAssertTrue(script.contains("send replyMsg"))
+    }
+
+    func testReplyScriptComposesWithoutOpeningWindow() {
+        // `with opening window` forces HTML mode, which makes the plain-text `content`
+        // property read-only — the reply then sends with an empty body. See issue #73.
+        let script = buildReplyAppleScript(
+            bodyPath: "/tmp/body.txt",
+            accountName: "Google",
+            appleMailId: 12345,
+            attachmentLines: ""
+        )
+        XCTAssertTrue(script.contains("reply origMsg without opening window"),
+                      "reply must compose without opening the window to keep content writable")
+        XCTAssertFalse(script.contains("reply origMsg with opening window"),
+                       "opening the window regresses the empty-body bug (issue #73)")
+        // Body is assigned directly, not concatenated onto the quoted original.
+        XCTAssertTrue(script.contains("set content of replyMsg to replyBody"))
+        XCTAssertFalse(script.contains("replyBody & return & return & content of replyMsg"))
     }
 
     func testReplyScriptEscapesAccountAndOmitsAttachmentBlockWhenEmpty() {
