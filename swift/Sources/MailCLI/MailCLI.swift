@@ -474,6 +474,10 @@ func findMessageJXA(targetId: String, mailbox: String?, account: String?) -> Str
 /// -1728 (errAENoSuchObject) for nested mailboxes — notably Gmail/Workspace, where
 /// "All Mail" is nested under the "[Gmail]" container. See issue #67.
 ///
+/// The reply is composed `without opening window` so it stays in plain-text mode,
+/// where the `content` property is writable. `with opening window` forces HTML mode
+/// and drops the body silently. See issue #73.
+///
 /// `attachmentLines` is the pre-built `make new attachment …` snippet (may be empty).
 func buildReplyAppleScript(bodyPath: String, accountName: String, appleMailId: Int, attachmentLines: String) -> String {
     let escapedAccount = escapeForAppleScript(accountName)
@@ -511,8 +515,12 @@ func buildReplyAppleScript(bodyPath: String, accountName: String, appleMailId: I
         set theAccount to (first account whose name is "\(escapedAccount)")
         set origMsg to my findMsgById(\(appleMailId), (mailboxes of theAccount))
         if origMsg is missing value then error "Could not locate the original message (id \(appleMailId)) in account \\"\(escapedAccount)\\" to reply to"
-        set replyMsg to reply origMsg with opening window
-        set content of replyMsg to replyBody & return & return & content of replyMsg\(attachmentBlock)
+        -- `without opening window` is REQUIRED, not cosmetic: `with opening window`
+        -- makes Mail compose the reply in rich-text/HTML mode, where the plain-text
+        -- `content` property is read-only. Setting it then silently no-ops and the
+        -- reply sends with an empty body. See issue #73. Do not change back.
+        set replyMsg to reply origMsg without opening window
+        set content of replyMsg to replyBody\(attachmentBlock)
         send replyMsg
     end tell
     """
