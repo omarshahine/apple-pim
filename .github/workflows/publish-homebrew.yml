@@ -44,7 +44,7 @@ jobs:
           echo "Resolved v$VERSION -> $SHA256"
 
       - name: Checkout tap
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           repository: ${{ env.TAP_REPO }}
           token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
