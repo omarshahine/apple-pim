@@ -3,14 +3,30 @@
 # Run this after installing the plugin to build Swift CLIs and install MCP dependencies
 #
 # Usage:
-#   ./setup.sh             # Build only
-#   ./setup.sh --install   # Build and install CLIs to /usr/local/bin
+#   ./setup.sh                     # Build only
+#   ./setup.sh --install           # Build and install CLIs to ~/.local/bin (copies)
+#   ./setup.sh --install --link    # Dev mode: symlink into ~/.local/bin instead
+#
+# Why copies are the default: a symlinked install points into this checkout,
+# so renaming, moving, or cleaning the repo silently bricks every consumer
+# (the MCP server, the OpenClaw plugin, PIMHelper.app). Copies survive all
+# of that; rebuild + re-run --install to update them. --link restores the
+# old rebuild-updates-in-place behavior for active CLI development.
 
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 INSTALL_DIR="${HOME}/.local/bin"
 CLIS=(calendar-cli reminder-cli contacts-cli mail-cli)
+
+INSTALL=false
+LINK_MODE=false
+for arg in "$@"; do
+    case "$arg" in
+        --install) INSTALL=true ;;
+        --link) LINK_MODE=true ;;
+    esac
+done
 
 echo "Building Swift CLI tools..."
 cd "$SCRIPT_DIR/swift"
@@ -26,19 +42,28 @@ echo "Installing MCP server dependencies..."
 cd "$SCRIPT_DIR/mcp-server"
 npm install
 
-if [ "$1" = "--install" ]; then
+if [ "$INSTALL" = true ]; then
     echo ""
     mkdir -p "$INSTALL_DIR"
-    echo "Installing CLIs to $INSTALL_DIR..."
+    if [ "$LINK_MODE" = true ]; then
+        echo "Installing CLIs to $INSTALL_DIR (symlinks — dev mode)..."
+        echo "  NOTE: these links break if this repo is moved, renamed, or cleaned."
+    else
+        echo "Installing CLIs to $INSTALL_DIR (copies)..."
+    fi
     for cli in "${CLIS[@]}"; do
         src="$SCRIPT_DIR/swift/.build/release/$cli"
         dest="$INSTALL_DIR/$cli"
-        if [ -L "$dest" ] || [ -e "$dest" ]; then
-            echo "  Updating $cli -> $src"
-            ln -sf "$src" "$dest"
-        else
-            echo "  Installing $cli -> $src"
+        # Remove whatever is there (file or symlink, including dangling)
+        # so a mode switch never leaves a stale artifact behind.
+        rm -f "$dest"
+        if [ "$LINK_MODE" = true ]; then
+            echo "  Linking $cli -> $src"
             ln -s "$src" "$dest"
+        else
+            echo "  Copying $cli"
+            cp -f "$src" "$dest"
+            chmod +x "$dest"
         fi
     done
     echo ""

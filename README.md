@@ -44,7 +44,19 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.zshrc
 source ~/.zshrc
 ```
 
-The `--install` flag creates symlinks in `~/.local/bin/`, so rebuilding (`swift build -c release`) automatically updates the global commands.
+The `--install` flag **copies** the binaries into `~/.local/bin/`, so the
+install keeps working even if you later move, rename, or clean this
+checkout. After a rebuild, re-run `./setup.sh --install` to refresh them.
+
+Developing the CLIs themselves? `./setup.sh --install --link` symlinks
+instead, so every `swift build -c release` updates the installed commands
+in place — at the cost that moving or renaming the repo breaks the links.
+
+Verify any install with:
+
+```bash
+scripts/doctor.sh        # add --fix to reap a stuck helper process
+```
 
 ### Claude Code Plugin
 
@@ -55,10 +67,11 @@ Inside Claude Code, run:
 /plugin install apple-pim@apple-pim
 ```
 
-Then build the Swift CLIs (once, from a shell):
+Then build the Swift CLIs (once, from a shell — the glob tolerates any
+marketplace name and version):
 
 ```bash
-~/.claude/plugins/cache/apple-pim/apple-pim/*/setup.sh
+bash ~/.claude/plugins/cache/*/apple-pim/*/setup.sh --install
 ```
 
 Restart Claude Code to load the MCP server. The `pim-assistant` agent triggers automatically when you mention scheduling, reminders, contacts, or email.

@@ -56,6 +56,30 @@ Use `apple-pim` with action `authorize` to trigger macOS permission prompts:
 - "Grant access to reminders" -> `apple-pim` with action `authorize` and domain "reminders"
 - "Set up permissions" -> `apple-pim` with action `authorize` for all domains
 
+## The PIMHelper.app route (agent shells / embedded runtimes)
+
+When the CLIs run under an agent runtime (Claude Code, OpenClaw, launchd
+jobs), macOS attributes TCC to that runtime — which usually has no grant and
+**cannot even raise a prompt**. The plugin handles this via
+`~/Applications/PIMHelper.app`: calls route through the helper, the grant
+binds to the helper's bundle + signature, and it persists across host apps.
+
+Consequences to explain to the user:
+
+- **`notDetermined` is normal and permanent on the direct probe.** The grant
+  lives on the helper, invisible to `auth-status`. If actual Calendar /
+  Reminders / Contacts calls succeed, authorization is fine — do NOT chase
+  the `notDetermined` reading or tell the user to grant the terminal.
+- **The first helper call per domain raises the macOS dialog.** The runner
+  allows ~2 minutes for it; tell the user to watch for and answer the
+  prompt. Grants persist afterward.
+- **Re-signing the helper drops all its grants.** `scripts/build-helper-app.sh`
+  therefore skips rebuilding when nothing changed; expect re-prompts only
+  after a real helper update.
+- **If helper calls fail with Launch Services error -1712**, a previous
+  helper instance is stuck (typically an unanswered dialog). Run
+  `scripts/doctor.sh --fix` (see `/apple-pim:doctor`), then retry.
+
 ## Troubleshooting
 
 If a domain shows `denied`:
