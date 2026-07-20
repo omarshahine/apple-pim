@@ -66,6 +66,14 @@ func epochFromISO8601(_ input: String) -> Double? {
     return formatter.date(from: iso)?.timeIntervalSince1970
 }
 
+/// Escape SQL LIKE metacharacters so user query text matches literally.
+/// Pair with `ESCAPE '\'` in the LIKE clause.
+func escapeLikePattern(_ text: String) -> String {
+    text.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%")
+        .replacingOccurrences(of: "_", with: "\\_")
+}
+
 /// Mailbox names Mail.app treats as junk destinations.
 private let junkMailboxNames: Set<String> = ["Junk", "Junk Mail", "Junk E-mail", "Junk Email", "Spam", "Bulk Mail"]
 

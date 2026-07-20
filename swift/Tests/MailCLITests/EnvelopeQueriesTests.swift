@@ -87,6 +87,14 @@ final class EnvelopeQueriesTests: XCTestCase {
         XCTAssertFalse(isJunkMailboxName("Train Spam"))
     }
 
+    // MARK: - LIKE escaping
+
+    func testEscapeLikePattern() {
+        XCTAssertEqual(escapeLikePattern("100% off_now"), "100\\% off\\_now")
+        XCTAssertEqual(escapeLikePattern("back\\slash"), "back\\\\slash")
+        XCTAssertEqual(escapeLikePattern("plain"), "plain")
+    }
+
     // MARK: - Message ID normalization
 
     func testMessageIDCandidates() {

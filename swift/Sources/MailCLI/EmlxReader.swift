@@ -36,7 +36,9 @@ func readEmlx(at url: URL) throws -> EmlxMessage {
     return try parseEmlx(data: data)
 }
 
-func parseEmlx(data: Data) throws -> EmlxMessage {
+/// The byte-counted RFC 822 payload of an .emlx file (excludes the first line
+/// and the XML plist trailer that follows the message).
+func emlxMessageData(_ data: Data) throws -> Data {
     // First line is the byte count of the RFC 822 payload.
     guard let newline = data.firstIndex(of: 0x0A) else {
         throw EmlxError.malformed("Missing byte-count line")
@@ -48,7 +50,11 @@ func parseEmlx(data: Data) throws -> EmlxMessage {
     let messageStart = data.index(after: newline)
     let messageEnd = min(data.index(messageStart, offsetBy: byteCount, limitedBy: data.endIndex) ?? data.endIndex,
                          data.endIndex)
-    return parseRFC822(data: Data(data[messageStart..<messageEnd]))
+    return Data(data[messageStart..<messageEnd])
+}
+
+func parseEmlx(data: Data) throws -> EmlxMessage {
+    return parseRFC822(data: try emlxMessageData(data))
 }
 
 func parseRFC822(data: Data) -> EmlxMessage {

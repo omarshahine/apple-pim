@@ -95,11 +95,14 @@ struct SQLiteEngine {
 
     // MARK: - Commands
 
+    /// Best-effort account inventory derived from local mailboxes. The JXA
+    /// path is authoritative (it also knows `enabled` state and accounts with
+    /// no local mailboxes); this serves `--engine sqlite` and Mail-closed auto.
     func accounts() -> [String: Any] {
         let names = index.accountNames()
         var seen: Set<String> = []
         var result: [[String: Any]] = []
-        for mailbox in allMailboxes where mailbox.scheme == "imap" || mailbox.scheme == "ews" {
+        for mailbox in allMailboxes where mailbox.scheme != "local" && mailbox.scheme != "file" {
             guard seen.insert(mailbox.accountUUID).inserted else { continue }
             let entry = names[mailbox.accountUUID]
             result.append([
@@ -178,13 +181,32 @@ struct SQLiteEngine {
         ]
     }
 
-    func get(id: String, includeSource: Bool) throws -> [String: Any] {
+    func get(id: String, includeSource: Bool,
+             mailboxHint: String? = nil, accountHint: String? = nil) throws -> [String: Any] {
         var rows: [[String: Any]] = []
         for candidate in messageIDCandidates(id) {
             rows = try index.findMessage(messageIDHeader: candidate)
             if !rows.isEmpty { break }
         }
-        guard let row = rows.first, let rowid = row["rowid"] as? Int64 else {
+        // A Message-ID can have copies in several mailboxes; prefer the copy
+        // matching the caller's hints (like the JXA path's prioritized lookup),
+        // keeping newest-first order among equally-good matches.
+        var bestRow = rows.first
+        if mailboxHint != nil || accountHint != nil {
+            let hintedAccountUUIDs = accountHint.flatMap { try? index.accountUUIDs(matching: $0) } ?? []
+            var bestScore = -1
+            for candidate in rows {
+                guard let mailbox = mailboxRef(forURL: candidate["mailbox_url"] as? String) else { continue }
+                var score = 0
+                if let hint = mailboxHint, mailbox.name.caseInsensitiveCompare(hint) == .orderedSame { score += 2 }
+                if hintedAccountUUIDs.contains(mailbox.accountUUID) { score += 1 }
+                if score > bestScore {
+                    bestScore = score
+                    bestRow = candidate
+                }
+            }
+        }
+        guard let row = bestRow, let rowid = row["rowid"] as? Int64 else {
             throw EnvelopeIndexError.notFound("Message not found: \(id)")
         }
         guard let mailbox = mailboxRef(forURL: row["mailbox_url"] as? String),
@@ -211,11 +233,10 @@ struct SQLiteEngine {
         }
         message["attachmentCount"] = attachmentNames.count
 
-        if includeSource, let raw = try? Data(contentsOf: emlxURL) {
-            // Skip the byte-count line; the remainder starts with the RFC 822 source.
-            if let newline = raw.firstIndex(of: 0x0A) {
-                message["source"] = decodeText(Data(raw[raw.index(after: newline)...]), charset: "utf-8")
-            }
+        if includeSource, let raw = try? Data(contentsOf: emlxURL),
+           let payload = try? emlxMessageData(raw) {
+            // Byte-counted RFC 822 payload only — excludes Mail's plist trailer.
+            message["source"] = decodeText(payload, charset: "utf-8")
         }
 
         return ["success": true, "message": message, "engine": "sqlite"]

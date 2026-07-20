@@ -32,6 +32,13 @@ final class EmlxReaderTests: XCTestCase {
         XCTAssertFalse(msg.content.contains("plist"))
     }
 
+    func testEmlxMessageDataExcludesTrailer() throws {
+        // Raw source extraction must stop at the byte count, not the file end.
+        let message = "A: b\r\n\r\nBody"
+        let payload = try emlxMessageData(emlxData(message: message))
+        XCTAssertEqual(String(data: payload, encoding: .utf8), message)
+    }
+
     // MARK: - Headers
 
     func testHeaderUnfolding() {
