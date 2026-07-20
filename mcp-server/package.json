@@ -1,6 +1,6 @@
 {
   "name": "apple-pim-mcp",
-  "version": "3.9.1",
+  "version": "3.10.0",
   "description": "MCP server for Apple PIM, a Personal Information Manager for Calendar, Reminders, Contacts, and Mail",
   "type": "module",
   "main": "dist/server.js",

@@ -7,14 +7,15 @@
 
 **GitHub**: [github.com/omarshahine/apple-pim](https://github.com/omarshahine/apple-pim)
 
-Native macOS integration for Calendar, Reminders, Contacts, and Mail using EventKit, Contacts, and JXA frameworks. Works with **Claude Code** (via MCP) and **OpenClaw** (via native tool registration).
+Native macOS integration for Calendar, Reminders, Contacts, and Mail using EventKit, Contacts, SQLite, and JXA frameworks. Works with **Claude Code** (via MCP) and **OpenClaw** (via native tool registration).
 
 ## Features
 
 - **Calendar Management**: List calendars, create/read/update/delete events, search by date/title, attendee support (add/replace attendees via CalDAV invitation emails)
 - **Reminder Management**: List reminder lists, create/complete/update/delete reminders, search
 - **Contact Management**: List groups, create/read/update/delete contacts, search by name/email/phone, birthday support (with or without year)
-- **Mail Integration**: List accounts/mailboxes, read/search/send/reply/move/delete messages, update flags, attachment support (metadata, save-to-disk, send/reply with attachments), verify sender authentication (via Apple Mail.app + JXA/AppleScript)
+- **Mail Integration**: List accounts/mailboxes, read/search/send/reply/move/delete messages, update flags, attachment support (metadata, save-to-disk, send/reply with attachments), verify sender authentication
+- **Fast Local Mail Reads**: Read commands query Apple Mail's local Envelope Index (SQLite) directly — 10–200× faster than AppleScript automation, and they work even when Mail.app is closed. Automatic fallback to JXA when Full Disk Access isn't granted. See [Direct SQLite read path](#direct-sqlite-read-path---engine-sqlite)
 - **Recurrence Rules**: Create recurring events and reminders (daily, weekly, monthly, yearly)
 - **Batch Operations**: Create multiple events or reminders in a single efficient transaction
 - **Per-Domain Control**: Enable or disable entire domains (calendars, reminders, contacts, mail) independently
@@ -26,7 +27,7 @@ Native macOS integration for Calendar, Reminders, Contacts, and Mail using Event
 - macOS 13.0 or later
 - Swift 5.9 or later (comes with Xcode 15+)
 - Node.js 18+ (for MCP server or OpenClaw plugin)
-- **Mail.app** must be running for mail commands (it is not launched automatically)
+- **Mail.app** must be running for mail mutations, sends, and content search (it is not launched automatically). Mail *reads* use the local SQLite index and work with Mail.app closed.
 
 ## Installation
 
