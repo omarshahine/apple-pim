@@ -1,5 +1,17 @@
 # Mail.app JXA Reference
 
+## Two engines: SQLite (reads) and JXA (everything else)
+
+Read commands (`accounts`, `mailboxes`, `messages`, `get`, `search`) default to
+`--engine auto`: they query Apple Mail's **Envelope Index** SQLite database
+(`~/Library/Mail/V*/MailData/Envelope Index`, opened strictly read-only) and
+read bodies from on-disk `.emlx` files. This is ~10–200× faster than JXA and
+works with Mail.app closed, but requires Full Disk Access. When the database
+isn't readable — or for `--field content` search, or when a body's `.emlx`
+hasn't been downloaded — the command silently falls back to JXA. Check
+`auth-status` → `envelopeIndex.readable` to see which path is active.
+Mutations (`update`, `move`, `delete`, `send`, `reply`) are always JXA/AppleScript.
+
 ## Why JXA?
 
 Mail.app has no native Swift framework (unlike EventKit/Contacts). JXA (JavaScript for Automation) provides:
@@ -9,9 +21,10 @@ Mail.app has no native Swift framework (unlike EventKit/Contacts). JXA (JavaScri
 
 The Swift CLI (`mail-cli`) wraps JXA via `Process` calling `osascript -l JavaScript`.
 
-## Key Constraint
+## Key Constraint (JXA engine)
 
-**Mail.app must be running.** Unlike EventKit/Contacts which work headlessly, Mail.app is a GUI application. The CLI checks `NSWorkspace.shared.runningApplications` upfront and returns a clear error.
+**Mail.app must be running** for the JXA engine (all mutations, content search,
+and reads when Full Disk Access is missing). Unlike EventKit/Contacts which work headlessly, Mail.app is a GUI application. The CLI checks `NSWorkspace.shared.runningApplications` upfront and returns a clear error.
 
 ## Message Properties
 
@@ -59,8 +72,8 @@ Mail.app requires Automation permission:
 
 | Capability | mail-cli (local) | Fastmail MCP (cloud) |
 |------------|-----------------|---------------------|
-| Read messages | Yes | Yes |
-| Search | Local index | Server-side |
+| Read messages | Yes (ms via SQLite) | Yes (server round-trip) |
+| Search | Local index (ms) | Server-side |
 | Update flags | Yes | Yes |
 | Move/delete | Yes | Yes |
 | Send email | No | Yes |

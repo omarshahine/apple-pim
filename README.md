@@ -105,6 +105,11 @@ Optionally, configure the binary location if the CLIs are not on PATH:
 - System Settings > Privacy & Security > Automation
 - Allow Terminal (or your IDE) to control **Mail.app**
 
+**Full Disk Access (optional, recommended)**: Mail *read* commands use a fast
+direct-SQLite path (see "Direct SQLite read path" below) that requires Full
+Disk Access for Terminal (or the MCP host). Without it, reads silently fall
+back to the slower Mail.app Automation path.
+
 ### Development Installation
 
 ```bash
@@ -403,6 +408,26 @@ mail-cli smtp-send --to "user@example.com" --subject "Hello" \
 
 calendar-cli create --title "Meeting" --start "tomorrow 2pm" --attendees '[{"email":"a@example.com"}]'
 ```
+
+### Direct SQLite read path (`--engine sqlite`)
+
+Read commands (`accounts`, `mailboxes`, `messages`, `get`, `search`) default to
+`--engine auto`: they read Apple Mail's local **Envelope Index** SQLite database
+(`~/Library/Mail/V*/MailData/Envelope Index`) directly, falling back to JXA if
+the database isn't readable. Message bodies come straight from the on-disk
+`.emlx` files. This is ~10–200× faster than the JXA path (subject search across
+an 80k-message mailbox: **~80ms vs ~15s**) and works even when Mail.app is not
+running. Mutations (`update`, `move`, `delete`, `send`, `reply`) always go
+through Mail.app.
+
+- The database is only ever opened **read-only** (`SQLITE_OPEN_READONLY` +
+  `PRAGMA query_only`); the fast path never writes to Mail's data.
+- Requires **Full Disk Access** for the invoking process (Terminal or the MCP
+  host). Without it, `--engine auto` silently uses JXA — check
+  `mail-cli auth-status` (`envelopeIndex.readable`) to see which path you get.
+- `--field content` search is not indexed locally and always uses JXA.
+- Force a specific path with `--engine sqlite` or `--engine jxa`; responses
+  from the fast path include `"engine": "sqlite"`.
 
 ### Direct SMTP path (`mail-cli smtp-send`)
 

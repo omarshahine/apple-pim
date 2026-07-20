@@ -18,7 +18,7 @@ metadata:
 Apple provides frameworks and scripting interfaces for personal information management:
 - **EventKit**: Calendars and Reminders
 - **Contacts**: Address book management
-- **Mail.app**: Local email via JXA (JavaScript for Automation) and AppleScript
+- **Mail.app**: Local email — reads via direct SQLite (Envelope Index, milliseconds), mutations via JXA/AppleScript
 
 EventKit and Contacts require explicit user permission via privacy prompts. Mail.app requires Automation permission and must be running.
 
@@ -38,7 +38,8 @@ Each PIM domain requires separate macOS authorization:
 | Calendars | EventKit | Privacy & Security > Calendars |
 | Reminders | EventKit | Privacy & Security > Reminders |
 | Contacts | Contacts | Privacy & Security > Contacts |
-| Mail | Automation (JXA) | Privacy & Security > Automation |
+| Mail (mutations) | Automation (JXA) | Privacy & Security > Automation |
+| Mail (fast reads) | Full Disk Access | Privacy & Security > Full Disk Access |
 
 ### Authorization States
 
@@ -202,7 +203,7 @@ When reading events/reminders, the `recurrence` array includes:
 4. **Request minimum necessary keys** for performance
 
 ### Mail Management
-1. **Mail.app must be running** for all operations
+1. **Mail.app must be running** for mutations, sends, and `content` search (reads use the direct SQLite path and work with Mail.app closed when Full Disk Access is granted)
 2. **Use batch operations** (`mail` with action `batch_update`, `batch_delete`) for inbox triage
 3. **Use filters** (unread, flagged) for efficient message listing
 4. **Message IDs are RFC 2822** — stable across mailbox moves

@@ -235,7 +235,7 @@ Durable memory promoted from `~/.claude/projects/-Users-omarshahine-GitHub-apple
 - Root `package.json` has shared deps (`mailparser`, `turndown`) for `lib/` resolution
 - Agent at `agents/pim-assistant.md`, skill at `skills/apple-pim/SKILL.md`
 - CalendarCLI and ReminderCLI share identical helper functions (ruleToDict, parseRecurrenceRule, etc) - changes to one must be mirrored in the other
-- MailCLI uses JXA (JavaScript for Automation) via `osascript -l JavaScript` — no native Swift framework for Mail.app
+- MailCLI reads (accounts/mailboxes/messages/get/search) default to a direct read-only SQLite engine over Mail's Envelope Index (`EnvelopeIndex.swift`/`SQLiteEngine.swift`, needs Full Disk Access, works with Mail closed) with silent JXA fallback; mutations/sends and `content` search use JXA/AppleScript via `osascript -l JavaScript` — no native Swift framework for Mail.app
 
 ## Key Patterns
 - `RecurrenceJSON.frequency` is `String?` (optional) — `nil` or `"none"` means remove recurrence

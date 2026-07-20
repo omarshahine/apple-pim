@@ -42,12 +42,25 @@ struct AuthStatus: ParsableCommand {
     func run() throws {
         let status: String
 
+        // Envelope Index (SQLite fast path) readability — independent of
+        // Mail.app automation permission; reflects Full Disk Access.
+        let envelopeIndex: [String: Any]
+        if let engine = try? SQLiteEngine() {
+            envelopeIndex = engine.authStatusInfo()
+        } else {
+            envelopeIndex = ["readable": false]
+        }
+
         // Check if Mail.app is running first
         let running = NSWorkspace.shared.runningApplications.contains {
             $0.bundleIdentifier == "com.apple.mail"
         }
         guard running else {
-            let result: [String: Any] = ["authorization": "unavailable", "message": "Mail.app is not running"]
+            let result: [String: Any] = [
+                "authorization": "unavailable",
+                "message": "Mail.app is not running",
+                "envelopeIndex": envelopeIndex,
+            ]
             let data = try JSONSerialization.data(withJSONObject: result)
             print(String(data: data, encoding: .utf8)!)
             return
@@ -75,7 +88,7 @@ struct AuthStatus: ParsableCommand {
             status = "error"
         }
 
-        let result: [String: Any] = ["authorization": status]
+        let result: [String: Any] = ["authorization": status, "envelopeIndex": envelopeIndex]
         let data = try JSONSerialization.data(withJSONObject: result)
         print(String(data: data, encoding: .utf8)!)
     }
@@ -109,6 +122,15 @@ func checkMailEnabled(config: PIMConfiguration) throws {
     guard config.mail.enabled else {
         throw CLIError.accessDenied("Mail access is disabled by PIM configuration")
     }
+}
+
+/// In `--engine sqlite` mode a fast-path failure is fatal; in auto mode the
+/// caller falls through to JXA.
+func rethrowIfForcedSQLite(_ engine: EngineChoice, _ error: Error) throws {
+    guard engine == .sqlite else { return }
+    let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
+    throw CLIError.accessDenied(
+        "SQLite engine failed: \(detail) (retry with --engine auto or jxa, or grant Full Disk Access)")
 }
 
 func outputJSON(_ value: Any) {
@@ -600,10 +622,23 @@ struct ListAccounts: AsyncParsableCommand {
 
     @OptionGroup var pimOptions: PIMOptions
 
+    @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
     func run() async throws {
-        try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
+
+        if engine != .jxa {
+            do {
+                outputJSON(try SQLiteEngine().accounts())
+                return
+            } catch {
+                try rethrowIfForcedSQLite(engine, error)
+            }
+        }
+
+        try ensureMailRunning()
 
         let script = """
         const Mail = Application("Mail");
@@ -637,10 +672,23 @@ struct ListMailboxes: AsyncParsableCommand {
     @Option(name: .long, help: "Filter by account name")
     var account: String?
 
+    @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
     func run() async throws {
-        try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
+
+        if engine != .jxa {
+            do {
+                outputJSON(try SQLiteEngine().mailboxes(account: account))
+                return
+            } catch {
+                try rethrowIfForcedSQLite(engine, error)
+            }
+        }
+
+        try ensureMailRunning()
 
         let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
 
@@ -713,10 +761,24 @@ struct ListMessages: AsyncParsableCommand {
     @Option(name: .long, help: "Filter: unread, flagged, or all (default: all)")
     var filter: String?
 
+    @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
     func run() async throws {
-        try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
+
+        if engine != .jxa {
+            do {
+                outputJSON(try SQLiteEngine().messages(
+                    mailbox: mailbox, account: account, limit: limit, filter: filter))
+                return
+            } catch {
+                try rethrowIfForcedSQLite(engine, error)
+            }
+        }
+
+        try ensureMailRunning()
 
         let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
         let mailboxName = escapeForJXA(mailbox)
@@ -829,10 +891,23 @@ struct GetMessage: AsyncParsableCommand {
     @Flag(name: .long, help: "Include raw RFC 2822 source in the response")
     var includeSource: Bool = false
 
+    @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
     func run() async throws {
-        try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
+
+        if engine != .jxa {
+            do {
+                outputJSON(try SQLiteEngine().get(id: id, includeSource: includeSource))
+                return
+            } catch {
+                try rethrowIfForcedSQLite(engine, error)
+            }
+        }
+
+        try ensureMailRunning()
 
         let findHelper = findMessageJXA(targetId: id, mailbox: mailbox, account: account)
 
@@ -945,10 +1020,25 @@ struct SearchMessages: AsyncParsableCommand {
     @Option(name: .long, help: "Only messages received on or after this date (ISO 8601: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ)")
     var since: String?
 
+    @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
     func run() async throws {
-        try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
+
+        if engine != .jxa {
+            do {
+                outputJSON(try SQLiteEngine().search(
+                    query: query, field: field, mailbox: mailbox, account: account,
+                    limit: limit, since: since))
+                return
+            } catch {
+                try rethrowIfForcedSQLite(engine, error)
+            }
+        }
+
+        try ensureMailRunning()
 
         let escapedQuery = escapeForJXA(query.lowercased())
         let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
