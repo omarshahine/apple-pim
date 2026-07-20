@@ -233,17 +233,20 @@ final class EnvelopeIndex {
             binds.append(.real(since))
         }
         if let text = filter.queryText, !text.isEmpty {
-            let like = "%\(text)%"
+            let like = "%\(escapeLikePattern(text))%"
+            // Match the full visible subject: Mail stores "Re:"/"Fwd:" prefixes
+            // in messages.subject_prefix, separate from subjects.subject.
+            let subjectExpr = "(COALESCE(m.subject_prefix, '') || COALESCE(s.subject, ''))"
             switch filter.queryField {
             case "subject":
-                conditions.append("s.subject LIKE ?")
+                conditions.append("\(subjectExpr) LIKE ? ESCAPE '\\'")
                 binds.append(.text(like))
             case "sender":
-                conditions.append("(a.address LIKE ? OR a.comment LIKE ?)")
+                conditions.append("(a.address LIKE ? ESCAPE '\\' OR a.comment LIKE ? ESCAPE '\\')")
                 binds.append(.text(like))
                 binds.append(.text(like))
             default: // "all": subject OR sender, matching the JXA predicate
-                conditions.append("(s.subject LIKE ? OR a.address LIKE ? OR a.comment LIKE ?)")
+                conditions.append("(\(subjectExpr) LIKE ? ESCAPE '\\' OR a.address LIKE ? ESCAPE '\\' OR a.comment LIKE ? ESCAPE '\\')")
                 binds.append(.text(like))
                 binds.append(.text(like))
                 binds.append(.text(like))

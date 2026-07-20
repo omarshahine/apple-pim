@@ -58,12 +58,28 @@ func isoStringFromEpoch(_ epoch: Double) -> String {
     return formatter.string(from: Date(timeIntervalSince1970: epoch))
 }
 
+/// Coalesce a SQLite column value to epoch seconds. Date columns in the
+/// Envelope Index may surface as INTEGER or REAL depending on what Mail wrote.
+func epochValue(_ value: Any?) -> Double? {
+    if let double = value as? Double { return double }
+    if let int = value as? Int64 { return Double(int) }
+    return nil
+}
+
 /// Parse an ISO 8601 string (date-only or full) to epoch seconds for SQL binding.
 func epochFromISO8601(_ input: String) -> Double? {
     guard let iso = parseISO8601ForJXA(input) else { return nil }
     let formatter = ISO8601DateFormatter()
     formatter.formatOptions = [.withInternetDateTime]
     return formatter.date(from: iso)?.timeIntervalSince1970
+}
+
+/// Escape SQL LIKE metacharacters so user query text matches literally.
+/// Pair with `ESCAPE '\'` in the LIKE clause.
+func escapeLikePattern(_ text: String) -> String {
+    text.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "%", with: "\\%")
+        .replacingOccurrences(of: "_", with: "\\_")
 }
 
 /// Mailbox names Mail.app treats as junk destinations.

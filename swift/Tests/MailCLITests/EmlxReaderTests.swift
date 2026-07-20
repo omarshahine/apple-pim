@@ -32,6 +32,13 @@ final class EmlxReaderTests: XCTestCase {
         XCTAssertFalse(msg.content.contains("plist"))
     }
 
+    func testEmlxMessageDataExcludesTrailer() throws {
+        // Raw source extraction must stop at the byte count, not the file end.
+        let message = "A: b\r\n\r\nBody"
+        let payload = try emlxMessageData(emlxData(message: message))
+        XCTAssertEqual(String(data: payload, encoding: .utf8), message)
+    }
+
     // MARK: - Headers
 
     func testHeaderUnfolding() {
@@ -79,6 +86,22 @@ final class EmlxReaderTests: XCTestCase {
         """
         let msg = try parseEmlx(data: emlxData(message: raw))
         XCTAssertEqual(msg.content, "Hello there")
+    }
+
+    func testMultipartBoundaryOnlyMatchesAtLineStart() throws {
+        // RFC 2046: a body mentioning the boundary mid-line must not split there.
+        let raw = """
+        Content-Type: multipart/alternative; boundary="BOUND"\r
+        \r
+        --BOUND\r
+        Content-Type: text/plain; charset=utf-8\r
+        \r
+        pass the flag --BOUND to the tool\r
+        --BOUND--\r
+        """
+        let msg = try parseEmlx(data: emlxData(message: raw))
+        XCTAssertEqual(msg.content.trimmingCharacters(in: .whitespacesAndNewlines),
+                       "pass the flag --BOUND to the tool")
     }
 
     // MARK: - Transfer encodings

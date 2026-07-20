@@ -36,7 +36,9 @@ func readEmlx(at url: URL) throws -> EmlxMessage {
     return try parseEmlx(data: data)
 }
 
-func parseEmlx(data: Data) throws -> EmlxMessage {
+/// The byte-counted RFC 822 payload of an .emlx file (excludes the first line
+/// and the XML plist trailer that follows the message).
+func emlxMessageData(_ data: Data) throws -> Data {
     // First line is the byte count of the RFC 822 payload.
     guard let newline = data.firstIndex(of: 0x0A) else {
         throw EmlxError.malformed("Missing byte-count line")
@@ -48,7 +50,11 @@ func parseEmlx(data: Data) throws -> EmlxMessage {
     let messageStart = data.index(after: newline)
     let messageEnd = min(data.index(messageStart, offsetBy: byteCount, limitedBy: data.endIndex) ?? data.endIndex,
                          data.endIndex)
-    return parseRFC822(data: Data(data[messageStart..<messageEnd]))
+    return Data(data[messageStart..<messageEnd])
+}
+
+func parseEmlx(data: Data) throws -> EmlxMessage {
+    return parseRFC822(data: try emlxMessageData(data))
 }
 
 func parseRFC822(data: Data) -> EmlxMessage {
@@ -157,24 +163,38 @@ private func findPart(in parts: [Data], matching type: String) -> String? {
 }
 
 func splitMultipart(_ data: Data, boundary: String) -> [Data] {
-    guard let delimiter = "--\(boundary)".data(using: .utf8) else { return [] }
-    var parts: [Data] = []
+    // RFC 2046 §5.1.1: a boundary delimiter only counts at the start of a
+    // line. Searching for the bare delimiter would mis-split bodies that
+    // mention the boundary string mid-line.
+    guard let bare = "--\(boundary)".data(using: .utf8),
+          let anchored = "\n--\(boundary)".data(using: .utf8) else { return [] }
+
+    // Delimiter occurrences as ranges covering "--boundary" (line start only).
+    var delimiters: [Range<Data.Index>] = []
+    if data.starts(with: bare) {
+        delimiters.append(data.startIndex..<data.index(data.startIndex, offsetBy: bare.count))
+    }
     var searchStart = data.startIndex
+    while let range = data.range(of: anchored, in: searchStart..<data.endIndex) {
+        delimiters.append(data.index(after: range.lowerBound)..<range.upperBound)
+        searchStart = range.upperBound
+    }
+
+    var parts: [Data] = []
     var previousPartStart: Data.Index?
-    while let range = data.range(of: delimiter, in: searchStart..<data.endIndex) {
+    for delimiter in delimiters {
         if let partStart = previousPartStart {
-            parts.append(trimPartData(data.subdata(in: partStart..<range.lowerBound)))
+            parts.append(trimPartData(data.subdata(in: partStart..<delimiter.lowerBound)))
         }
-        // Move past the delimiter line (skip trailing -- or CRLF).
-        var cursor = range.upperBound
+        // Move past the delimiter line (skip trailing -- of the closing
+        // delimiter, then the line terminator).
+        var cursor = delimiter.upperBound
         while cursor < data.endIndex, data[cursor] == 0x2D { cursor = data.index(after: cursor) } // '-'
         while cursor < data.endIndex, data[cursor] == 0x0D || data[cursor] == 0x0A {
             cursor = data.index(after: cursor)
             if data[data.index(before: cursor)] == 0x0A { break }
         }
         previousPartStart = cursor
-        searchStart = cursor
-        if cursor >= data.endIndex { break }
     }
     return parts
 }

@@ -629,7 +629,11 @@ struct ListAccounts: AsyncParsableCommand {
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
-        if engine != .jxa {
+        // Unlike the other read commands, `accounts` prefers JXA in auto mode:
+        // Mail.app is the authority on the account inventory (including
+        // `enabled` state and accounts with no local mailboxes). SQLite serves
+        // it only when forced or when Mail.app is unavailable.
+        if engine == .sqlite {
             do {
                 outputJSON(try SQLiteEngine().accounts())
                 return
@@ -638,7 +642,15 @@ struct ListAccounts: AsyncParsableCommand {
             }
         }
 
-        try ensureMailRunning()
+        do {
+            try ensureMailRunning()
+        } catch where engine == .auto {
+            if let result = try? SQLiteEngine().accounts() {
+                outputJSON(result)
+                return
+            }
+            throw error
+        }
 
         let script = """
         const Mail = Application("Mail");
@@ -900,7 +912,9 @@ struct GetMessage: AsyncParsableCommand {
 
         if engine != .jxa {
             do {
-                outputJSON(try SQLiteEngine().get(id: id, includeSource: includeSource))
+                outputJSON(try SQLiteEngine().get(
+                    id: id, includeSource: includeSource,
+                    mailboxHint: mailbox, accountHint: account))
                 return
             } catch {
                 try rethrowIfForcedSQLite(engine, error)
