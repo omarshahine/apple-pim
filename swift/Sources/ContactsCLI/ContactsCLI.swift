@@ -2,6 +2,7 @@ import ArgumentParser
 import Contacts
 import Foundation
 import PIMConfig
+import Security
 
 @main
 struct ContactsCLI: AsyncParsableCommand {
@@ -263,6 +264,48 @@ func parsePhones(_ json: String) throws -> [CNLabeledValue<CNPhoneNumber>] {
     }
 }
 
+/// Build a replacement multivalue array that reuses the contact's existing
+/// CNLabeledValue instances (and thus their stable identifiers) for entries
+/// whose value is unchanged.
+///
+/// Wholesale replacement with freshly constructed CNLabeledValues forces the
+/// store to delete and recreate every entry. On some cards (observed with
+/// linked and/or iCloud-synced contacts) rewriting the pre-existing entries
+/// fails deterministically with CoreData 134092 ("Unhandled error occurred
+/// during faulting") — and a failed save can even partially apply, leaving
+/// duplicated or dropped entries. Reusing identifiers keeps the save diff to
+/// genuine adds/removes/label edits, matching how Contacts.app edits cards.
+func mergeLabeledStrings(
+    existing: [CNLabeledValue<NSString>],
+    desired: [CNLabeledValue<NSString>]
+) -> [CNLabeledValue<NSString>] {
+    var pool = existing
+    return desired.map { want in
+        guard let idx = pool.firstIndex(where: {
+            ($0.value as String).caseInsensitiveCompare(want.value as String) == .orderedSame
+        }) else {
+            return want
+        }
+        let found = pool.remove(at: idx)
+        return found.label == want.label ? found : found.settingLabel(want.label)
+    }
+}
+
+/// Phone-number variant of `mergeLabeledStrings` (see rationale there).
+func mergeLabeledPhones(
+    existing: [CNLabeledValue<CNPhoneNumber>],
+    desired: [CNLabeledValue<CNPhoneNumber>]
+) -> [CNLabeledValue<CNPhoneNumber>] {
+    var pool = existing
+    return desired.map { want in
+        guard let idx = pool.firstIndex(where: { $0.value.stringValue == want.value.stringValue }) else {
+            return want
+        }
+        let found = pool.remove(at: idx)
+        return found.label == want.label ? found : found.settingLabel(want.label)
+    }
+}
+
 func outputJSON(_ value: Any) {
     if let data = try? JSONSerialization.data(withJSONObject: value, options: [.prettyPrinted, .sortedKeys]),
        let string = String(data: data, encoding: .utf8) {
@@ -282,7 +325,81 @@ func isMergeConflict(_ error: Error) -> Bool {
     return false
 }
 
-let keysToFetch: [CNKeyDescriptor] = [
+/// Fetch a single contact by identifier for mutation.
+///
+/// `unified: true` returns the unified contact (merged view across linked cards).
+/// `unified: false` returns the raw source card, which is the only view that can be
+/// saved reliably when the contact is linked: executing a CNSaveRequest against a
+/// unified snapshot whose multivalue entries (emails/phones/addresses) belong to a
+/// *different* linked card fails deterministically with CoreData 134092
+/// ("Unhandled error occurred during faulting") and can even partially apply.
+func fetchContactForMutation(id: String, unified: Bool) throws -> CNContact? {
+    if unified {
+        let predicate = CNContact.predicateForContacts(withIdentifiers: [id])
+        return try contactStore.unifiedContacts(matching: predicate, keysToFetch: keysToFetch).first
+    }
+    let request = CNContactFetchRequest(keysToFetch: keysToFetch)
+    request.predicate = CNContact.predicateForContacts(withIdentifiers: [id])
+    request.unifyResults = false
+    request.mutableObjects = false
+    var fetched: CNContact?
+    try contactStore.enumerateContacts(with: request) { c, stop in
+        fetched = c
+        stop.pointee = true
+    }
+    return fetched
+}
+
+/// Escape a string for embedding inside a double-quoted AppleScript literal.
+func appleScriptEscaped(_ s: String) -> String {
+    s.replacingOccurrences(of: "\\", with: "\\\\")
+        .replacingOccurrences(of: "\"", with: "\\\"")
+}
+
+/// Run an AppleScript via /usr/bin/osascript. Throws CLIError on failure.
+func runAppleScript(_ script: String) throws {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    proc.arguments = ["-"]
+    let stdin = Pipe()
+    let stderrPipe = Pipe()
+    proc.standardInput = stdin
+    proc.standardOutput = Pipe()
+    proc.standardError = stderrPipe
+    try proc.run()
+    stdin.fileHandleForWriting.write(script.data(using: .utf8)!)
+    stdin.fileHandleForWriting.closeFile()
+    proc.waitUntilExit()
+    if proc.terminationStatus != 0 {
+        let err = String(
+            data: stderrPipe.fileHandleForReading.readDataToEndOfFile(),
+            encoding: .utf8
+        ) ?? ""
+        throw CLIError.accessDenied(
+            "Contacts.app fallback failed (osascript exit \(proc.terminationStatus)): \(err.trimmingCharacters(in: .whitespacesAndNewlines))"
+        )
+    }
+}
+
+/// Whether this process holds com.apple.developer.contacts.notes.
+///
+/// Since macOS 13, Contacts notes are gated behind that entitlement. Requesting
+/// CNContactNoteKey without it does NOT merely yield empty notes: any
+/// CNSaveRequest built from a contact fetched that way fails with CoreData
+/// 134092 ("Unhandled error occurred during faulting") whenever the card
+/// actually has a note, because the store tries to fault the unauthorized note
+/// property while writing — and the failed save can partially apply. So the
+/// note key must only be requested when the entitlement is present.
+let hasNotesEntitlement: Bool = {
+    guard let task = SecTaskCreateFromSelf(nil) else { return false }
+    let value = SecTaskCopyValueForEntitlement(
+        task, "com.apple.developer.contacts.notes" as CFString, nil
+    )
+    return (value as? Bool) == true
+}()
+
+let keysToFetch: [CNKeyDescriptor] = {
+    var keys: [CNKeyDescriptor] = [
     CNContactIdentifierKey as CNKeyDescriptor,
     CNContactGivenNameKey as CNKeyDescriptor,
     CNContactFamilyNameKey as CNKeyDescriptor,
@@ -298,7 +415,6 @@ let keysToFetch: [CNKeyDescriptor] = [
     CNContactPostalAddressesKey as CNKeyDescriptor,
     CNContactUrlAddressesKey as CNKeyDescriptor,
     CNContactBirthdayKey as CNKeyDescriptor,
-    CNContactNoteKey as CNKeyDescriptor,
     CNContactImageDataAvailableKey as CNKeyDescriptor,
     CNContactThumbnailImageDataKey as CNKeyDescriptor,
     CNContactImageDataKey as CNKeyDescriptor,
@@ -314,7 +430,12 @@ let keysToFetch: [CNKeyDescriptor] = [
     CNContactNonGregorianBirthdayKey as CNKeyDescriptor,
     CNContactDatesKey as CNKeyDescriptor,
     CNContactFormatter.descriptorForRequiredKeys(for: .fullName),
-]
+    ]
+    if hasNotesEntitlement {
+        keys.append(CNContactNoteKey as CNKeyDescriptor)
+    }
+    return keys
+}()
 
 func containerToDict(_ container: CNContainer) -> [String: Any] {
     let typeName: String
@@ -1258,10 +1379,16 @@ struct UpdateContact: AsyncParsableCommand {
             while true {
                 attempts += 1
 
-                let predicate = CNContact.predicateForContacts(withIdentifiers: [id])
-                let contacts = try contactStore.unifiedContacts(matching: predicate, keysToFetch: keysToFetch)
-
-                guard let existingContact = contacts.first else {
+                // First attempt edits the unified contact (the normal, historical
+                // behavior). If the save hits a merge conflict, retry against the
+                // raw source card instead: for linked contacts the unified save
+                // fails *deterministically* (CoreData 134092 while faulting
+                // multivalue entries owned by the other linked card), so
+                // re-fetching the unified view again can never succeed — and each
+                // failed unified save risks partially applying. The raw-card path
+                // matches Contacts.app behavior and the scopedContainers branch.
+                let unified = (attempts == 1)
+                guard let existingContact = try fetchContactForMutation(id: id, unified: unified) else {
                     throw CLIError.notFound("Contact not found: \(id)")
                 }
 
@@ -1275,12 +1402,21 @@ struct UpdateContact: AsyncParsableCommand {
                 do {
                     try contactStore.execute(saveRequest)
                 } catch {
-                    // CoreData 134092 = NSManagedObjectMergeError (iCloud sync conflict)
-                    // May appear at top level or nested in underlyingErrors
-                    if isMergeConflict(error) && attempts < maxAttempts {
-                        fputs("Warning: Merge conflict (attempt \(attempts)/\(maxAttempts)). Re-fetching and retrying...\n", stderr)
-                        try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-                        continue
+                    // CoreData 134092 = NSManagedObjectMergeError. Either a
+                    // transient iCloud sync conflict, or a deterministic
+                    // faulting failure when the card has a note and this
+                    // process lacks the notes entitlement. May appear at top
+                    // level or nested in underlyingErrors.
+                    if isMergeConflict(error) {
+                        if attempts < maxAttempts {
+                            fputs("Warning: Merge conflict (attempt \(attempts)/\(maxAttempts)). Re-fetching source card and retrying...\n", stderr)
+                            try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                            continue
+                        }
+                        if let result = try recoverViaContactsApp() {
+                            outputJSON(result)
+                            return
+                        }
                     }
                     throw error
                 }
@@ -1302,16 +1438,7 @@ struct UpdateContact: AsyncParsableCommand {
             while true {
                 attempts += 1
 
-                let request = CNContactFetchRequest(keysToFetch: keysToFetch)
-                request.predicate = CNContact.predicateForContacts(withIdentifiers: [id])
-                request.unifyResults = false
-                request.mutableObjects = false
-                var fetched: CNContact?
-                try contactStore.enumerateContacts(with: request) { c, stop in
-                    fetched = c
-                    stop.pointee = true
-                }
-                guard let existingContact = fetched else {
+                guard let existingContact = try fetchContactForMutation(id: id, unified: false) else {
                     throw CLIError.notFound("Contact not found: \(id)")
                 }
 
@@ -1324,12 +1451,21 @@ struct UpdateContact: AsyncParsableCommand {
                 do {
                     try contactStore.execute(saveRequest)
                 } catch {
-                    // CoreData 134092 = NSManagedObjectMergeError (iCloud sync conflict)
-                    // May appear at top level or nested in underlyingErrors
-                    if isMergeConflict(error) && attempts < maxAttempts {
-                        fputs("Warning: Merge conflict (attempt \(attempts)/\(maxAttempts)). Re-fetching and retrying...\n", stderr)
-                        try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
-                        continue
+                    // CoreData 134092 = NSManagedObjectMergeError. Either a
+                    // transient iCloud sync conflict, or a deterministic
+                    // faulting failure when the card has a note and this
+                    // process lacks the notes entitlement. May appear at top
+                    // level or nested in underlyingErrors.
+                    if isMergeConflict(error) {
+                        if attempts < maxAttempts {
+                            fputs("Warning: Merge conflict (attempt \(attempts)/\(maxAttempts)). Re-fetching and retrying...\n", stderr)
+                            try await Task.sleep(nanoseconds: 500_000_000) // 0.5s
+                            continue
+                        }
+                        if let result = try recoverViaContactsApp() {
+                            outputJSON(result)
+                            return
+                        }
                     }
                     throw error
                 }
@@ -1344,7 +1480,135 @@ struct UpdateContact: AsyncParsableCommand {
         }
     }
 
-    private func applyContactMutations(to contact: CNMutableContact) throws {
+    /// True when this update touches emails or phones (the multivalue fields
+    /// covered by the Contacts.app fallback).
+    private var hasCommunicationMutations: Bool {
+        emails != nil || phones != nil || email != nil || phone != nil
+    }
+
+    /// True when this update touches anything OTHER than emails/phones.
+    private var hasNonCommunicationMutations: Bool {
+        firstName != nil || lastName != nil || middleName != nil
+            || namePrefix != nil || nameSuffix != nil || nickname != nil
+            || previousFamilyName != nil || phoneticGivenName != nil
+            || phoneticMiddleName != nil || phoneticFamilyName != nil
+            || phoneticOrganizationName != nil || organization != nil
+            || jobTitle != nil || department != nil || contactType != nil
+            || addresses != nil || urls != nil || socialProfiles != nil
+            || instantMessages != nil || relations != nil || birthday != nil
+            || dates != nil || notes != nil
+    }
+
+    /// Apply email/phone changes through Contacts.app (AppleScript).
+    ///
+    /// Processes without the com.apple.developer.contacts.notes entitlement
+    /// cannot execute a CNSaveRequest that touches multivalue fields on a card
+    /// that has a note: the store faults the unauthorized note property during
+    /// the write and fails with CoreData 134092 — deterministically, and
+    /// sometimes after partially applying. Contacts.app is entitled, so routing
+    /// the same edit through it succeeds. Returns false when this update has no
+    /// email/phone changes for the fallback to apply.
+    private func applyCommunicationsViaContactsApp() throws -> Bool {
+        guard hasCommunicationMutations else { return false }
+
+        var lines: [String] = [
+            "tell application \"Contacts\"",
+            "set p to first person whose id is \"\(appleScriptEscaped(id))\"",
+        ]
+
+        if let emailsJSON = emails {
+            let items = try parseJSONArray(emailsJSON)
+            lines.append("repeat while (count of emails of p) > 0")
+            lines.append("delete email 1 of p")
+            lines.append("end repeat")
+            for item in items {
+                let value = appleScriptEscaped(item["value"] as? String ?? "")
+                let label = appleScriptEscaped(item["label"] as? String ?? "other")
+                lines.append(
+                    "make new email at end of emails of p with properties {label:\"\(label)\", value:\"\(value)\"}"
+                )
+            }
+        } else if let emailAddr = email {
+            let value = appleScriptEscaped(emailAddr)
+            lines.append("if (count of emails of p) > 0 then")
+            lines.append("set value of email 1 of p to \"\(value)\"")
+            lines.append("else")
+            lines.append(
+                "make new email at end of emails of p with properties {label:\"work\", value:\"\(value)\"}"
+            )
+            lines.append("end if")
+        }
+
+        if let phonesJSON = phones {
+            let items = try parseJSONArray(phonesJSON)
+            lines.append("repeat while (count of phones of p) > 0")
+            lines.append("delete phone 1 of p")
+            lines.append("end repeat")
+            for item in items {
+                let value = appleScriptEscaped(item["value"] as? String ?? "")
+                let label = appleScriptEscaped(item["label"] as? String ?? "other")
+                lines.append(
+                    "make new phone at end of phones of p with properties {label:\"\(label)\", value:\"\(value)\"}"
+                )
+            }
+        } else if let phoneNum = phone {
+            let value = appleScriptEscaped(phoneNum)
+            lines.append("if (count of phones of p) > 0 then")
+            lines.append("set value of phone 1 of p to \"\(value)\"")
+            lines.append("else")
+            lines.append(
+                "make new phone at end of phones of p with properties {label:\"main\", value:\"\(value)\"}"
+            )
+            lines.append("end if")
+        }
+
+        lines.append("save")
+        lines.append("end tell")
+
+        try runAppleScript(lines.joined(separator: "\n"))
+        return true
+    }
+
+    /// After the Contacts.app fallback has applied email/phone changes, apply
+    /// any remaining (non-communication) mutations natively — scalar saves are
+    /// unaffected by the notes-entitlement bug.
+    private func saveRemainingMutationsNatively() throws {
+        guard hasNonCommunicationMutations else { return }
+        guard let existing = try fetchContactForMutation(id: id, unified: false) else {
+            throw CLIError.notFound("Contact not found: \(id)")
+        }
+        let contact = existing.mutableCopy() as! CNMutableContact
+        try applyContactMutations(to: contact, skipCommunications: true)
+        let saveRequest = CNSaveRequest()
+        saveRequest.update(contact)
+        try contactStore.execute(saveRequest)
+    }
+
+    /// Shared final-failure handler: when the native save keeps hitting
+    /// CoreData 134092, route email/phone changes through Contacts.app and
+    /// finish the rest natively. Returns the output dictionary on success, or
+    /// nil when the fallback does not apply.
+    private func recoverViaContactsApp() throws -> [String: Any]? {
+        fputs(
+            "Warning: Native save failed with CoreData 134092; applying email/phone changes via Contacts.app (this card has a note, which processes without the com.apple.developer.contacts.notes entitlement cannot rewrite alongside multivalue changes).\n",
+            stderr
+        )
+        guard try applyCommunicationsViaContactsApp() else { return nil }
+        try saveRemainingMutationsNatively()
+        guard let final = try fetchContactForMutation(id: id, unified: true) else {
+            throw CLIError.notFound("Contact not found after update: \(id)")
+        }
+        return [
+            "success": true,
+            "message": "Contact updated successfully (via Contacts.app fallback)",
+            "contact": contactToDict(final, brief: false)
+        ]
+    }
+
+    private func applyContactMutations(
+        to contact: CNMutableContact,
+        skipCommunications: Bool = false
+    ) throws {
         // Name fields
         if let first = firstName { contact.givenName = first }
         if let last = lastName { contact.familyName = last }
@@ -1370,30 +1634,48 @@ struct UpdateContact: AsyncParsableCommand {
             contact.contactType = ct == "organization" ? .organization : .person
         }
 
-        // Emails (JSON array replaces all; simple --email replaces primary)
+        if skipCommunications {
+            try applyNonCommunicationMutations(to: contact)
+            return
+        }
+        try applyCommunicationMutations(to: contact)
+        try applyNonCommunicationMutations(to: contact)
+    }
+
+    private func applyCommunicationMutations(to contact: CNMutableContact) throws {
+        // Emails (JSON array replaces all; simple --email replaces primary).
+        // Existing CNLabeledValue instances are reused for unchanged values so
+        // their identifiers survive — see mergeLabeledStrings for why.
         if let emailsJSON = emails {
-            contact.emailAddresses = try parseEmails(emailsJSON)
+            contact.emailAddresses = mergeLabeledStrings(
+                existing: contact.emailAddresses,
+                desired: try parseEmails(emailsJSON)
+            )
         } else if let emailAddr = email {
             if contact.emailAddresses.isEmpty {
                 contact.emailAddresses = [CNLabeledValue(label: CNLabelWork, value: emailAddr as NSString)]
             } else {
-                let first = contact.emailAddresses[0]
-                contact.emailAddresses[0] = CNLabeledValue(label: first.label, value: emailAddr as NSString)
+                contact.emailAddresses[0] = contact.emailAddresses[0].settingValue(emailAddr as NSString)
             }
         }
 
         // Phones (JSON array replaces all; simple --phone replaces primary)
         if let phonesJSON = phones {
-            contact.phoneNumbers = try parsePhones(phonesJSON)
+            contact.phoneNumbers = mergeLabeledPhones(
+                existing: contact.phoneNumbers,
+                desired: try parsePhones(phonesJSON)
+            )
         } else if let phoneNum = phone {
             if contact.phoneNumbers.isEmpty {
                 contact.phoneNumbers = [CNLabeledValue(label: CNLabelPhoneNumberMain, value: CNPhoneNumber(stringValue: phoneNum))]
             } else {
-                let first = contact.phoneNumbers[0]
-                contact.phoneNumbers[0] = CNLabeledValue(label: first.label, value: CNPhoneNumber(stringValue: phoneNum))
+                contact.phoneNumbers[0] = contact.phoneNumbers[0].settingValue(CNPhoneNumber(stringValue: phoneNum))
             }
         }
 
+    }
+
+    private func applyNonCommunicationMutations(to contact: CNMutableContact) throws {
         // Structured arrays (replace all when provided)
         if let json = addresses { contact.postalAddresses = try parseAddresses(json) }
         if let json = urls { contact.urlAddresses = try parseURLs(json) }
@@ -1412,7 +1694,7 @@ struct UpdateContact: AsyncParsableCommand {
             if contact.isKeyAvailable(CNContactNoteKey) {
                 contact.note = note
             } else {
-                fputs("Warning: Cannot set notes — Contacts note access not available. Check System Settings > Privacy & Security > Contacts.\n", stderr)
+                fputs("Warning: Cannot set notes — this binary lacks the com.apple.developer.contacts.notes entitlement, which macOS requires for Contacts note access.\n", stderr)
             }
         }
     }
