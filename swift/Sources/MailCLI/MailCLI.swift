@@ -2428,7 +2428,11 @@ struct AuthCheck: AsyncParsableCommand {
                 // Parse spf=
                 if let spfMatch = trimPart.range(of: #"spf\s*=\s*(\w+)"#, options: [.regularExpression, .caseInsensitive]) {
                     let resultStr = extractRegexGroup(trimPart, pattern: #"spf\s*=\s*(\w+)"#)?.lowercased() ?? "none"
-                    let mailFrom = extractRegexGroup(trimPart, pattern: #"smtp\.mailfrom\s*=\s*([\w@.\-]+)"#)?.lowercased()
+                    // Capture to the next delimiter rather than an allowlist of characters:
+                    // local-parts legitimately contain `+`, `=`, and other atext, and this value
+                    // now gates SPF alignment, so truncating it silently weakens a real verdict.
+                    let mailFrom = extractRegexGroup(trimPart, pattern: #"smtp\.mailfrom\s*=\s*([^\s;()]+)"#)
+                        .map(sanitizeMailFrom)
                     spfResult = SPFResult(result: resultStr, mailFrom: mailFrom)
                     _ = spfMatch
                 }
@@ -2460,6 +2464,13 @@ struct AuthCheck: AsyncParsableCommand {
             ids.append(contentsOf: scoped)
         }
         return Array(Set(ids.map { $0.lowercased() })).sorted()
+    }
+
+    /// Normalize a captured smtp.mailfrom value: strip angle brackets, quotes, and trailing
+    /// punctuation. The null sender used by bounces (`<>`) normalizes to empty, which never aligns.
+    private func sanitizeMailFrom(_ raw: String) -> String {
+        raw.trimmingCharacters(in: CharacterSet(charactersIn: "<>\"' ,"))
+            .lowercased()
     }
 
     /// Strip the optional RFC 8601 version token, so "mx.example.com 1" matches "mx.example.com".
