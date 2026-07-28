@@ -70,8 +70,9 @@ not act or reply. `drop` means it never reaches the agent.
 | I6 | Unauthenticated stranger | `asserted` | `asserted` | `drop` |
 | I7 | Spoofed operator, forged `Authentication-Results` | `asserted` | `asserted` | `drop`, forged header never read |
 | I8 | Spoofed operator, valid SPF for the attacker's own domain | `asserted` | `asserted` | `drop`, unaligned pass does not count |
-| I9 | Reply inside a thread the agent started | inherits | inherits | `dispatch` (see E4) |
+| I9 | Reply inside a thread the agent started, from an addressed participant | inherits | inherits | `dispatch` (see E1) |
 | I10 | Reply inside a thread the agent did not start | per I1-I6 | | as if new |
+| I10a | Claimed thread membership from a non-participant | per I1-I6 | | thread claim ignored, treated as new |
 | I11 | Bulk or marketing mail, authenticated | `verified` | `asserted` | `observe` |
 | I12 | Forwarded mail | usually `asserted` | `asserted` | `observe` at best |
 | I13 | Mail from the agent's own address | n/a | n/a | `drop`, loop guard |
@@ -148,14 +149,33 @@ Nothing more. No inactivity window, no turn cap, no explicit close. If the agent
 the conversation, it may continue it; if it did not, replying is originating and falls under
 default-deny.
 
-Two properties this rule must preserve:
+**Thread membership cannot be taken from the message.** `References` and `In-Reply-To` are
+sender-controlled headers, exactly like `From`. A sender who learns a `Message-ID` from an
+agent-originated thread, by being forwarded a copy or by any other leak, can set
+`In-Reply-To` to it and claim membership. Under a naive reading of the rule that claim would
+earn reply permission, which would make the thread rule a hole in default-deny rather than a
+narrow exception to it.
+
+So the claim is checked against the agent's own record, on both ends:
+
+1. The claimed parent must be a `Message-ID` **the agent itself generated**. A thread root
+   the agent never sent is not an agent-originated thread, whatever the headers say.
+2. The sender must be an address **the agent actually addressed** in that thread. Forging
+   `In-Reply-To` gains nothing unless you were already a participant, and a participant
+   already had permission.
+
+Both conditions come from state the agent wrote down when it sent the message. Neither is
+read from the inbound message. That is the same discipline the rest of this document applies
+to authentication: the evidence must come from a side the sender does not control.
+
+Two further properties the rule must preserve:
 
 - **It is scoped to the thread, not the sender.** Replying inside a thread must never widen
   into standing permission to contact that address. When the thread ends, so does the
   permission.
-- **Thread membership comes from the message, not from the address.** Identity is the
-  `References` / `In-Reply-To` chain back to a root the agent originated. Two messages from
-  the same person in different threads are two different decisions.
+- **Two messages from the same person in different threads are two different decisions.**
+  Permission does not generalize across threads any more than it generalizes across
+  addresses.
 
 **E2 deserves its own note**, because it is the case people expect to work. Someone
 authenticated writes to the agent unprompted; the agent may read it (I5) but not answer it.
@@ -193,6 +213,8 @@ what the agent is even allowed to see.
 - **Escalating the operator past authentication.** See I2.
 - **Inferring egress permission from inbound trust.** They are separate grants.
 - **Standing permission earned by replying.** See the thread rule.
+- **Thread membership asserted by the sender.** `References` and `In-Reply-To` are claims,
+  not credentials. Membership is checked against what the agent recorded sending.
 - **Authenticating a mailbox from a domain proof.** Requires an explicit per-sender
   assertion; nothing derives it.
 
