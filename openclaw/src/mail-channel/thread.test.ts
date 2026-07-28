@@ -71,6 +71,28 @@ describe("thread reply permission", () => {
     assert.equal(d.permitted, true);
   });
 
+  it("resolves across records instead of stopping at the first ID match", () => {
+    // Greptile P2: a References chain can name IDs from several agent threads. Stopping at
+    // the first match denied a legitimate participant whose record sorted later.
+    const first: AgentThreadRecord = {
+      sentMessageIds: ["<agent-a@lobster.local>"],
+      addressedRecipients: ["someone-else@example.com"],
+    };
+    const second: AgentThreadRecord = {
+      sentMessageIds: ["<agent-b@lobster.local>"],
+      addressedRecipients: ["friend@example.com"],
+    };
+    const d = decideThreadReply(
+      {
+        references: ["<agent-a@lobster.local>", "<agent-b@lobster.local>"],
+        senderAddress: "friend@example.com",
+      },
+      [first, second],
+    );
+    assert.equal(d.permitted, true);
+    assert.equal(d.matchedMessageId, "agent-b@lobster.local");
+  });
+
   it("does not let one thread's permission leak into another", () => {
     const other: AgentThreadRecord = {
       sentMessageIds: ["<other-root@lobster.local>"],

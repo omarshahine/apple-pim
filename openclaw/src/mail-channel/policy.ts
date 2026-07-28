@@ -59,16 +59,21 @@ export function decideIngress(input: IngressInput): IngressDecision {
     return { admission: "drop", reason: "self_addressed" };
   }
 
-  // I9. Thread permission does not require the sender to be allowlisted, because the agent
-  // already chose to contact them when it started the thread.
-  if (input.threadPermitted) {
-    return { admission: "dispatch", reason: "thread_originated_by_agent" };
-  }
-
   const addressStrongEnough = meetsMinimum(
     input.strengths.address,
     input.minIdentifierAuthentication,
   );
+
+  // I9. Thread permission waives the *allowlist*, because the agent already chose to
+  // contact this person when it started the thread. It does not waive *authentication*.
+  // decideThreadReply matches on the sender address, and an unauthenticated address is a
+  // claim: anyone who learns a participant's address and an agent Message-ID could
+  // otherwise spoof their way into a dispatch.
+  if (input.threadPermitted) {
+    return addressStrongEnough
+      ? { admission: "dispatch", reason: "thread_originated_by_agent" }
+      : { admission: "drop", reason: "identifier_authentication_too_weak" };
+  }
 
   // I1, I4.
   if (input.allowlisted && addressStrongEnough) {
@@ -118,6 +123,12 @@ export type EgressInput = {
   selfAddresses: readonly string[];
   /** True when replying inside a thread the agent originated. */
   threadPermitted: boolean;
+  /**
+   * Addresses the agent actually addressed in that thread. Thread permission extends only
+   * to these; it is not a licence to add recipients. Ignored when `threadPermitted` is
+   * false. Empty means thread permission grants nothing, which is the safe default.
+   */
+  threadParticipants?: readonly string[];
   /** True when the operator explicitly asked for this specific send. */
   operatorInstructed: boolean;
 };
@@ -136,6 +147,10 @@ export function decideEgress(input: EgressInput): EgressDecision {
   const operators = lower(input.operatorAddresses);
   const allowed = lower(input.egressAllowlist);
   const selves = lower(input.selfAddresses);
+  // Thread permission is scoped to the people already in the thread. Without this, a
+  // reply-all inside a permitted thread could introduce arbitrary new recipients, which
+  // would turn a narrow exception into a general send capability.
+  const participants = lower(input.threadParticipants ?? []);
 
   const permitted: string[] = [];
   const denied: { address: string; reason: EgressReason }[] = [];
@@ -153,8 +168,8 @@ export function decideEgress(input: EgressInput): EgressDecision {
       permitted.push(recipient);
       continue;
     }
-    // E1. Thread permission is scoped to the thread, not widened to the address.
-    if (input.threadPermitted) {
+    // E1. Thread permission covers existing participants only.
+    if (input.threadPermitted && participants.has(address)) {
       permitted.push(recipient);
       continue;
     }

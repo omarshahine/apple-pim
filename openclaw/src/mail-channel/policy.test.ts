@@ -75,12 +75,23 @@ describe("ingress admission", () => {
     });
   });
 
+  it("thread permission waives the allowlist but not authentication", () => {
+    // Greptile P1: an attacker who learns a participant's address and an agent
+    // Message-ID could otherwise spoof From and inherit the thread grant.
+    assert.deepEqual(
+      decideIngress(
+        ingress({ allowlisted: false, strengths: UNAUTHENTICATED, threadPermitted: true }),
+      ),
+      { admission: "drop", reason: "identifier_authentication_too_weak" },
+    );
+  });
+
   it("I9: dispatches a thread reply from a sender who is not allowlisted", () => {
     assert.deepEqual(
       decideIngress(
         ingress({
           allowlisted: false,
-          strengths: AUTHENTICATED_STRANGER,
+          strengths: VERIFIED,
           threadPermitted: true,
         }),
       ),
@@ -128,10 +139,38 @@ describe("egress", () => {
     );
   });
 
-  it("E1: permits a reply inside an agent-originated thread", () => {
-    const d = decideEgress({ ...base, recipients: ["stranger@example.com"], threadPermitted: true });
+  it("E1: permits a reply to an existing thread participant", () => {
+    const d = decideEgress({
+      ...base,
+      recipients: ["stranger@example.com"],
+      threadPermitted: true,
+      threadParticipants: ["stranger@example.com"],
+    });
     assert.deepEqual(d.permitted, ["stranger@example.com"]);
     assert.equal(d.reason, "thread_originated_by_agent");
+  });
+
+  it("thread permission does not let a reply-all add new recipients", () => {
+    // Greptile P1: otherwise a permitted thread becomes a general send capability.
+    const d = decideEgress({
+      ...base,
+      recipients: ["stranger@example.com", "outsider@example.com"],
+      threadPermitted: true,
+      threadParticipants: ["stranger@example.com"],
+    });
+    assert.deepEqual(d.permitted, ["stranger@example.com"]);
+    assert.deepEqual(d.denied, [
+      { address: "outsider@example.com", reason: "recipient_not_permitted" },
+    ]);
+  });
+
+  it("thread permission with no recorded participants grants nothing", () => {
+    const d = decideEgress({
+      ...base,
+      recipients: ["stranger@example.com"],
+      threadPermitted: true,
+    });
+    assert.deepEqual(d.permitted, []);
   });
 
   it("E8: narrows reply-all instead of leaking to unknown recipients", () => {
@@ -150,6 +189,7 @@ describe("egress", () => {
       ...base,
       recipients: ["lobster@example.com"],
       threadPermitted: true,
+      threadParticipants: ["lobster@example.com"],
     });
     assert.deepEqual(d.permitted, []);
     assert.equal(d.denied[0]?.reason, "self_addressed");

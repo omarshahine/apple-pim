@@ -85,34 +85,37 @@ export function decideThreadReply(
 
   // A claim only resolves against Message-IDs the agent generated. Anything else is a
   // sender asserting thread membership, which is a claim rather than a credential.
-  let matchedMessageId: string | undefined;
-  let matchedRecord: AgentThreadRecord | undefined;
+  //
+  // A References chain can name IDs from several agent threads, so this searches all
+  // records for one that both matches a claimed ID and has this sender addressed. Stopping
+  // at the first ID match would deny a legitimate participant whose record happened to sort
+  // later, turning a correctness bug into a mysterious permission failure.
+  let sawIdMatch: string | undefined;
   for (const record of records) {
-    for (const sentId of record.sentMessageIds) {
-      const normalized = normalizeId(sentId);
-      if (normalized && claimed.has(normalized)) {
-        matchedMessageId = normalized;
-        matchedRecord = record;
-        break;
-      }
+    const matchedId = record.sentMessageIds
+      .map(normalizeId)
+      .find((sentId) => sentId && claimed.has(sentId));
+    if (!matchedId) {
+      continue;
     }
-    if (matchedRecord) {
-      break;
+    sawIdMatch ??= matchedId;
+    const addressed = record.addressedRecipients.some(
+      (recipient) => normalizeAddress(recipient) === sender,
+    );
+    if (addressed) {
+      return {
+        permitted: true,
+        reason: "thread_originated_by_agent",
+        matchedMessageId: matchedId,
+      };
     }
   }
 
-  if (!matchedRecord || !matchedMessageId) {
+  if (!sawIdMatch) {
     return { permitted: false, reason: "claimed_parent_not_sent_by_agent" };
   }
 
-  // Forging In-Reply-To gains nothing unless you were already addressed, and anyone
-  // already addressed had permission regardless.
-  const addressed = matchedRecord.addressedRecipients.some(
-    (recipient) => normalizeAddress(recipient) === sender,
-  );
-  if (!addressed) {
-    return { permitted: false, reason: "sender_not_addressed_in_thread", matchedMessageId };
-  }
-
-  return { permitted: true, reason: "thread_originated_by_agent", matchedMessageId };
+  // The claim named a real agent message, but this sender was never addressed in any thread
+  // it belongs to. Forging In-Reply-To gains nothing unless you were already a participant.
+  return { permitted: false, reason: "sender_not_addressed_in_thread", matchedMessageId: sawIdMatch };
 }
