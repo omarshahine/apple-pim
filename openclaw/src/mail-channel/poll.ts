@@ -15,6 +15,7 @@ import {
   type ClassifiedMessage,
   type ClassifyOptions,
   type InboundDeps,
+  type MailboxMessage,
   type PollCursor,
 } from "./inbound.ts";
 
@@ -27,6 +28,11 @@ export type CursorStore = {
 export type PollOptions = {
   mailbox: string;
   limit: number;
+  /**
+   * Ceiling when widening the page to reach back to the cursor. Bounds a burst of mail
+   * from turning one cycle into an unbounded scan of the mailbox.
+   */
+  maxLimit?: number;
   /** Store key, so several accounts can poll independently. */
   cursorKey: string;
   classify: ClassifyOptions;
@@ -34,15 +40,61 @@ export type PollOptions = {
 
 export type PollCycleResult = {
   classified: ClassifiedMessage[];
+  /** Cursor to persist once delivery succeeds. Deliberately not persisted here. */
   cursor: PollCursor;
+  /** True when the page ceiling was hit with mail still unread behind it. */
+  truncated: boolean;
 };
 
+const DEFAULT_MAX_LIMIT = 500;
+
 /**
- * Runs one poll cycle: list, filter to unseen, classify each, persist the cursor.
+ * Lists far enough back to reach the previous cursor.
  *
- * The cursor is written **after** classification, not before. A crash mid-cycle therefore
- * reprocesses messages rather than losing them. For mail that is the right trade: a
- * duplicate is visible and recoverable, a silently dropped message is neither.
+ * Listing is newest-first with a limit, so if more than `limit` messages arrive between
+ * cycles the page stops short of the cursor and everything behind it would be skipped
+ * forever once the watermark advanced. This widens the page until it reaches back past the
+ * cursor, the page is no longer full, or the ceiling is hit.
+ *
+ * With no cursor yet the page is taken as-is: a first run starts from now rather than
+ * ingesting the entire mailbox history.
+ */
+async function listBackToCursor(
+  deps: InboundDeps,
+  options: PollOptions,
+  previousWatermark: string | undefined,
+): Promise<{ messages: MailboxMessage[]; truncated: boolean }> {
+  const ceiling = options.maxLimit ?? DEFAULT_MAX_LIMIT;
+  let limit = options.limit;
+  let messages = await deps.listMessages({ mailbox: options.mailbox, limit });
+
+  if (!previousWatermark) {
+    return { messages, truncated: false };
+  }
+
+  while (messages.length >= limit && limit < ceiling) {
+    const dates = messages.map((m) => m.dateReceived).filter(Boolean) as string[];
+    const oldest = dates.sort()[0];
+    if (oldest && oldest <= previousWatermark) {
+      // The page now spans the cursor, so nothing is hiding behind it.
+      return { messages, truncated: false };
+    }
+    limit = Math.min(limit * 4, ceiling);
+    messages = await deps.listMessages({ mailbox: options.mailbox, limit });
+  }
+
+  const dates = messages.map((m) => m.dateReceived).filter(Boolean) as string[];
+  const oldest = dates.sort()[0];
+  const stillShort = messages.length >= limit && !!oldest && oldest > previousWatermark;
+  return { messages, truncated: stillShort };
+}
+
+/**
+ * Runs one poll cycle: list, filter to unseen, classify each.
+ *
+ * The cursor is returned, **not persisted**. Advancing it is the caller's job and must
+ * happen only after the batch has actually been delivered, because a cursor that moves
+ * ahead of delivery turns any delivery failure into permanently skipped mail.
  */
 export async function runPollCycle(
   deps: InboundDeps,
@@ -50,7 +102,7 @@ export async function runPollCycle(
   store: CursorStore,
 ): Promise<PollCycleResult> {
   const previous = (await store.lookup(options.cursorKey)) ?? {};
-  const messages = await deps.listMessages({ mailbox: options.mailbox, limit: options.limit });
+  const { messages, truncated } = await listBackToCursor(deps, options, previous.lastDateReceived);
   const { fresh, cursor } = selectNewMessages(messages, previous);
 
   const classified: ClassifiedMessage[] = [];
@@ -58,8 +110,7 @@ export async function runPollCycle(
     classified.push(await classifyMessage(message, deps, options.classify));
   }
 
-  await store.register(options.cursorKey, cursor);
-  return { classified, cursor };
+  return { classified, cursor, truncated };
 }
 
 export type PollLoopDeps = {
@@ -67,6 +118,8 @@ export type PollLoopDeps = {
   onAdmitted: (messages: ClassifiedMessage[]) => Promise<void> | void;
   /** Reports a cycle that threw. The loop continues regardless. */
   onError?: (error: unknown) => void;
+  /** Reports that the page ceiling was hit with unread mail still behind it. */
+  onTruncated?: (params: { mailbox: string; limit: number }) => void;
   /** Injected so tests do not wait in real time. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 };
@@ -101,11 +154,17 @@ export async function runPollLoop(
   const sleep = deps.sleep ?? defaultSleep;
   while (!signal.aborted) {
     try {
-      const { classified } = await runPollCycle(deps, options, store);
+      const { classified, cursor, truncated } = await runPollCycle(deps, options, store);
+      if (truncated) {
+        deps.onTruncated?.({ mailbox: options.mailbox, limit: options.maxLimit ?? DEFAULT_MAX_LIMIT });
+      }
       const admitted = classified.filter((entry) => entry.decision.admission !== "drop");
       if (admitted.length > 0) {
+        // Deliver first. If this throws, the cursor is left untouched and the batch is
+        // retried next cycle rather than silently skipped.
         await deps.onAdmitted(admitted);
       }
+      await store.register(options.cursorKey, cursor);
     } catch (error) {
       deps.onError?.(error);
     }

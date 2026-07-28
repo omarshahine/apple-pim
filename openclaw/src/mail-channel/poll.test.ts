@@ -51,27 +51,76 @@ function deps(messages: MailboxMessage[][]): InboundDeps & { calls: number } {
 }
 
 describe("runPollCycle", () => {
-  it("classifies fresh messages and persists the cursor", async () => {
+  it("classifies fresh messages and returns a cursor without persisting it", async () => {
     const store = memoryStore();
     const r = await runPollCycle(deps([[msg("a")]]), OPTIONS, store);
     assert.equal(r.classified.length, 1);
     assert.equal(r.classified[0]?.decision.admission, "dispatch");
-    assert.ok(store.values.has(OPTIONS.cursorKey));
+    // Persisting is the loop's job, gated on delivery.
+    assert.equal(store.values.has(OPTIONS.cursorKey), false);
   });
 
-  it("does not reprocess across cycles using the persisted cursor", async () => {
+  it("does not reprocess across cycles once the cursor is stored", async () => {
     const store = memoryStore();
     const d = deps([[msg("a")], [msg("a")]]);
-    await runPollCycle(d, OPTIONS, store);
+    const first = await runPollCycle(d, OPTIONS, store);
+    await store.register(OPTIONS.cursorKey, first.cursor);
     const second = await runPollCycle(d, OPTIONS, store);
     assert.deepEqual(second.classified, []);
   });
 
   it("keeps separate cursors per key, so accounts do not shadow each other", async () => {
     const store = memoryStore();
-    await runPollCycle(deps([[msg("a")]]), OPTIONS, store);
+    const first = await runPollCycle(deps([[msg("a")]]), OPTIONS, store);
+    await store.register(OPTIONS.cursorKey, first.cursor);
     const other = await runPollCycle(deps([[msg("a")]]), { ...OPTIONS, cursorKey: "other" }, store);
     assert.equal(other.classified.length, 1);
+  });
+
+  // Greptile P1: newest-first paging stops short of the cursor when a burst arrives, and
+  // advancing the watermark from that subset would skip the rest permanently.
+  it("widens the page to reach back past the cursor", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
+    const burst = Array.from({ length: 7 }, (_, i) =>
+      msg(`b${i}`, `2026-07-28T10:0${i}:00.000Z`),
+    );
+    let lastLimit = 0;
+    const d: InboundDeps = {
+      listMessages: async ({ limit }) => {
+        lastLimit = limit;
+        return burst.slice(-limit);
+      },
+      authCheck: async () => VERIFIED,
+    };
+    const r = await runPollCycle(d, { ...OPTIONS, limit: 2, maxLimit: 64 }, store);
+    assert.ok(lastLimit > 2, "should have widened past the initial limit");
+    assert.equal(r.classified.length, 7);
+    assert.equal(r.truncated, false);
+  });
+
+  it("flags truncation instead of silently skipping when the ceiling is hit", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
+    const d: InboundDeps = {
+      // Always returns a full page newer than the cursor: the ceiling is reached.
+      listMessages: async ({ limit }) =>
+        Array.from({ length: limit }, (_, i) => msg(`x${i}`, `2026-07-28T11:00:00.000Z`)),
+      authCheck: async () => VERIFIED,
+    };
+    const r = await runPollCycle(d, { ...OPTIONS, limit: 2, maxLimit: 8 }, store);
+    assert.equal(r.truncated, true);
+  });
+
+  it("takes the page as-is on a cold cursor rather than scanning history", async () => {
+    const store = memoryStore();
+    const d: InboundDeps = {
+      listMessages: async ({ limit }) => Array.from({ length: limit }, (_, i) => msg(`c${i}`)),
+      authCheck: async () => VERIFIED,
+    };
+    const r = await runPollCycle(d, { ...OPTIONS, limit: 3, maxLimit: 64 }, store);
+    assert.equal(r.classified.length, 3);
+    assert.equal(r.truncated, false);
   });
 });
 
@@ -159,6 +208,54 @@ describe("runPollLoop", () => {
     );
     assert.equal(errors.length, 1);
     assert.deepEqual(admitted, ["a"]);
+  });
+
+  // Greptile P1: the cursor used to advance inside the cycle, so a delivery failure
+  // permanently skipped that batch.
+  it("does not advance the cursor when delivery fails", async () => {
+    const store = memoryStore();
+    const { signal, sleep } = boundedSignal(1);
+    await runPollLoop(
+      {
+        listMessages: async () => [msg("a")],
+        authCheck: async () => VERIFIED,
+        onAdmitted: () => {
+          throw new Error("dispatch failed");
+        },
+        onError: () => {},
+        sleep,
+      },
+      { ...OPTIONS, intervalMs: 1 },
+      store,
+      signal,
+    );
+    assert.equal(store.values.has(OPTIONS.cursorKey), false);
+  });
+
+  it("redelivers the batch on the next cycle after a delivery failure", async () => {
+    const store = memoryStore();
+    const { signal, sleep } = boundedSignal(2);
+    const delivered: string[] = [];
+    let attempt = 0;
+    await runPollLoop(
+      {
+        listMessages: async () => [msg("a")],
+        authCheck: async () => VERIFIED,
+        onAdmitted: (messages) => {
+          attempt += 1;
+          if (attempt === 1) {
+            throw new Error("dispatch failed");
+          }
+          delivered.push(...messages.map((m) => m.message.messageId));
+        },
+        onError: () => {},
+        sleep,
+      },
+      { ...OPTIONS, intervalMs: 1 },
+      store,
+      signal,
+    );
+    assert.deepEqual(delivered, ["a"]);
   });
 
   it("stops immediately when already aborted", async () => {
