@@ -2109,8 +2109,10 @@ struct AuthCheck: AsyncParsableCommand {
     @Option(name: .long, help: "Account name hint (speeds up lookup)")
     var account: String?
 
+    @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
     func run() async throws {
-        try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
@@ -2131,7 +2133,37 @@ struct AuthCheck: AsyncParsableCommand {
             return
         }
 
-        // Fetch message with allHeaders via JXA
+        // Prefer the SQLite/emlx path: it reads headers off disk, so a channel that
+        // authenticates every inbound message does not depend on Mail.app staying up.
+        var msgDict: [String: Any]? = nil
+        if engine != .jxa {
+            do {
+                let sqliteResult = try SQLiteEngine().get(
+                    id: id, includeSource: false, mailboxHint: mailbox, accountHint: account)
+                if let message = sqliteResult["message"] as? [String: Any] {
+                    msgDict = message
+                } else {
+                    msgDict = sqliteResult
+                }
+            } catch {
+                try rethrowIfForcedSQLite(engine, error)
+            }
+        }
+
+        if msgDict == nil {
+            msgDict = try await fetchMessageViaJXA()
+        }
+
+        guard let msgDict else {
+            throw CLIError.jxaError("Unexpected result from message lookup")
+        }
+
+        try await evaluate(msgDict: msgDict, trustedFile: trustedFile)
+    }
+
+    /// JXA fallback for header access when the SQLite/emlx path cannot serve the message.
+    private func fetchMessageViaJXA() async throws -> [String: Any] {
+        try ensureMailRunning()
         let findHelper = findMessageJXA(targetId: id, mailbox: mailbox, account: account)
         let script = """
         \(findHelper)
@@ -2164,7 +2196,10 @@ struct AuthCheck: AsyncParsableCommand {
         if let error = msgDict["error"] as? String {
             throw CLIError.notFound(error)
         }
+        return msgDict
+    }
 
+    private func evaluate(msgDict: [String: Any], trustedFile: TrustedSendersFile) async throws {
         // Extract sender email
         let senderRaw = msgDict["sender"] as? String ?? ""
         let senderEmail = extractEmailAddress(from: senderRaw)
@@ -2238,7 +2273,9 @@ struct AuthCheck: AsyncParsableCommand {
                 "matchedContact": senderConfig.name,
                 "checks": [String: Any](),
                 "warnings": [
-                    "No trustedAuthservIds configured\(accountName.map { " for account '\($0)'" } ?? "") — "
+                    // The engines identify accounts differently: JXA yields the display name,
+                    // SQLite yields the account UUID. Echo the exact key so config is a copy step.
+                    "No trustedAuthservIds configured\(accountName.map { " for account key '\($0)'" } ?? "") — "
                         + "refusing to trust Authentication-Results headers, which senders can forge. "
                         + "Observed authserv-ids on this message: \(Set(observedIds).sorted().joined(separator: ", ")). "
                         + "Add the ones your own boundary stamps to trustedAuthservIds in trusted-senders.json."
