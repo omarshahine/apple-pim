@@ -25,9 +25,10 @@ Before any of the scenarios below, one distinction decides which of them apply a
 | Who else reads the inbound mail | nobody | the operator, regardless of what the agent does |
 | The question egress answers | may the agent contact this person? | is the agent authorized to act as the operator toward this person? |
 
-**Everything from here to "Cross-cutting concerns" describes the owned case**, which is what
-this channel implements. The delegated case is genuinely different, not a relaxation of the
-same rules, and is covered in [Delegated mailboxes](#delegated-mailboxes-obo).
+**The three questions, the ingress section, and the egress section describe the owned
+case**, which is what this channel implements. The delegated case is genuinely different,
+not a relaxation of the same rules, and is covered in its own section,
+[Delegated mailboxes](#delegated-mailboxes-obo). Cross-cutting concerns apply to both.
 
 In this deployment the split is concrete: the Apple Mail account is owned, and a separate
 agent handles the operator's Fastmail account under delegation. They are different accounts
