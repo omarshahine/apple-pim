@@ -18,6 +18,10 @@ import {
 } from "openclaw/plugin-sdk/channel-core";
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
+import type { ClassifiedMessage, PollCursor } from "./inbound.ts";
+import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
+import { runPollLoop, type CursorStore } from "./poll.ts";
+import { createMailCliDeps } from "./runtime.ts";
 
 /** Account shape this channel resolves from config. */
 export type ResolvedAppleMailAccount = {
@@ -35,10 +39,44 @@ export type ResolvedAppleMailAccount = {
     egressAllowlist?: string[];
     /** Seconds between Envelope Index polls. */
     pollIntervalSeconds?: number;
+    /** Mailbox to poll. Not always INBOX: mail is often archived on arrival. */
+    mailbox?: string;
+    /** Messages per listing page before widening to reach the cursor. */
+    pageSize?: number;
+    /** Path to trusted-senders.json. */
+    trustedSendersPath?: string;
   };
 };
 
 const CHANNEL_ID = "apple-mail";
+const DEFAULT_POLL_SECONDS = 60;
+const DEFAULT_MAILBOX = "INBOX";
+const DEFAULT_PAGE = 25;
+
+/**
+ * Where admitted mail goes.
+ *
+ * Left injectable rather than reaching into `ctx.channelRuntime`: that surface is typed
+ * `{ runtimeContexts, [key: string]: unknown }`, so calling its reply dispatcher means
+ * casting through `unknown`. Wiring agent dispatch is the next step and is deliberately
+ * not guessed at here.
+ */
+export type AdmittedHandler = (messages: ClassifiedMessage[]) => Promise<void> | void;
+
+let admittedHandler: AdmittedHandler | undefined;
+
+/**
+ * Captured at registration.
+ *
+ * The keyed store lives on `PluginRuntime`, not on the `RuntimeEnv` handed to
+ * `startAccount`, so it has to be taken here via the entry's `setRuntime` hook.
+ */
+let pluginRuntime: PluginRuntime | undefined;
+
+/** Overrides the default handler. Used by the gateway wiring and by tests. */
+export function setAdmittedHandler(handler: AdmittedHandler | undefined): void {
+  admittedHandler = handler;
+}
 
 /** Reads one account's config block out of `channels.apple-mail`. */
 function resolveAccount(cfg: OpenClawConfig, accountId?: string | null): ResolvedAppleMailAccount {
@@ -102,12 +140,96 @@ const security = {
   },
 };
 
+/**
+ * Starts one account's poll loop and stops it on shutdown.
+ *
+ * `startAccount` returns once the loop is running rather than awaiting it, because the
+ * loop only ends on abort and the gateway needs startup to complete. The promise is kept
+ * so `stopAccount` can wait for the current cycle to settle instead of tearing down
+ * mid-classification.
+ */
+const loops = new Map<string, Promise<void>>();
+
+const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> = {
+  startAccount: async (ctx) => {
+    const config = ctx.account.config;
+    const state = pluginRuntime?.state;
+    if (!state) {
+      // Without durable cursor storage the loop would re-read the mailbox from scratch on
+      // every restart. Refuse to start rather than run in a state that looks fine and
+      // silently reprocesses.
+      ctx.log?.warn?.("apple-mail: plugin runtime unavailable; not starting the poll loop");
+      return;
+    }
+    const store = state.openKeyedStore<PollCursor>({
+      namespace: `${CHANNEL_ID}:cursor`,
+      maxEntries: 64,
+    }) as CursorStore;
+
+    const deps = createMailCliDeps({
+      account: config.account,
+      trustedSendersPath: config.trustedSendersPath,
+    });
+
+    const selfAddresses = config.selfAddresses ?? [];
+    const allowFrom = (config.allowFrom ?? []).map((entry) => String(entry).toLowerCase());
+
+    const loop = runPollLoop(
+      {
+        ...deps,
+        onAdmitted: async (messages) => {
+          if (!admittedHandler) {
+            // Never silently swallow admitted mail: if nothing is wired to receive it,
+            // say so once per batch rather than letting it vanish.
+            ctx.log?.warn?.(
+              `apple-mail: ${messages.length} message(s) admitted with no handler configured`,
+            );
+            return;
+          }
+          await admittedHandler(messages);
+        },
+        onError: (error) => ctx.log?.warn?.(`apple-mail poll failed: ${String(error)}`),
+        onTruncated: ({ mailbox, limit }) =>
+          ctx.log?.warn?.(
+            `apple-mail: ${mailbox} had more than ${limit} unread messages; some were not read this cycle`,
+          ),
+      },
+      {
+        mailbox: config.mailbox ?? DEFAULT_MAILBOX,
+        limit: config.pageSize ?? DEFAULT_PAGE,
+        cursorKey: `${CHANNEL_ID}:${ctx.accountId}`,
+        intervalMs: (config.pollIntervalSeconds ?? DEFAULT_POLL_SECONDS) * 1000,
+        classify: {
+          allowlisted: false,
+          minIdentifierAuthentication: config.minIdentifierAuthentication ?? "asserted",
+          selfAddressed: false,
+        },
+      },
+      store,
+      ctx.abortSignal,
+    );
+
+    loops.set(ctx.accountId, loop);
+    void allowFrom;
+    void selfAddresses;
+  },
+
+  stopAccount: async (ctx) => {
+    // The abort signal ends the loop; this just waits for the in-flight cycle.
+    await loops.get(ctx.accountId)?.catch(() => {});
+    loops.delete(ctx.accountId);
+  },
+};
+
 export const appleMailChannelPlugin = createChatChannelPlugin<ResolvedAppleMailAccount>({
-  base,
+  base: { ...base, gateway },
   security,
 });
 
 export const appleMailChannelEntry = defineChannelPluginEntry({
+  setRuntime: (runtime) => {
+    pluginRuntime = runtime;
+  },
   id: CHANNEL_ID,
   name: "Apple Mail",
   description:
