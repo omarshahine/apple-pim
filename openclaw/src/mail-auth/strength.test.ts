@@ -80,17 +80,45 @@ describe("mailAuthToIdentifierStrengths", () => {
     assert.equal(mailAuthToIdentifierStrengths(unaligned).address, "asserted");
   });
 
-  // The case that motivates per-identifier scoring: the transport proved a domain but
-  // nothing binds this mailbox to that signer, so the two identifiers differ.
-  it("verifies the domain but not the address when the signer is unexpected", () => {
-    const unexpectedSigner = result({
+  // A DKIM pass authenticates header.d, not the From domain. An unaligned signature means
+  // some unrelated domain signed this message, which vouches for nobody.
+  it("does not verify the domain on an unaligned DKIM signature", () => {
+    const unalignedSigner = result({
       verdict: "suspicious",
       checks: {
         dkim: { result: "pass", signingDomain: "bulk-sender.example", match: false },
         spf: { result: "none", match: false },
       },
     });
-    assert.deepEqual(mailAuthToIdentifierStrengths(unexpectedSigner), {
+    assert.deepEqual(mailAuthToIdentifierStrengths(unalignedSigner), {
+      address: "asserted",
+      domain: "asserted",
+      displayName: "mutable",
+    });
+  });
+
+  it("accepts a subdomain signature as aligned", () => {
+    const subdomainSigner = result({
+      verdict: "suspicious",
+      checks: {
+        dkim: { result: "pass", signingDomain: "mail.shahine.com", match: false },
+        spf: { result: "none", match: false },
+      },
+    });
+    assert.equal(mailAuthToIdentifierStrengths(subdomainSigner).domain, "verified");
+  });
+
+  // The case that motivates per-identifier scoring: the signature aligns, so the domain
+  // claim stands, but nothing binds this mailbox to that signer.
+  it("verifies the domain but not the address when the signer is aligned but unexpected", () => {
+    const alignedUnexpected = result({
+      verdict: "suspicious",
+      checks: {
+        dkim: { result: "pass", signingDomain: "shahine.com", match: false },
+        spf: { result: "none", match: false },
+      },
+    });
+    assert.deepEqual(mailAuthToIdentifierStrengths(alignedUnexpected), {
       address: "asserted",
       domain: "verified",
       displayName: "mutable",

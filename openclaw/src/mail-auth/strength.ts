@@ -73,6 +73,29 @@ function provenanceEstablished(result: MailAuthCheckResult): boolean {
   return result.verdict !== "unknown";
 }
 
+/** Domain part of an address, lowercased. Empty when absent, which never aligns. */
+function senderDomain(address: string | undefined): string {
+  if (!address?.includes("@")) {
+    return "";
+  }
+  return address.split("@").pop()?.trim().toLowerCase() ?? "";
+}
+
+/**
+ * Relaxed-alignment approximation: exact match, or one domain is a subdomain of the other.
+ * Without a public-suffix list this cannot compute true organizational domains, so it is
+ * deliberately narrower than DMARC relaxed alignment rather than wider. Mirrors
+ * `domainAligns` in MailCLI.swift so the two sides cannot drift apart in interpretation.
+ */
+function domainsAlign(a: string | undefined, b: string | undefined): boolean {
+  const x = a?.trim().toLowerCase() ?? "";
+  const y = b?.trim().toLowerCase() ?? "";
+  if (!x || !y) {
+    return false;
+  }
+  return x === y || x.endsWith(`.${y}`) || y.endsWith(`.${x}`);
+}
+
 /**
  * Maps one auth-check result onto per-identifier strengths.
  *
@@ -93,12 +116,17 @@ export function mailAuthToIdentifierStrengths(
     return { address: "asserted", domain: "asserted", displayName };
   }
 
+  // A DKIM pass authenticates the *signing* domain (header.d), which is not automatically
+  // the sender's domain. Promoting on an unaligned signature would let any domain that can
+  // sign anything vouch for this sender, the same defect alignment fixes for SPF.
   const dkimPassed = result.checks?.dkim?.result === "pass";
+  const dkimAligned =
+    dkimPassed && domainsAlign(result.checks?.dkim?.signingDomain, senderDomain(result.sender));
   // `match` on spf already folds in alignment; `aligned` is kept for diagnostics.
   const spfPassedAligned = result.checks?.spf?.match === true;
 
   const domain: IdentifierAuthentication =
-    dkimPassed || spfPassedAligned ? "verified" : "asserted";
+    dkimAligned || spfPassedAligned ? "verified" : "asserted";
 
   // auth-check only returns `verified` when a DKIM signature matched the sender's
   // configured expectedDkimDomains (and SPF, unless that sender sets requireSpf=false).
