@@ -2220,16 +2220,13 @@ struct AuthCheck: AsyncParsableCommand {
             sender.emails.contains { $0.lowercased() == senderEmail }
         }
 
-        guard let senderConfig = senderConfig else {
-            outputJSON([
-                "verdict": "untrusted",
-                "sender": senderEmail,
-                "matchedContact": "",
-                "checks": [String: Any](),
-                "warnings": ["Sender \(senderEmail) not in trusted-senders.json"]
-            ])
-            return
-        }
+        // Deliberately NOT short-circuiting on an unenrolled sender. Enrollment answers
+        // "may this mailbox speak for a known person", authentication answers "did the
+        // transport prove the domain". They are different questions, and returning early
+        // here made the second unanswerable for strangers, which in turn made any graduated
+        // policy (read an authenticated stranger, do not reply to them) impossible to build.
+        // Unenrolled senders still get their headers evaluated; they just cannot reach
+        // `verified`, because no expectedDkimDomains binds the address to a signer.
 
         // Get allHeaders
         let headerText = normalizeHeaders(msgDict["allHeaders"])
@@ -2238,7 +2235,7 @@ struct AuthCheck: AsyncParsableCommand {
             outputJSON([
                 "verdict": "unknown",
                 "sender": senderEmail,
-                "matchedContact": senderConfig.name,
+                "matchedContact": senderConfig?.name ?? "",
                 "checks": [String: Any](),
                 "warnings": ["allHeaders field is empty — JXA may not have returned headers"]
             ])
@@ -2252,7 +2249,7 @@ struct AuthCheck: AsyncParsableCommand {
             outputJSON([
                 "verdict": "unknown",
                 "sender": senderEmail,
-                "matchedContact": senderConfig.name,
+                "matchedContact": senderConfig?.name ?? "",
                 "checks": [String: Any](),
                 "warnings": ["No Authentication-Results headers found"]
             ])
@@ -2270,7 +2267,7 @@ struct AuthCheck: AsyncParsableCommand {
             outputJSON([
                 "verdict": "unknown",
                 "sender": senderEmail,
-                "matchedContact": senderConfig.name,
+                "matchedContact": senderConfig?.name ?? "",
                 "checks": [String: Any](),
                 "warnings": [
                     // The engines identify accounts differently: JXA yields the display name,
@@ -2290,7 +2287,7 @@ struct AuthCheck: AsyncParsableCommand {
             outputJSON([
                 "verdict": "suspicious",
                 "sender": senderEmail,
-                "matchedContact": senderConfig.name,
+                "matchedContact": senderConfig?.name ?? "",
                 "checks": [String: Any](),
                 "warnings": [
                     "No Authentication-Results header from a trusted authserv-id "
@@ -2302,9 +2299,13 @@ struct AuthCheck: AsyncParsableCommand {
         }
 
         // Evaluate
-        let expectedDkim = senderConfig.expectedDkimDomains ?? []
-        let requireDkim = senderConfig.requireDkim ?? true
-        let requireSpf = senderConfig.requireSpf ?? true
+        // An unenrolled sender has no configured expectations, so no signature can match
+        // and the address claim cannot be made. Its headers are still evaluated so the
+        // domain-level result is available to callers.
+        let enrolled = senderConfig != nil
+        let expectedDkim = senderConfig?.expectedDkimDomains ?? []
+        let requireDkim = senderConfig?.requireDkim ?? true
+        let requireSpf = senderConfig?.requireSpf ?? true
         var warnings = [String]()
 
         // Aggregate DKIM results from all AR headers
@@ -2323,7 +2324,9 @@ struct AuthCheck: AsyncParsableCommand {
         } else if anyDkimPass {
             let firstPass = allDkim.first { $0.result == "pass" }!
             dkimCheck = ["result": "pass", "signingDomain": firstPass.signingDomain, "expected": expectedDkim, "match": false, "allSigningDomains": allSigningDomains]
-            warnings.append("DKIM passed but no signing domain in \(allSigningDomains) matches expected \(expectedDkim)")
+            if enrolled {
+                warnings.append("DKIM passed but no signing domain in \(allSigningDomains) matches expected \(expectedDkim)")
+            }
         } else if let first = allDkim.first {
             dkimCheck = ["result": first.result, "signingDomain": first.signingDomain, "expected": expectedDkim, "match": false, "allSigningDomains": allSigningDomains]
         } else {
@@ -2358,7 +2361,7 @@ struct AuthCheck: AsyncParsableCommand {
         let dkimDomainOk = (dkimCheck["match"] as? Bool) ?? false
         let spfPass = (spfCheck["match"] as? Bool) ?? false
 
-        let verdict: String
+        var verdict: String
         if dkimPass && dkimDomainOk && spfPass {
             verdict = "verified"
         } else if dkimPass && dkimDomainOk && !requireSpf {
@@ -2372,7 +2375,8 @@ struct AuthCheck: AsyncParsableCommand {
             if requireDkim && !dkimPass {
                 warnings.append("DKIM required but result is '\(dkimCheck["result"] ?? "none")'")
             }
-            if requireDkim && dkimPass && !dkimDomainOk {
+            // Only meaningful when the operator configured an expectation to violate.
+            if enrolled && requireDkim && dkimPass && !dkimDomainOk {
                 warnings.append("DKIM passed but signing domain mismatch — possible spoofing")
             }
             if requireSpf && !spfPass {
@@ -2380,10 +2384,20 @@ struct AuthCheck: AsyncParsableCommand {
             }
         }
 
+        // Enrollment is the last word on the verdict, but not on the checks. An unenrolled
+        // sender can never be `verified`, because nothing binds that address to a signer,
+        // yet the DKIM/SPF results above still describe what the transport proved about the
+        // domain. Callers use that to treat an authenticated stranger differently from an
+        // unauthenticated one.
+        if !enrolled {
+            verdict = "untrusted"
+            warnings.append("Sender \(senderEmail) not in trusted-senders.json")
+        }
+
         outputJSON([
             "verdict": verdict,
             "sender": senderEmail,
-            "matchedContact": senderConfig.name,
+            "matchedContact": senderConfig?.name ?? "",
             "checks": [
                 "dkim": dkimCheck,
                 "spf": spfCheck

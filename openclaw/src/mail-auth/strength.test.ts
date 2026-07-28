@@ -125,17 +125,40 @@ describe("mailAuthToIdentifierStrengths", () => {
     });
   });
 
-  it("does not verify the address for a sender who is not enrolled", () => {
+  // Shape taken from a real `mail-cli auth-check` run against an unenrolled sender.
+  // Before mail-cli was fixed it returned empty `checks` here, which made this case
+  // indistinguishable from an unauthenticated stranger.
+  it("verifies the domain but not the address for an authenticated stranger", () => {
     const stranger = result({
       verdict: "untrusted",
-      sender: "someone@example.com",
-      checks: { dkim: { result: "pass", signingDomain: "example.com", match: false } },
+      sender: "noreply@email.apple.com",
+      checks: {
+        dkim: { result: "pass", signingDomain: "email.apple.com", match: false },
+        spf: { result: "pass", mailFrom: "bounce@email.apple.com", aligned: true, match: true },
+      },
     });
     const strengths = mailAuthToIdentifierStrengths(stranger);
+    // No expectedDkimDomains binds this address to a signer, so no mailbox claim.
     assert.equal(strengths.address, "asserted");
-    // Provenance held and DKIM passed, so the domain claim still stands. This is what
-    // makes "authenticated stranger, readable but not repliable" expressible.
+    // The transport did prove the domain. This is what makes "read an authenticated
+    // stranger, do not reply to them" expressible at all.
     assert.equal(strengths.domain, "verified");
+  });
+
+  it("keeps an unauthenticated stranger fully asserted", () => {
+    const stranger = result({
+      verdict: "untrusted",
+      sender: "spoofed@example.com",
+      checks: {
+        dkim: { result: "none", signingDomain: "", match: false },
+        spf: { result: "fail", aligned: false, match: false },
+      },
+    });
+    assert.deepEqual(mailAuthToIdentifierStrengths(stranger), {
+      address: "asserted",
+      domain: "asserted",
+      displayName: "mutable",
+    });
   });
 
   it("treats missing checks as unproven rather than absent-therefore-fine", () => {
