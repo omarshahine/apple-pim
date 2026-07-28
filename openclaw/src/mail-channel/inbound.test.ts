@@ -85,10 +85,22 @@ describe("selectNewMessages", () => {
     assert.deepEqual(r.fresh, []);
   });
 
-  it("falls back to id identity when a message has no timestamp", () => {
+  it("returns an undated message once, then never again", () => {
+    // The first assertion alone hid a replay bug: undated ids were never recorded, so the
+    // message came back fresh on every poll forever.
     const undated = msg({ messageId: "u", dateReceived: undefined });
     const first = selectNewMessages([undated], {});
     assert.deepEqual(first.fresh.map((m) => m.messageId), ["u"]);
+    const second = selectNewMessages([undated], first.cursor);
+    assert.deepEqual(second.fresh, []);
+  });
+
+  it("keeps undated dedupe working alongside dated messages", () => {
+    const undated = msg({ messageId: "u", dateReceived: undefined });
+    const first = selectNewMessages([msg({ messageId: "a" }), undated], {});
+    assert.deepEqual(first.fresh.map((m) => m.messageId).sort(), ["a", "u"]);
+    const second = selectNewMessages([msg({ messageId: "a" }), undated], first.cursor);
+    assert.deepEqual(second.fresh, []);
   });
 });
 

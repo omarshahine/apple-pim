@@ -48,7 +48,17 @@ export type InboundDeps = {
 export type PollCursor = {
   lastDateReceived?: string;
   seenAtWatermark?: readonly string[];
+  /**
+   * Ids of messages that arrived without a `dateReceived`. They cannot be placed against
+   * the watermark, so they need their own dedupe set or they are re-classified on every
+   * poll forever. Bounded, because an unbounded set in a cursor that gets persisted every
+   * cycle is a slow leak.
+   */
+  seenUndated?: readonly string[];
 };
+
+/** How many undated ids to retain. Undated mail is rare; this is a safety valve. */
+const MAX_SEEN_UNDATED = 200;
 
 export type SelectResult = {
   fresh: MailboxMessage[];
@@ -74,13 +84,17 @@ export function selectNewMessages(
   cursor: PollCursor,
 ): SelectResult {
   const seen = new Set(cursor.seenAtWatermark ?? []);
+  const seenUndated = new Set(cursor.seenUndated ?? []);
   const candidates = messages.filter((message) => {
     if (message.isJunk) {
       return false;
     }
-    if (!cursor.lastDateReceived || !message.dateReceived) {
-      // No watermark yet, or a message with no timestamp: fall back to id identity so a
-      // missing date can never cause silent reprocessing.
+    if (!message.dateReceived) {
+      // No timestamp: the watermark cannot place this message, so it gets its own set.
+      return !seenUndated.has(message.messageId);
+    }
+    if (!cursor.lastDateReceived) {
+      // Cold cursor: id identity is all we have.
       return !seen.has(message.messageId);
     }
     if (message.dateReceived > cursor.lastDateReceived) {
@@ -98,10 +112,15 @@ export function selectNewMessages(
     .filter((message) => message.dateReceived && message.dateReceived === highest)
     .map((message) => message.messageId);
 
+  const undatedIds = messages.filter((message) => !message.dateReceived).map((m) => m.messageId);
+
   return {
     fresh: candidates,
     cursor: {
       lastDateReceived: highest,
+      seenUndated: [...new Set([...(cursor.seenUndated ?? []), ...undatedIds])].slice(
+        -MAX_SEEN_UNDATED,
+      ),
       // Carry forward prior ids when the watermark did not move, so a poll that returns
       // nothing new cannot erase the dedupe set and cause a replay on the next one.
       seenAtWatermark:
