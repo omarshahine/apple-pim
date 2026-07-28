@@ -122,7 +122,7 @@ describe("egress", () => {
 
   it("E3: always permits the operator", () => {
     const d = decideEgress({ ...base, recipients: ["omar@shahine.com"] });
-    assert.deepEqual(d.permitted, ["omar@shahine.com"]);
+    assert.deepEqual(d.permitted.map((e) => e.address), ["omar@shahine.com"]);
     assert.equal(d.denied.length, 0);
   });
 
@@ -134,7 +134,7 @@ describe("egress", () => {
 
   it("E4: permits an explicitly allowlisted recipient", () => {
     assert.deepEqual(
-      decideEgress({ ...base, recipients: ["known@example.com"] }).permitted,
+      decideEgress({ ...base, recipients: ["known@example.com"] }).permitted.map((e) => e.address),
       ["known@example.com"],
     );
   });
@@ -146,8 +146,8 @@ describe("egress", () => {
       threadPermitted: true,
       threadParticipants: ["stranger@example.com"],
     });
-    assert.deepEqual(d.permitted, ["stranger@example.com"]);
-    assert.equal(d.reason, "thread_originated_by_agent");
+    assert.deepEqual(d.permitted.map((e) => e.address), ["stranger@example.com"]);
+    assert.deepEqual(d.reasons, ["thread_originated_by_agent"]);
   });
 
   it("thread permission does not let a reply-all add new recipients", () => {
@@ -158,7 +158,7 @@ describe("egress", () => {
       threadPermitted: true,
       threadParticipants: ["stranger@example.com"],
     });
-    assert.deepEqual(d.permitted, ["stranger@example.com"]);
+    assert.deepEqual(d.permitted.map((e) => e.address), ["stranger@example.com"]);
     assert.deepEqual(d.denied, [
       { address: "outsider@example.com", reason: "recipient_not_permitted" },
     ]);
@@ -173,12 +173,36 @@ describe("egress", () => {
     assert.deepEqual(d.permitted, []);
   });
 
+  it("does not credit the thread grant when no thread participant was admitted", () => {
+    // Codex finding on #83: the basis was read off the input flags, so any non-empty send
+    // with threadPermitted set was logged as thread authority it never used.
+    const d = decideEgress({
+      ...base,
+      recipients: ["omar@shahine.com", "known@example.com"],
+      threadPermitted: true,
+      threadParticipants: ["someone-else@example.com"],
+    });
+    assert.deepEqual(d.reasons.sort(), ["operator_recipient", "recipient_allowlisted"]);
+    assert.equal(d.reasons.includes("thread_originated_by_agent"), false);
+  });
+
+  it("reports each recipient's own basis, not one basis for the send", () => {
+    const d = decideEgress({
+      ...base,
+      recipients: ["omar@shahine.com", "known@example.com"],
+    });
+    assert.deepEqual(d.permitted, [
+      { address: "omar@shahine.com", reason: "operator_recipient" },
+      { address: "known@example.com", reason: "recipient_allowlisted" },
+    ]);
+  });
+
   it("E8: narrows reply-all instead of leaking to unknown recipients", () => {
     const d = decideEgress({
       ...base,
       recipients: ["omar@shahine.com", "known@example.com", "stranger@example.com"],
     });
-    assert.deepEqual(d.permitted, ["omar@shahine.com", "known@example.com"]);
+    assert.deepEqual(d.permitted.map((e) => e.address), ["omar@shahine.com", "known@example.com"]);
     assert.deepEqual(d.denied, [
       { address: "stranger@example.com", reason: "recipient_not_permitted" },
     ]);
@@ -203,7 +227,7 @@ describe("egress", () => {
 
   it("matches recipients case-insensitively", () => {
     assert.deepEqual(
-      decideEgress({ ...base, recipients: ["Known@Example.COM"] }).permitted,
+      decideEgress({ ...base, recipients: ["Known@Example.COM"] }).permitted.map((e) => e.address),
       ["Known@Example.COM"],
     );
   });

@@ -105,12 +105,20 @@ export type EgressReason =
   | "recipient_not_permitted";
 
 export type EgressDecision = {
-  /** Recipients the message may be sent to. Empty means the send is denied entirely. */
-  permitted: string[];
+  /**
+   * Recipients the message may be sent to, each with the grant that actually admitted it.
+   * Empty means the send is denied entirely.
+   */
+  permitted: { address: string; reason: EgressReason }[];
   /** Recipients removed from the send, each with why. */
   denied: { address: string; reason: EgressReason }[];
-  /** Overall basis, for audit. */
-  reason: EgressReason;
+  /**
+   * Distinct grants actually used, for audit. Derived from the per-recipient outcomes
+   * rather than from the input flags: a send where `threadPermitted` was set but only the
+   * operator was admitted must not be recorded as having used the thread grant. Audit is
+   * part of the control surface here, so overstating authority is itself a defect.
+   */
+  reasons: EgressReason[];
 };
 
 export type EgressInput = {
@@ -152,7 +160,7 @@ export function decideEgress(input: EgressInput): EgressDecision {
   // would turn a narrow exception into a general send capability.
   const participants = lower(input.threadParticipants ?? []);
 
-  const permitted: string[] = [];
+  const permitted: { address: string; reason: EgressReason }[] = [];
   const denied: { address: string; reason: EgressReason }[] = [];
 
   for (const recipient of input.recipients) {
@@ -165,38 +173,31 @@ export function decideEgress(input: EgressInput): EgressDecision {
     }
     // E3.
     if (operators.has(address)) {
-      permitted.push(recipient);
+      permitted.push({ address: recipient, reason: "operator_recipient" });
       continue;
     }
     // E1. Thread permission covers existing participants only.
     if (input.threadPermitted && participants.has(address)) {
-      permitted.push(recipient);
+      permitted.push({ address: recipient, reason: "thread_originated_by_agent" });
       continue;
     }
     // E6.
     if (input.operatorInstructed) {
-      permitted.push(recipient);
+      permitted.push({ address: recipient, reason: "operator_instructed" });
       continue;
     }
     // E4.
     if (allowed.has(address)) {
-      permitted.push(recipient);
+      permitted.push({ address: recipient, reason: "recipient_allowlisted" });
       continue;
     }
     // E5, E7.
     denied.push({ address: recipient, reason: "recipient_not_permitted" });
   }
 
-  const reason: EgressReason =
-    permitted.length === 0
-      ? (denied[0]?.reason ?? "recipient_not_permitted")
-      : input.threadPermitted
-        ? "thread_originated_by_agent"
-        : input.operatorInstructed
-          ? "operator_instructed"
-          : permitted.every((address) => operators.has(address.trim().toLowerCase()))
-            ? "operator_recipient"
-            : "recipient_allowlisted";
+  // Report only the grants that actually admitted someone. Reading these off the input
+  // flags would credit the thread rule for a send it never authorized.
+  const reasons = [...new Set(permitted.map((entry) => entry.reason))];
 
-  return { permitted, denied, reason };
+  return { permitted, denied, reasons };
 }
