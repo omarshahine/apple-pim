@@ -1,0 +1,170 @@
+import { describe, it } from "node:test";
+import { strict as assert } from "node:assert";
+import { decideEgress, decideIngress, type IngressInput } from "./policy.ts";
+import type { MailIdentifierStrengths } from "../mail-auth/strength.ts";
+
+const VERIFIED: MailIdentifierStrengths = {
+  address: "verified",
+  domain: "verified",
+  displayName: "mutable",
+};
+const AUTHENTICATED_STRANGER: MailIdentifierStrengths = {
+  address: "asserted",
+  domain: "verified",
+  displayName: "mutable",
+};
+const UNAUTHENTICATED: MailIdentifierStrengths = {
+  address: "asserted",
+  domain: "asserted",
+  displayName: "mutable",
+};
+
+function ingress(overrides: Partial<IngressInput> = {}): IngressInput {
+  return {
+    strengths: VERIFIED,
+    senderAddress: "omar@shahine.com",
+    allowlisted: true,
+    minIdentifierAuthentication: "verified",
+    selfAddressed: false,
+    threadPermitted: false,
+    ...overrides,
+  };
+}
+
+describe("ingress admission", () => {
+  it("I1: dispatches an authenticated, allowlisted sender", () => {
+    assert.deepEqual(decideIngress(ingress()), {
+      admission: "dispatch",
+      reason: "allowlisted_and_authenticated",
+    });
+  });
+
+  it("I2: drops an allowlisted sender whose message did not authenticate", () => {
+    // The operator gets no exception. Making one would invert the whole model.
+    assert.deepEqual(decideIngress(ingress({ strengths: UNAUTHENTICATED })), {
+      admission: "drop",
+      reason: "identifier_authentication_too_weak",
+    });
+  });
+
+  it("I5: observes an authenticated stranger, never dispatches", () => {
+    assert.deepEqual(
+      decideIngress(ingress({ strengths: AUTHENTICATED_STRANGER, allowlisted: false })),
+      { admission: "observe", reason: "authenticated_but_not_allowlisted" },
+    );
+  });
+
+  it("I6: drops an unauthenticated stranger", () => {
+    assert.deepEqual(decideIngress(ingress({ strengths: UNAUTHENTICATED, allowlisted: false })), {
+      admission: "drop",
+      reason: "unauthenticated_sender",
+    });
+  });
+
+  it("I7/I8: a forged or unaligned pass lands as unauthenticated, not as a stranger to read", () => {
+    // Both attacks resolve to asserted/asserted upstream, so they cannot even reach observe.
+    const forged = decideIngress(ingress({ strengths: UNAUTHENTICATED, allowlisted: false }));
+    assert.equal(forged.admission, "drop");
+  });
+
+  it("I13: drops self-addressed mail before any grant applies", () => {
+    // Loop guard must outrank thread permission, which would otherwise dispatch it.
+    assert.deepEqual(decideIngress(ingress({ selfAddressed: true, threadPermitted: true })), {
+      admission: "drop",
+      reason: "self_addressed",
+    });
+  });
+
+  it("I9: dispatches a thread reply from a sender who is not allowlisted", () => {
+    assert.deepEqual(
+      decideIngress(
+        ingress({
+          allowlisted: false,
+          strengths: AUTHENTICATED_STRANGER,
+          threadPermitted: true,
+        }),
+      ),
+      { admission: "dispatch", reason: "thread_originated_by_agent" },
+    );
+  });
+
+  it("honors a relaxed minimum, matching today's default behavior", () => {
+    // minIdentifierAuthentication: "asserted" is the shipped default, under which an
+    // allowlisted sender is admitted without any authentication improvement.
+    assert.equal(
+      decideIngress(
+        ingress({ strengths: UNAUTHENTICATED, minIdentifierAuthentication: "asserted" }),
+      ).admission,
+      "dispatch",
+    );
+  });
+});
+
+describe("egress", () => {
+  const base = {
+    operatorAddresses: ["omar@shahine.com"],
+    egressAllowlist: ["known@example.com"],
+    selfAddresses: ["lobster@example.com"],
+    threadPermitted: false,
+    operatorInstructed: false,
+  };
+
+  it("E3: always permits the operator", () => {
+    const d = decideEgress({ ...base, recipients: ["omar@shahine.com"] });
+    assert.deepEqual(d.permitted, ["omar@shahine.com"]);
+    assert.equal(d.denied.length, 0);
+  });
+
+  it("E5: denies an arbitrary address by default", () => {
+    const d = decideEgress({ ...base, recipients: ["stranger@example.com"] });
+    assert.deepEqual(d.permitted, []);
+    assert.equal(d.denied[0]?.reason, "recipient_not_permitted");
+  });
+
+  it("E4: permits an explicitly allowlisted recipient", () => {
+    assert.deepEqual(
+      decideEgress({ ...base, recipients: ["known@example.com"] }).permitted,
+      ["known@example.com"],
+    );
+  });
+
+  it("E1: permits a reply inside an agent-originated thread", () => {
+    const d = decideEgress({ ...base, recipients: ["stranger@example.com"], threadPermitted: true });
+    assert.deepEqual(d.permitted, ["stranger@example.com"]);
+    assert.equal(d.reason, "thread_originated_by_agent");
+  });
+
+  it("E8: narrows reply-all instead of leaking to unknown recipients", () => {
+    const d = decideEgress({
+      ...base,
+      recipients: ["omar@shahine.com", "known@example.com", "stranger@example.com"],
+    });
+    assert.deepEqual(d.permitted, ["omar@shahine.com", "known@example.com"]);
+    assert.deepEqual(d.denied, [
+      { address: "stranger@example.com", reason: "recipient_not_permitted" },
+    ]);
+  });
+
+  it("E10: never sends to itself, even inside a permitted thread", () => {
+    const d = decideEgress({
+      ...base,
+      recipients: ["lobster@example.com"],
+      threadPermitted: true,
+    });
+    assert.deepEqual(d.permitted, []);
+    assert.equal(d.denied[0]?.reason, "self_addressed");
+  });
+
+  it("inbound trust grants nothing outbound", () => {
+    // An address can be fully verified inbound and still not be a permitted recipient.
+    const d = decideEgress({ ...base, recipients: ["verified-inbound@example.com"] });
+    assert.deepEqual(d.permitted, []);
+  });
+
+  it("matches recipients case-insensitively", () => {
+    assert.deepEqual(
+      decideEgress({ ...base, recipients: ["Known@Example.COM"] }).permitted,
+      ["Known@Example.COM"],
+    );
+  });
+});
