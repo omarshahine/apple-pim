@@ -1,7 +1,10 @@
 {
   "id": "apple-pim-cli",
   "name": "Apple PIM: Calendar, Reminders, Contacts, Mail",
-  "description": "macOS-only. Wraps four native Swift CLIs (calendar-cli, reminder-cli, contacts-cli, mail-cli) you build locally from source via ./setup.sh — no binaries are downloaded by the registry. Grants the agent read/write access to Calendar, Reminders, Contacts, and Mail.app (including send/delete) once you approve the corresponding macOS TCC and Automation prompts.",
+  "description": "macOS-only. Wraps four native Swift CLIs (calendar-cli, reminder-cli, contacts-cli, mail-cli) you build locally from source via ./setup.sh \u2014 no binaries are downloaded by the registry. Grants the agent read/write access to Calendar, Reminders, Contacts, and Mail.app (including send/delete) once you approve the corresponding macOS TCC and Automation prompts.",
+  "channels": [
+    "apple-mail"
+  ],
   "version": "3.10.0",
   "configSchema": {
     "type": "object",

@@ -8,6 +8,7 @@
  */
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
+import { appleMailChannelEntry } from "./mail-channel/entry.js";
 import { createCLIRunner, findSwiftBinDir } from "../lib/cli-runner.js";
 import { tools } from "../lib/schemas.js";
 import { markToolResult, getDatamarkingPreamble } from "../lib/sanitize.js";
@@ -149,6 +150,11 @@ export default definePluginEntry({
   description: "macOS Calendar, Reminders, Contacts, and Mail via native Swift CLIs",
 
   register(api) {
+    // package.json declares only ./src/index.ts as an extension, so the channel entry
+    // has to be reached from here or defineChannelPluginEntry never runs and the
+    // channel is silently absent at runtime.
+    appleMailChannelEntry.register(api);
+
     const config = api.pluginConfig as PluginConfig | undefined;
     const binDir = resolveBinDir(config);
 
