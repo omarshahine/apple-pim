@@ -2350,8 +2350,10 @@ struct AuthCheck: AsyncParsableCommand {
                 warnings.append(
                     "SPF passed for '\(mailFromDomain.isEmpty ? "unknown" : mailFromDomain)' "
                         + "but that does not align with From domain '\(senderDomain)', so it does not "
-                        + "authenticate this sender. Relayed mail usually authenticates via DKIM instead; "
-                        + "set requireSpf=false for this sender if DKIM carries it."
+                        + "authenticate this sender."
+                        + (enrolled
+                            ? " Relayed mail usually authenticates via DKIM instead; set requireSpf=false for this sender if DKIM carries it."
+                            : "")
                 )
             }
         }
@@ -2372,14 +2374,15 @@ struct AuthCheck: AsyncParsableCommand {
             if !dkimPass { warnings.append("DKIM result is '\(dkimCheck["result"] ?? "none")' but not required for this sender") }
         } else {
             verdict = "suspicious"
-            if requireDkim && !dkimPass {
+            // "required" only means something when the operator configured a requirement.
+            if enrolled && requireDkim && !dkimPass {
                 warnings.append("DKIM required but result is '\(dkimCheck["result"] ?? "none")'")
             }
             // Only meaningful when the operator configured an expectation to violate.
             if enrolled && requireDkim && dkimPass && !dkimDomainOk {
                 warnings.append("DKIM passed but signing domain mismatch — possible spoofing")
             }
-            if requireSpf && !spfPass {
+            if enrolled && requireSpf && !spfPass {
                 warnings.append("SPF required but result is '\(spfCheck["result"] ?? "none")'")
             }
         }
