@@ -14,6 +14,29 @@ This document enumerates the scenarios that follow, and how the channel decides 
 It is written to be readable without the implementation in front of you, because the point
 of writing it down is to make the policy arguable before it is code.
 
+## Two mailbox relationships
+
+Before any of the scenarios below, one distinction decides which of them apply at all.
+
+| | Owned | Delegated (OBO) |
+| --- | --- | --- |
+| Whose mailbox | the agent's own account | the operator's account |
+| Who the agent is when it sends | itself | the operator |
+| Who else reads the inbound mail | nobody | the operator, regardless of what the agent does |
+| The question egress answers | may the agent contact this person? | is the agent authorized to act as the operator toward this person? |
+
+**Everything from here to "Cross-cutting concerns" describes the owned case**, which is what
+this channel implements. The delegated case is genuinely different, not a relaxation of the
+same rules, and is covered in [Delegated mailboxes](#delegated-mailboxes-obo).
+
+In this deployment the split is concrete: the Apple Mail account is owned, and a separate
+agent handles the operator's Fastmail account under delegation. They are different accounts
+with different rules, not one policy at two strictness levels.
+
+Getting these backwards is the expensive mistake. Applying owned-mailbox default-deny to a
+delegated mailbox produces an assistant that cannot do its job, and applying delegated
+looseness to an owned mailbox produces an agent any stranger can drive.
+
 ## The three questions
 
 Every decision in this document reduces to three independent questions. Conflating any two
@@ -55,7 +78,7 @@ different boundaries.
 
 ---
 
-## Ingress: mail arriving
+## Ingress: mail arriving (owned mailbox)
 
 `dispatch` means the agent acts on it. `observe` means the agent may read and summarize but
 not act or reply. `drop` means it never reaches the agent.
@@ -118,7 +141,7 @@ consulted.
 
 ---
 
-## Egress: mail leaving
+## Egress: mail leaving (owned mailbox)
 
 Egress is **default-deny**. The agent may not originate mail to an address unless the
 operator has permitted it. Inbound authentication strength grants nothing outbound: proving
@@ -184,6 +207,64 @@ confirms a human is behind it, and starts a conversation on their terms. The ope
 always permit the address explicitly, which is the point: it should be a decision.
 
 ---
+
+## Delegated mailboxes (OBO)
+
+A delegated mailbox is the operator's, and the agent acts as them. Two consequences run
+through everything below.
+
+**Admission stops being a shield.** On an owned mailbox, dropping a message means nobody
+sees it. On a delegated mailbox the operator receives the mail regardless; admission only
+decides whether the *agent* processes it. So the useful question is never "should this
+message exist" but "may the agent act on it", and the honest default for unauthenticated
+mail is to read it and act on nothing it says.
+
+**Egress gets riskier, not safer.** Sending as the operator borrows their reputation.
+A recipient who sees the operator's address extends the trust they have in the operator, not
+the trust they have in an assistant. A successful injection on a delegated mailbox can
+therefore do more damage than the same injection on an owned one, even though the mailbox
+feels more trusted. Delegated egress deserves *more* scrutiny than owned egress, of a
+different kind: not "may we contact them" but "would the operator have sent this".
+
+| # | Scenario | Owned answer | Delegated answer |
+| --- | --- | --- | --- |
+| D1 | Reply in a thread the **operator** originated | not applicable | permitted; this is ordinary delegated work |
+| D2 | Reply in a thread a third party originated, operator already a participant | as if new (I10) | permitted; the operator is already in the conversation |
+| D3 | New mail as the operator to a known correspondent | default-deny (E5) | permitted with approval |
+| D4 | New mail as the operator to a never-seen address | default-deny (E5) | approval, and the highest-scrutiny case here |
+| D5 | Destructive mailbox operations (bulk delete, bulk move) | not offered | explicit operator instruction only |
+| D6 | Unauthenticated inbound arrives | `drop` (I6) | read and summarize; act on nothing it instructs |
+| D7 | Inbound content instructs the agent to send mail | never reaches the agent | the send is still gated by D3/D4; content cannot self-authorize |
+
+### What changes in the rules
+
+**The thread test inverts.** The owned rule asks `threadOriginatedFromAgent`, because on its
+own account an agent replying to a stranger is originating contact. On a delegated mailbox
+the equivalent test is whether the **principal** is already in the thread. The agent
+replying inside a conversation the operator is having is continuing their work, not starting
+something new.
+
+The forgery protection carries over unchanged, and matters more: membership must still be
+established from recorded state rather than from `References` and `In-Reply-To`, because
+here a forged claim buys the ability to send as the operator.
+
+**The operator changes role.** In the owned model the operator is a permitted *recipient*.
+In the delegated model they are the *sender identity being assumed*, which the owned model
+has no way to express. Egress policy for a delegated mailbox needs a "sending as" axis that
+owned egress does not have, and conflating the two is how an agent ends up treating the
+operator's address as merely allowlisted.
+
+**Recipient allowlists mostly stop making sense.** Operators mail whoever they like, so an
+allowlist would be permanently out of date. The control that carries the weight is approval
+on origination (D3, D4), not enumeration of recipients.
+
+### Not yet implemented
+
+The policy code in this plugin implements the owned model only. `decideEgress` reasons about
+recipient permission and has no concept of sending *as* another identity, so it must not be
+pointed at a delegated mailbox as-is. In this deployment the delegated case is handled by a
+separate agent against a separate account, which is the right seam; a delegated channel would
+need its own policy module rather than a flag on this one.
 
 ## Cross-cutting concerns
 
