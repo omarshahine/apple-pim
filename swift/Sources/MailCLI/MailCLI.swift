@@ -2061,6 +2061,12 @@ private struct TrustedSender: Decodable {
 private struct TrustedSendersFile: Decodable {
     let version: Int?
     let trustedSenders: [TrustedSender]
+    /// authserv-id values our own trust boundary stamps, keyed by Mail.app account name.
+    /// `"*"` applies to every account. Mail.app aggregates accounts whose boundaries differ
+    /// (iCloud, Gmail-over-IMAP, Exchange), so this cannot be a single global list.
+    /// Empty or absent means no Authentication-Results header can be trusted: a sender can
+    /// write that header themselves, so an unpinned authserv-id is a spoofing oracle.
+    let trustedAuthservIds: [String: [String]]?
 }
 
 /// Parsed DKIM result from Authentication-Results header
@@ -2141,6 +2147,10 @@ struct AuthCheck: AsyncParsableCommand {
             try {
                 result.allHeaders = msg.allHeaders();
             } catch(e) {}
+            // Account decides which authserv-id is authoritative for this message.
+            try {
+                result.account = msg.mailbox().account().name();
+            } catch(e) {}
             JSON.stringify(result);
         }
         """
@@ -2201,15 +2211,55 @@ struct AuthCheck: AsyncParsableCommand {
         }
 
         // Parse Authentication-Results
-        let authResults = parseAuthenticationResults(headerText)
+        let allAuthResults = parseAuthenticationResults(headerText)
 
-        guard !authResults.isEmpty else {
+        guard !allAuthResults.isEmpty else {
             outputJSON([
                 "verdict": "unknown",
                 "sender": senderEmail,
                 "matchedContact": senderConfig.name,
                 "checks": [String: Any](),
                 "warnings": ["No Authentication-Results headers found"]
+            ])
+            return
+        }
+
+        // Keep only results stamped by our own boundary. Authentication-Results lives inside
+        // the message, so a sender can forge one; RFC 8601 only makes the boundary strip
+        // instances carrying its *own* authserv-id, so a forged id survives untouched.
+        let accountName = msgDict["account"] as? String
+        let trustedIds = trustedAuthservIds(file: trustedFile, account: accountName)
+        let observedIds = allAuthResults.map { normalizeAuthservId($0.authservId) }.filter { !$0.isEmpty }
+
+        guard !trustedIds.isEmpty else {
+            outputJSON([
+                "verdict": "unknown",
+                "sender": senderEmail,
+                "matchedContact": senderConfig.name,
+                "checks": [String: Any](),
+                "warnings": [
+                    "No trustedAuthservIds configured\(accountName.map { " for account '\($0)'" } ?? "") — "
+                        + "refusing to trust Authentication-Results headers, which senders can forge. "
+                        + "Observed authserv-ids on this message: \(Set(observedIds).sorted().joined(separator: ", ")). "
+                        + "Add the ones your own boundary stamps to trustedAuthservIds in trusted-senders.json."
+                ]
+            ])
+            return
+        }
+
+        let authResults = allAuthResults.filter { authservIdMatches($0.authservId, trusted: trustedIds) }
+
+        guard !authResults.isEmpty else {
+            outputJSON([
+                "verdict": "suspicious",
+                "sender": senderEmail,
+                "matchedContact": senderConfig.name,
+                "checks": [String: Any](),
+                "warnings": [
+                    "No Authentication-Results header from a trusted authserv-id "
+                        + "(trusted: \(trustedIds.joined(separator: ", ")); "
+                        + "observed: \(Set(observedIds).sorted().joined(separator: ", ")))"
+                ]
             ])
             return
         }
@@ -2243,17 +2293,33 @@ struct AuthCheck: AsyncParsableCommand {
             dkimCheck = ["result": "none", "signingDomain": "", "expected": expectedDkim, "match": false, "allSigningDomains": [String]()]
         }
 
-        // Build SPF check report
-        var spfCheck: [String: Any] = ["result": "none", "match": false]
+        // Build SPF check report. An SPF pass authenticates the envelope sender, not the
+        // From header, so it only says something about this message's claimed identity when
+        // smtp.mailfrom aligns with the From domain. Unaligned passes are reported but do
+        // not count as a pass.
+        let senderDomain = senderEmail.split(separator: "@").last.map(String.init)?.lowercased() ?? ""
+        var spfCheck: [String: Any] = ["result": "none", "match": false, "aligned": false]
         if let spf = aggregatedSpf {
+            let mailFromDomain = spf.mailFrom?.split(separator: "@").last.map(String.init)?.lowercased() ?? ""
+            let aligned = domainAligns(mailFromDomain, senderDomain)
             spfCheck["result"] = spf.result
-            spfCheck["match"] = spf.result == "pass"
+            spfCheck["mailFrom"] = spf.mailFrom ?? ""
+            spfCheck["aligned"] = aligned
+            spfCheck["match"] = spf.result == "pass" && aligned
+            if spf.result == "pass" && !aligned {
+                warnings.append(
+                    "SPF passed for '\(mailFromDomain.isEmpty ? "unknown" : mailFromDomain)' "
+                        + "but that does not align with From domain '\(senderDomain)', so it does not "
+                        + "authenticate this sender. Relayed mail usually authenticates via DKIM instead; "
+                        + "set requireSpf=false for this sender if DKIM carries it."
+                )
+            }
         }
 
-        // Determine verdict
+        // Determine verdict. `spfPass` requires alignment, not just a pass result.
         let dkimPass = (dkimCheck["result"] as? String) == "pass"
         let dkimDomainOk = (dkimCheck["match"] as? Bool) ?? false
-        let spfPass = (spfCheck["result"] as? String) == "pass"
+        let spfPass = (spfCheck["match"] as? Bool) ?? false
 
         let verdict: String
         if dkimPass && dkimDomainOk && spfPass {
@@ -2383,6 +2449,40 @@ struct AuthCheck: AsyncParsableCommand {
             return nil
         }
         return String(text[range])
+    }
+
+    /// authserv-id values trusted for this account: the `"*"` entry plus any account-specific
+    /// entry. Empty result means fail closed.
+    private func trustedAuthservIds(file: TrustedSendersFile, account: String?) -> [String] {
+        guard let map = file.trustedAuthservIds else { return [] }
+        var ids = map["*"] ?? []
+        if let account, let scoped = map[account] {
+            ids.append(contentsOf: scoped)
+        }
+        return Array(Set(ids.map { $0.lowercased() })).sorted()
+    }
+
+    /// Strip the optional RFC 8601 version token, so "mx.example.com 1" matches "mx.example.com".
+    private func normalizeAuthservId(_ raw: String) -> String {
+        raw.trimmingCharacters(in: .whitespaces)
+            .split(separator: " ")
+            .first
+            .map(String.init)?
+            .lowercased() ?? ""
+    }
+
+    private func authservIdMatches(_ raw: String, trusted: [String]) -> Bool {
+        let id = normalizeAuthservId(raw)
+        guard !id.isEmpty else { return false }
+        return trusted.contains(id)
+    }
+
+    /// Relaxed-alignment approximation: exact match, or one domain is a subdomain of the other.
+    /// Without a public-suffix list this cannot compute true organizational domains, so it is
+    /// deliberately narrower than DMARC relaxed alignment rather than wider.
+    private func domainAligns(_ a: String, _ b: String) -> Bool {
+        guard !a.isEmpty, !b.isEmpty else { return false }
+        return a == b || a.hasSuffix("." + b) || b.hasSuffix("." + a)
     }
 
     /// Check if a signing domain matches any expected domain (exact or subdomain).
