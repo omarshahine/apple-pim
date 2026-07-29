@@ -350,9 +350,18 @@ func mailIsRunning() -> Bool {
 /// needs Mail.app and launching is useful rather than a surprise GUI launch.
 ///
 /// Launched without activating, so it does not steal focus on a machine in use.
-func ensureMailRunning() throws {
+/// - Parameter launch: opt in to starting Mail.app when it is not running.
+///
+/// Defaults to false so this stays a pure check, which is what every read path relies on:
+/// several commands catch the throw and fall back to SQLite, and a launching default turns
+/// those fallbacks into dead code and every read into a GUI launch. Only operations that
+/// cannot be served any other way (sending, replying) opt in.
+func ensureMailRunning(launch: Bool = false) throws {
     if mailIsRunning() {
         return
+    }
+    guard launch else {
+        throw CLIError.appNotRunning("Mail.app is not running. Please open Mail.app first.")
     }
 
     guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail") else {
@@ -410,7 +419,20 @@ func mailAnswersAppleEvents() -> Bool {
     } catch {
         return false
     }
-    proc.waitUntilExit()
+
+    // Bounded wait. An Apple Events call can stall indefinitely behind an automation
+    // consent dialog, and waitUntilExit() would then block past the caller's deadline and
+    // hang the whole command rather than timing out.
+    let group = DispatchGroup()
+    group.enter()
+    DispatchQueue.global().async {
+        proc.waitUntilExit()
+        group.leave()
+    }
+    if group.wait(timeout: .now() + 5) == .timedOut {
+        proc.terminate()
+        return false
+    }
     return proc.terminationStatus == 0
 }
 
@@ -1671,7 +1693,7 @@ struct SendMessage: AsyncParsableCommand {
     var attachment: [String] = []
 
     func run() async throws {
-        try ensureMailRunning()
+        try ensureMailRunning(launch: true)
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
@@ -1765,7 +1787,7 @@ struct ReplyMessage: AsyncParsableCommand {
     var attachment: [String] = []
 
     func run() async throws {
-        try ensureMailRunning()
+        try ensureMailRunning(launch: true)
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
