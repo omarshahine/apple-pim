@@ -49,24 +49,52 @@ export type PollCycleResult = {
 const DEFAULT_MAX_LIMIT = 500;
 
 /**
- * A cursor covering exactly the messages handed in, for a partially delivered batch.
+ * A cursor covering the previous one plus exactly the messages handed in, for a partially
+ * delivered batch.
  *
- * Undated messages are recorded by id, because they cannot be placed against a watermark
- * and would otherwise be redelivered on every cycle.
+ * Merged with `previous` rather than built fresh. A prefix consisting only of undated
+ * messages has no watermark of its own, and returning one without `lastDateReceived` would
+ * reset the cursor to cold and redeliver every dated message in the mailbox. The same
+ * applies to `seenUndated`: dropping the inherited ids lets older undated mail replay.
+ *
+ * Undated messages are recorded by id, because they cannot be placed against a watermark.
  */
-function cursorThrough(delivered: readonly ClassifiedMessage[]): PollCursor {
+function cursorThrough(
+  previous: PollCursor,
+  delivered: readonly ClassifiedMessage[],
+): PollCursor {
   const dates = delivered.map((e) => e.message.dateReceived).filter(Boolean) as string[];
-  const highest = dates.sort().at(-1);
+  const deliveredHighest = dates.sort().at(-1);
+  // Never move the watermark backwards: a partial batch can only ever add to what the
+  // previous cursor already covered.
+  const highest =
+    deliveredHighest && (!previous.lastDateReceived || deliveredHighest > previous.lastDateReceived)
+      ? deliveredHighest
+      : previous.lastDateReceived;
+
+  const atWatermark = delivered
+    .filter((e) => e.message.dateReceived && e.message.dateReceived === highest)
+    .map((e) => e.message.messageId);
+
   return {
     lastDateReceived: highest,
-    seenAtWatermark: delivered
-      .filter((e) => e.message.dateReceived && e.message.dateReceived === highest)
-      .map((e) => e.message.messageId),
-    seenUndated: delivered
-      .filter((e) => !e.message.dateReceived)
-      .map((e) => e.message.messageId),
+    // Carry the prior ids forward when the watermark did not move, so a partial batch that
+    // adds nothing newer cannot erase the dedupe set for that instant.
+    seenAtWatermark:
+      highest && highest === previous.lastDateReceived
+        ? [...new Set([...(previous.seenAtWatermark ?? []), ...atWatermark])]
+        : atWatermark,
+    seenUndated: [
+      ...new Set([
+        ...(previous.seenUndated ?? []),
+        ...delivered.filter((e) => !e.message.dateReceived).map((e) => e.message.messageId),
+      ]),
+    ].slice(-MAX_SEEN_UNDATED_CURSOR),
   };
 }
+
+/** Mirrors the bound in `selectNewMessages`, which owns the same field. */
+const MAX_SEEN_UNDATED_CURSOR = 200;
 
 /**
  * Lists far enough back to reach the previous cursor.
@@ -202,6 +230,9 @@ export async function runPollLoop(
   const sleep = deps.sleep ?? defaultSleep;
   while (!signal.aborted) {
     try {
+      // Read once per cycle: the partial cursor has to be merged onto what was already
+      // persisted, not built from the delivered slice alone.
+      const previous = (await store.lookup(options.cursorKey)) ?? {};
       const { classified, cursor, truncated } = await runPollCycle(deps, options, store);
       if (truncated) {
         deps.onTruncated?.({ mailbox: options.mailbox, limit: options.maxLimit ?? DEFAULT_MAX_LIMIT });
@@ -245,7 +276,7 @@ export async function runPollLoop(
           // Advance only through what was delivered. Holding everything would replay the
           // delivered prefix on every retry and, if the batch keeps exceeding the budget,
           // starve the suffix forever.
-          partialCursor = cursorThrough(ordered.slice(0, completed));
+          partialCursor = cursorThrough(previous, ordered.slice(0, completed));
         }
       }
       // Truncation advances the cursor even though mail behind the ceiling was never

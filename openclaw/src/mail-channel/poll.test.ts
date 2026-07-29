@@ -579,3 +579,69 @@ describe("partial delivery", () => {
     assert.deepEqual(delivered, ["a", "b", "c"], "each message delivered exactly once");
   });
 });
+
+// Codex, third pass: cursorThrough built a cursor from the delivered slice alone. A prefix
+// of only undated messages then produced no watermark at all, resetting the cursor to cold
+// and redelivering every dated message in the mailbox.
+describe("partial cursor merges with the previous one", () => {
+  function boundedSignal(cycles: number) {
+    const controller = new AbortController();
+    let seen = 0;
+    return {
+      signal: controller.signal,
+      sleep: async () => {
+        seen += 1;
+        if (seen >= cycles) {
+          controller.abort();
+        }
+      },
+    };
+  }
+
+  async function runOnce(store: ReturnType<typeof memoryStore>, messages: MailboxMessage[], completed: number) {
+    const { signal, sleep } = boundedSignal(1);
+    await runPollLoop(
+      {
+        listMessages: async () => messages,
+        authCheck: async () => VERIFIED,
+        onAdmitted: () => ({ completed }),
+        sleep,
+      },
+      { ...OPTIONS, intervalMs: 1 },
+      store,
+      signal,
+    );
+    return store.values.get(OPTIONS.cursorKey);
+  }
+
+  it("keeps the existing watermark when the delivered prefix is undated", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
+    const undated = { messageId: "u1", sender: "a@example.com" } as MailboxMessage;
+    const cursor = await runOnce(store, [undated, msg("dated", "2026-07-28T12:00:00.000Z")], 1);
+    assert.equal(
+      cursor?.lastDateReceived,
+      "2026-07-28T09:00:00.000Z",
+      "watermark must not be erased by an undated-only prefix",
+    );
+    assert.deepEqual(cursor?.seenUndated, ["u1"]);
+  });
+
+  it("never moves the watermark backwards", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T15:00:00.000Z" });
+    const cursor = await runOnce(store, [msg("old", "2026-07-28T16:00:00.000Z")], 0);
+    assert.equal(cursor?.lastDateReceived, "2026-07-28T15:00:00.000Z");
+  });
+
+  it("carries prior undated ids forward", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, {
+      lastDateReceived: "2026-07-28T09:00:00.000Z",
+      seenUndated: ["older-undated"],
+    });
+    const undated = { messageId: "u2", sender: "a@example.com" } as MailboxMessage;
+    const cursor = await runOnce(store, [undated, msg("d", "2026-07-28T12:00:00.000Z")], 1);
+    assert.deepEqual(cursor?.seenUndated, ["older-undated", "u2"]);
+  });
+});
