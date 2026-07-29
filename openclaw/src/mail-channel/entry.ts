@@ -29,6 +29,7 @@ import {
 import { checkChannelConfig } from "./config-check.ts";
 import { RunBudget, resolveRateLimits, type BreakerStore } from "./rate-limit.ts";
 import { ThreadRecords, type ThreadRecordStore } from "./thread-store.ts";
+import { openStore } from "./store.ts";
 import {
   loadQuarantine,
   quarantineMessage,
@@ -163,71 +164,34 @@ const security = {
 };
 
 /**
- * Starts one account's poll loop and stops it on shutdown.
+ * Runs one account's poll loop for the lifetime of the channel.
  *
- * `startAccount` returns once the loop is running rather than awaiting it, because the
- * loop only ends on abort and the gateway needs startup to complete. The promise is kept
- * so `stopAccount` can wait for the current cycle to settle instead of tearing down
- * mid-classification.
+ * `startAccount` awaits the loop rather than returning once it is running. Returning early
+ * looks like a channel that started and then exited, and the gateway restarts it on that
+ * basis every few seconds. The promise is also kept so `stopAccount` can wait for the
+ * current cycle to settle instead of tearing down mid-classification.
  */
 const loops = new Map<string, Promise<void>>();
 
 const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> = {
   startAccount: async (ctx) => {
     const config = ctx.account.config;
-    const state = pluginRuntime?.state;
-    if (!state) {
-      // Without durable cursor storage the loop would re-read the mailbox from scratch on
-      // every restart. Refuse to start rather than run in a state that looks fine and
-      // silently reprocesses.
-      ctx.log?.warn?.("apple-mail: plugin runtime unavailable; not starting the poll loop");
-      return;
-    }
-    // Every durable surface this channel has goes through `openKeyedStore`, and the host
-    // refuses it unless the plugin is bundled or a trusted official install. A path-loaded
-    // or third-party install is neither, and the throw lands inside `startAccount`, which
-    // the gateway treats as a crashed channel and restarts ten times over several minutes.
-    // Fail once, say what to do, and stay down: retrying cannot change a trust decision.
-    let store: CursorStore;
-    try {
-      store = state.openKeyedStore<PollCursor>({
-        namespace: `${CHANNEL_ID}:cursor`,
-        maxEntries: 64,
-      }) as CursorStore;
-    } catch (error) {
-      ctx.log?.error?.(
-        `apple-mail: durable storage unavailable (${String(error)}). The channel needs it for ` +
-          `its poll cursor, thread records, quarantine, and run budget, and cannot run ` +
-          `safely without them: a lost cursor reprocesses the mailbox and a lost quarantine ` +
-          `un-blocks refused senders. Install the plugin through ClawHub rather than a local ` +
-          `path so the host grants it storage access.`,
-      );
-      // Deliberately not `return`. The gateway reads a returned `startAccount` as an exited
-      // channel and restarts it, so returning would repeat this diagnostic every few seconds
-      // for ten attempts. Retrying cannot change a trust decision, so the channel stays up
-      // and idle instead: one message, then nothing until shutdown.
-      await new Promise<void>((resolve) => {
-        if (ctx.abortSignal.aborted) {
-          resolve();
-          return;
-        }
-        ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
-      });
-      return;
-    }
 
     const deps = createMailCliDeps({
       account: config.account,
       trustedSendersPath: config.trustedSendersPath,
     });
 
+    // Storage the plugin owns. The host's `openKeyedStore` is gated on
+    // `trustedOfficialInstall`, which only packages in OpenClaw's official external catalog
+    // receive; no install path reaches it for a third-party plugin, so this channel keeps
+    // its own SQLite database rather than depending on a grant it cannot obtain.
+    const store = openStore<PollCursor>(`${CHANNEL_ID}:cursor`) as CursorStore;
+
     // Threads the agent has replied in. Hydrated once; admission reads it per message, so it
     // is held in memory rather than round-tripped to the store inside the poll loop.
     const threads = new ThreadRecords(
-      state.openKeyedStore({
-        namespace: `${CHANNEL_ID}:threads`,
-        maxEntries: 64,
-      }) as ThreadRecordStore,
+      openStore(`${CHANNEL_ID}:threads`) as ThreadRecordStore,
       `${CHANNEL_ID}:${ctx.accountId}`,
     );
     await threads.hydrate();
@@ -237,22 +201,13 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
     // `apple_pim_mail` would happily read the body the channel just declined to deliver.
     // Durable, because the cursor moves past a dropped message and it is never reclassified,
     // so an in-memory set would forget it at the next restart.
-    const quarantineStore = state.openKeyedStore({
-      namespace: `${CHANNEL_ID}:quarantine`,
-      maxEntries: 64,
-    }) as {
-      lookup(key: string): Promise<[string, string][] | undefined>;
-      register(key: string, value: [string, string][]): Promise<void>;
-    };
+    const quarantineStore = openStore<[string, string][]>(`${CHANNEL_ID}:quarantine`);
     const quarantineKey = `${CHANNEL_ID}:${ctx.accountId}`;
     loadQuarantine(quarantineKey, await quarantineStore.lookup(quarantineKey));
 
     const limits = resolveRateLimits(config);
     const budget = new RunBudget(
-      state.openKeyedStore({
-        namespace: `${CHANNEL_ID}:budget`,
-        maxEntries: 64,
-      }) as BreakerStore,
+      openStore(`${CHANNEL_ID}:budget`) as BreakerStore,
       `${CHANNEL_ID}:${ctx.accountId}`,
       limits,
     );
@@ -344,13 +299,19 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
         },
         onError: (error) => ctx.log?.warn?.(`apple-mail poll failed: ${String(error)}`),
         checkBudget: () => budget.check(),
-        onThrottled: ({ window, retryAtMs, pending }) =>
+        // The mid-batch path reports only how many were left, because the budget closed
+        // between messages and the window that bound it is the breaker's business, not the
+        // loop's. Say what is known rather than interpolating an absent field.
+        onThrottled: ({ window, retryAtMs, pending }) => {
+          const bound = window
+            ? `${window} limit of ${window === "day" ? limits.perDay : limits.perHour}`
+            : `limit of ${limits.perHour}/hour, ${limits.perDay}/day`;
           ctx.log?.warn?.(
-            `apple-mail: circuit breaker open (${window} limit of ` +
-              `${window === "day" ? limits.perDay : limits.perHour} agent runs reached); ` +
+            `apple-mail: circuit breaker open (${bound} agent runs reached); ` +
               `holding ${pending} message(s)` +
               (retryAtMs ? ` until ${new Date(retryAtMs).toISOString()}` : ""),
-          ),
+          );
+        },
         // Informational now, not a warning: the page is the oldest unprocessed mail, so a
         // full one means the backlog is still draining, not that anything was skipped.
         onTruncated: ({ mailbox, limit }) =>
@@ -380,6 +341,10 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
     );
 
     loops.set(ctx.accountId, loop);
+    // Awaited, not fired and forgotten. The gateway treats a `startAccount` that returns as
+    // an exited channel and restarts it every few seconds; the loop already runs until the
+    // abort signal, so awaiting it is what "the channel is up" means here.
+    await loop;
   },
 
   stopAccount: async (ctx) => {
