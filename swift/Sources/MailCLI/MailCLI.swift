@@ -2145,7 +2145,11 @@ private struct TrustedSender: Decodable {
     let name: String
     let emails: [String]
     let expectedDkimDomains: [String]?
-    let requireDkim: Bool?
+    /// SPF breaks on relaying while DKIM survives it, so a sender whose mail is relayed can
+    /// waive SPF. There is deliberately no matching `requireDkim`: DKIM against
+    /// `expectedDkimDomains` is the only evidence that binds a mailbox to a signer, so
+    /// waiving it would leave nothing per-sender behind a `verified` verdict. Existing
+    /// configs carrying `requireDkim` still decode; the key is ignored.
     let requireSpf: Bool?
 }
 
@@ -2395,7 +2399,6 @@ struct AuthCheck: AsyncParsableCommand {
         // domain-level result is available to callers.
         let enrolled = senderConfig != nil
         let expectedDkim = senderConfig?.expectedDkimDomains ?? []
-        let requireDkim = senderConfig?.requireDkim ?? true
         let requireSpf = senderConfig?.requireSpf ?? true
         var warnings = [String]()
 
@@ -2454,23 +2457,36 @@ struct AuthCheck: AsyncParsableCommand {
         let dkimDomainOk = (dkimCheck["match"] as? Bool) ?? false
         let spfPass = (spfCheck["match"] as? Bool) ?? false
 
+        // Enrolling a sender without naming their signers is a config error, not a policy:
+        // no signature can match, so the address silently never reaches `verified`. Say so,
+        // and quote the domains that did sign, so fixing it is a copy step.
+        if enrolled && expectedDkim.isEmpty {
+            warnings.append(
+                "Sender \(senderEmail) is enrolled but has no expectedDkimDomains, so it can "
+                    + "never reach 'verified'. Observed signing domains on this message: "
+                    + "\(allSigningDomains.filter { !$0.isEmpty }.sorted().joined(separator: ", "))"
+            )
+        }
+
+        // Every path to `verified` runs through a DKIM signature matching this sender's
+        // expectedDkimDomains. An aligned SPF pass authenticates the envelope *domain* and
+        // names no mailbox, so SPF alone can never carry an address claim: on a shared
+        // domain every user of it passes aligned SPF, which would make each of them
+        // `verified` as any other. Only the operator naming a signer for a specific address
+        // makes the leap from domain to mailbox.
         var verdict: String
         if dkimPass && dkimDomainOk && spfPass {
             verdict = "verified"
         } else if dkimPass && dkimDomainOk && !requireSpf {
             verdict = "verified"
             if !spfPass { warnings.append("SPF result is '\(spfCheck["result"] ?? "none")' but not required for this sender") }
-        } else if spfPass && !requireDkim {
-            verdict = "verified"
-            if !dkimPass { warnings.append("DKIM result is '\(dkimCheck["result"] ?? "none")' but not required for this sender") }
         } else {
             verdict = "suspicious"
-            // "required" only means something when the operator configured a requirement.
-            if enrolled && requireDkim && !dkimPass {
+            // These only mean something when the operator configured an expectation to violate.
+            if enrolled && !dkimPass {
                 warnings.append("DKIM required but result is '\(dkimCheck["result"] ?? "none")'")
             }
-            // Only meaningful when the operator configured an expectation to violate.
-            if enrolled && requireDkim && dkimPass && !dkimDomainOk {
+            if enrolled && dkimPass && !dkimDomainOk {
                 warnings.append("DKIM passed but signing domain mismatch — possible spoofing")
             }
             if enrolled && requireSpf && !spfPass {

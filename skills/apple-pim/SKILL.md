@@ -148,7 +148,6 @@ The `auth_check` action verifies sender identity by parsing Authentication-Resul
       "name": "Alice",
       "emails": ["alice@example.com"],
       "expectedDkimDomains": ["example.com"],
-      "requireDkim": true,
       "requireSpf": true
     }
   ]

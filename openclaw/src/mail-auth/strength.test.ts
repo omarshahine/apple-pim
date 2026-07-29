@@ -62,13 +62,13 @@ describe("mailAuthToIdentifierStrengths", () => {
       warnings: ["No trustedAuthservIds configured for account key 'iCloud'"],
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(forged), {
-      address: "asserted",
-      domain: "asserted",
+      address: "mutable",
+      domain: "mutable",
       displayName: "mutable",
     });
   });
 
-  it("an unaligned SPF pass does not verify the domain", () => {
+  it("an unaligned SPF pass authenticates nothing about this sender", () => {
     const unaligned = result({
       verdict: "suspicious",
       checks: {
@@ -76,8 +76,8 @@ describe("mailAuthToIdentifierStrengths", () => {
         spf: { result: "pass", mailFrom: "bounce@attacker.example", aligned: false, match: false },
       },
     });
-    assert.equal(mailAuthToIdentifierStrengths(unaligned).domain, "asserted");
-    assert.equal(mailAuthToIdentifierStrengths(unaligned).address, "asserted");
+    assert.equal(mailAuthToIdentifierStrengths(unaligned).domain, "mutable");
+    assert.equal(mailAuthToIdentifierStrengths(unaligned).address, "mutable");
   });
 
   // A DKIM pass authenticates header.d, not the From domain. An unaligned signature means
@@ -91,8 +91,8 @@ describe("mailAuthToIdentifierStrengths", () => {
       },
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(unalignedSigner), {
-      address: "asserted",
-      domain: "asserted",
+      address: "mutable",
+      domain: "mutable",
       displayName: "mutable",
     });
   });
@@ -145,7 +145,7 @@ describe("mailAuthToIdentifierStrengths", () => {
     assert.equal(strengths.domain, "verified");
   });
 
-  it("keeps an unauthenticated stranger fully asserted", () => {
+  it("keeps an unauthenticated stranger fully mutable", () => {
     const stranger = result({
       verdict: "untrusted",
       sender: "spoofed@example.com",
@@ -155,18 +155,54 @@ describe("mailAuthToIdentifierStrengths", () => {
       },
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(stranger), {
-      address: "asserted",
-      domain: "asserted",
+      address: "mutable",
+      domain: "mutable",
       displayName: "mutable",
     });
   });
 
   it("treats missing checks as unproven rather than absent-therefore-fine", () => {
     assert.deepEqual(mailAuthToIdentifierStrengths({ verdict: "suspicious" }), {
-      address: "asserted",
-      domain: "asserted",
+      address: "mutable",
+      domain: "mutable",
       displayName: "mutable",
     });
+  });
+
+  // Mailbox providers sign with their own domain, so the operator's expectedDkimDomains
+  // entry routinely names a signer that does not align with the sender's domain. That
+  // assertion is narrower than alignment, so it has to carry the domain claim too;
+  // otherwise a correctly enrolled sender would come back verified-address / mutable-domain,
+  // which `weakest()` would then collapse back to mutable.
+  it("carries the domain claim when the operator named an unaligned expected signer", () => {
+    const providerSigned = result({
+      verdict: "verified",
+      sender: "omar@shahine.com",
+      checks: {
+        dkim: { result: "pass", signingDomain: "fastmail.com", match: true },
+        spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+      },
+    });
+    assert.deepEqual(mailAuthToIdentifierStrengths(providerSigned), {
+      address: "verified",
+      domain: "verified",
+      displayName: "mutable",
+    });
+  });
+
+  // The bug this mapping exists to prevent. `address` used to have a floor of `asserted`,
+  // so `mutable` was unreachable for it and the default `asserted` minimum was not a bar.
+  it("reaches mutable on the address, so the default minimum is a real bar", () => {
+    const unauthenticated: MailAuthCheckResult[] = [
+      { verdict: "unknown", sender: "omar@shahine.com" },
+      { verdict: "suspicious", sender: "omar@shahine.com" },
+      { verdict: "untrusted", sender: "omar@shahine.com" },
+    ];
+    for (const r of unauthenticated) {
+      const strengths = mailAuthToIdentifierStrengths(r);
+      assert.equal(strengths.address, "mutable", `verdict ${r.verdict}`);
+      assert.equal(meetsMinimum(strengths.address, "asserted"), false, `verdict ${r.verdict}`);
+    }
   });
 });
 
@@ -183,8 +219,32 @@ describe("policy composition", () => {
     assert.equal(meetsMinimum(weakest("verified", subject), "verified"), true);
   });
 
-  it("today's default minimum admits anything non-mutable, preserving current behavior", () => {
-    const subject = mailAuthToIdentifierStrengths(result({ verdict: "suspicious" })).address;
-    assert.equal(meetsMinimum(weakest("verified", subject), "asserted"), true);
+  // The default minimum is `asserted`, and it has to reject a message that authenticated
+  // nothing even when the allowlist entry itself is a fully verified address.
+  it("the default minimum rejects a message that proved nothing, however strong the entry", () => {
+    const subject = mailAuthToIdentifierStrengths(
+      result({
+        verdict: "suspicious",
+        checks: { dkim: { result: "fail" }, spf: { result: "fail", match: false } },
+      }),
+    ).address;
+    assert.equal(meetsMinimum(weakest("verified", subject), "asserted"), false);
+  });
+
+  // I5: the domain authenticated but no operator assertion binds the mailbox. Readable at
+  // the default minimum, and still short of the strict posture.
+  it("an authenticated stranger clears asserted but not verified", () => {
+    const stranger = mailAuthToIdentifierStrengths(
+      result({
+        verdict: "untrusted",
+        sender: "noreply@email.apple.com",
+        checks: {
+          dkim: { result: "pass", signingDomain: "email.apple.com", match: false },
+          spf: { result: "pass", mailFrom: "bounce@email.apple.com", aligned: true, match: true },
+        },
+      }),
+    ).address;
+    assert.equal(meetsMinimum(stranger, "asserted"), true);
+    assert.equal(meetsMinimum(stranger, "verified"), false);
   });
 });

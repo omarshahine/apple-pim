@@ -11,10 +11,13 @@
 
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
+import { readFile } from "node:fs/promises";
+import os from "node:os";
 import path from "node:path";
 import type { MailAuthCheckResult } from "../mail-auth/strength.ts";
 import type { InboundDeps, MailboxMessage, MessageThreadHeaders } from "./inbound.ts";
 import type { ReplySender } from "./dispatch.ts";
+import type { ConfigCheckInput } from "./config-check.ts";
 
 const run = promisify(execFile);
 
@@ -41,6 +44,40 @@ async function runJson<T>(options: MailCliOptions, args: string[]): Promise<T> {
     maxBuffer: 32 * 1024 * 1024,
   });
   return JSON.parse(stdout) as T;
+}
+
+/** Mirrors mail-cli's own default, so both sides read the same file when none is configured. */
+const DEFAULT_TRUSTED_SENDERS = "~/.config/apple-pim/trusted-senders.json";
+
+/** Expands a leading `~`, which mail-cli does natively and Node does not. */
+export function expandHome(input: string): string {
+  return input.startsWith("~/") ? path.join(os.homedir(), input.slice(2)) : input;
+}
+
+/**
+ * Reads `trusted-senders.json` for the startup configuration checks.
+ *
+ * Returns the pieces `checkChannelConfig` reads, leaving `trustedSenders` undefined when the
+ * file is missing or unparseable. That is not smoothed over: an absent file means nothing
+ * can authenticate, which is a finding rather than a default.
+ */
+export async function readTrustedSenders(
+  trustedSendersPath?: string,
+): Promise<Pick<ConfigCheckInput, "trustedSenders" | "trustedAuthservIds">> {
+  const resolved = expandHome(trustedSendersPath ?? DEFAULT_TRUSTED_SENDERS);
+  try {
+    const parsed = JSON.parse(await readFile(resolved, "utf8")) as {
+      trustedSenders?: ConfigCheckInput["trustedSenders"];
+      trustedAuthservIds?: ConfigCheckInput["trustedAuthservIds"];
+    };
+    return {
+      // A file whose `trustedSenders` is not an array is as unusable as a missing one.
+      trustedSenders: Array.isArray(parsed.trustedSenders) ? parsed.trustedSenders : undefined,
+      trustedAuthservIds: parsed.trustedAuthservIds,
+    };
+  } catch {
+    return { trustedSenders: undefined, trustedAuthservIds: undefined };
+  }
 }
 
 /** Builds the inbound dependency set backed by the real CLI. */

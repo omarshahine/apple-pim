@@ -266,14 +266,12 @@ The `auth_check` action verifies email sender identity by parsing DKIM and SPF r
       "name": "Alice",
       "emails": ["alice@example.com"],
       "expectedDkimDomains": ["example.com", "messagingengine.com"],
-      "requireDkim": true,
       "requireSpf": true
     },
     {
       "name": "Bob (relaxed SPF)",
       "emails": ["bob@company.com"],
       "expectedDkimDomains": ["company.com"],
-      "requireDkim": true,
       "requireSpf": false
     }
   ]
@@ -287,8 +285,19 @@ The `auth_check` action verifies email sender identity by parsing DKIM and SPF r
 | `name` | string | required | Display name for the verdict |
 | `emails` | string[] | required | Email addresses to match (case-insensitive) |
 | `expectedDkimDomains` | string[] | `[]` | DKIM signing domains to accept (matches exact or subdomain) |
-| `requireDkim` | boolean | `true` | Require DKIM pass + domain match for "verified" verdict |
 | `requireSpf` | boolean | `true` | Require SPF pass for "verified" verdict |
+
+`expectedDkimDomains` is what makes `verified` reachable: a DKIM signature from a domain you
+listed for that sender is the only evidence that binds a *mailbox* to a signer. An enrolled
+sender with no signing domains listed can never be verified, and `auth-check` says so in its
+warnings.
+
+There is deliberately no `requireDkim`. SPF authenticates an envelope *domain*, so on any
+shared domain (gmail.com, a company domain, a hosting provider) every user of it passes
+aligned SPF and would authenticate as every other. Waiving DKIM would leave nothing
+per-sender behind a `verified` verdict. `requireSpf: false` is still supported, because
+relaying breaks SPF while DKIM survives it, and DKIM already carried the mailbox claim.
+Existing config files carrying `requireDkim` still load; the key is ignored.
 
 **Verdicts:**
 

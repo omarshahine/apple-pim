@@ -69,10 +69,8 @@ export function decideIngress(input: IngressInput): IngressDecision {
   // decideThreadReply matches on the sender address, and an unauthenticated address is a
   // claim: anyone who learns a participant's address and an agent Message-ID could
   // otherwise spoof their way into a dispatch.
-  if (input.threadPermitted) {
-    return addressStrongEnough
-      ? { admission: "dispatch", reason: "thread_originated_by_agent" }
-      : { admission: "drop", reason: "identifier_authentication_too_weak" };
+  if (input.threadPermitted && addressStrongEnough) {
+    return { admission: "dispatch", reason: "thread_originated_by_agent" };
   }
 
   // I1, I4.
@@ -80,16 +78,30 @@ export function decideIngress(input: IngressInput): IngressDecision {
     return { admission: "dispatch", reason: "allowlisted_and_authenticated" };
   }
 
-  // I2. An allowlisted sender whose message did not authenticate is dropped, not escalated.
-  // The operator is not exempt: making an exception for the most valuable identity in the
-  // system would invert the model the rest of this file rests on.
-  if (input.allowlisted) {
-    return { admission: "drop", reason: "identifier_authentication_too_weak" };
+  // I5, I11, I4a. The transport proved a domain; nothing proved this human may direct an
+  // agent.
+  //
+  // Deliberately ahead of the allowlist rejection below. A grant that fails to apply has to
+  // leave the sender where they were, never below it: an allowlisted sender whose mailbox
+  // is not enrolled is the same authenticated-stranger case as I5, not a spoof, and
+  // dropping them here would mean adding someone to `allowFrom` *reduced* what the channel
+  // does with their mail. That inversion is silent, and it lands on exactly the addresses
+  // the operator cared enough to configure.
+  if (input.strengths.domain === "verified") {
+    return {
+      admission: "observe",
+      reason:
+        input.allowlisted || input.threadPermitted
+          ? "identifier_authentication_too_weak"
+          : "authenticated_but_not_allowlisted",
+    };
   }
 
-  // I5, I11. The transport proved a domain; nothing proved this human may direct an agent.
-  if (input.strengths.domain === "verified") {
-    return { admission: "observe", reason: "authenticated_but_not_allowlisted" };
+  // I2. An allowlisted sender whose message authenticated nothing is dropped, not escalated.
+  // The operator is not exempt: making an exception for the most valuable identity in the
+  // system would invert the model the rest of this file rests on.
+  if (input.allowlisted || input.threadPermitted) {
+    return { admission: "drop", reason: "identifier_authentication_too_weak" };
   }
 
   // I6, I7, I8.

@@ -21,7 +21,13 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { ClassifiedMessage, PollCursor } from "./inbound.ts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { runPollLoop, type CursorStore } from "./poll.ts";
-import { createMailCliBodyReader, createMailCliDeps, createMailCliSender } from "./runtime.ts";
+import {
+  createMailCliBodyReader,
+  createMailCliDeps,
+  createMailCliSender,
+  readTrustedSenders,
+} from "./runtime.ts";
+import { checkChannelConfig } from "./config-check.ts";
 import { dispatchAdmittedMessage } from "./dispatch.ts";
 import { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-dispatch-runtime";
 
@@ -175,6 +181,23 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       trustedSendersPath: config.trustedSendersPath,
     });
 
+    const minIdentifierAuthentication = config.minIdentifierAuthentication ?? "asserted";
+    const allowFrom = (config.allowFrom ?? []).map((entry) => String(entry));
+
+    // Admission needs `openclaw.json` and `trusted-senders.json` to agree, and every way
+    // they can disagree fails closed and therefore silently. Say so at startup, once, rather
+    // than leaving the operator to infer it from an agent that reads mail and never answers.
+    const findings = checkChannelConfig({
+      allowFrom,
+      selfAddresses: config.selfAddresses ?? [],
+      minIdentifierAuthentication,
+      trustedSendersPath: config.trustedSendersPath,
+      ...(await readTrustedSenders(config.trustedSendersPath)),
+    });
+    for (const finding of findings) {
+      ctx.log?.warn?.(`apple-mail [${finding.code}]: ${finding.message}`);
+    }
+
 
     const loop = runPollLoop(
       {
@@ -217,8 +240,8 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
         cursorKey: `${CHANNEL_ID}:${ctx.accountId}`,
         intervalMs: (config.pollIntervalSeconds ?? DEFAULT_POLL_SECONDS) * 1000,
         classify: {
-          minIdentifierAuthentication: config.minIdentifierAuthentication ?? "asserted",
-          allowFrom: (config.allowFrom ?? []).map((entry) => String(entry)),
+          minIdentifierAuthentication,
+          allowFrom,
           selfAddresses: config.selfAddresses ?? [],
         },
       },

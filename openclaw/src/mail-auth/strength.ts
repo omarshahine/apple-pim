@@ -58,7 +58,7 @@ export type MailAuthCheckResult = {
 export type MailIdentifierStrengths = {
   /** Full sender address. Needs an operator assertion binding address to signing domain. */
   address: IdentifierAuthentication;
-  /** Sender domain. Needs only a passing check from a trusted boundary. */
+  /** Sender domain. Needs only a passing *aligned* check from a trusted boundary. */
   domain: IdentifierAuthentication;
   /** Display name. Sender-chosen, so never above `mutable`. */
   displayName: IdentifierAuthentication;
@@ -67,7 +67,8 @@ export type MailIdentifierStrengths = {
 /**
  * `unknown` means auth-check could not establish provenance at all: no trusted
  * authserv-id configured for the account, or no Authentication-Results from one. Nothing
- * in the message may be promoted, because the only evidence available is sender-writable.
+ * in the message may be promoted, because the only evidence available is sender-writable,
+ * which is the definition of `mutable`.
  */
 function provenanceEstablished(result: MailAuthCheckResult): boolean {
   return result.verdict !== "unknown";
@@ -102,10 +103,17 @@ function domainsAlign(a: string | undefined, b: string | undefined): boolean {
  * The address and the domain are deliberately scored differently, which is the whole
  * reason RFC 0027 is per-identifier rather than one per-message trust score:
  *
- * - A passing DKIM signature, or an aligned SPF pass, proves something about the *domain*.
- * - Only a DKIM signature from a domain the operator listed in that sender's
- *   `expectedDkimDomains` says anything about the *mailbox*, which is what auth-check's
- *   own `verified` verdict already requires.
+ * - An *aligned* passing DKIM signature, or an aligned SPF pass, proves the *domain*.
+ * - Only auth-check's `verified` verdict, which requires a DKIM signature from a domain the
+ *   operator listed in that sender's `expectedDkimDomains`, says anything about the
+ *   *mailbox*.
+ *
+ * A `From` address with neither behind it scores `mutable`: a string the sender typed, with
+ * no evidence from our side of the boundary. Scoring it `asserted` was the original defect
+ * in this module. `asserted` has to mean "a trusted boundary stamped something about this",
+ * because otherwise the address identifier has a floor of `asserted`, the default
+ * `asserted` minimum is not a bar at all, and every allowlisted address is admitted on the
+ * strength of its own `From` header. That is the I2/I7/I8 bypass in the scenario doc.
  */
 export function mailAuthToIdentifierStrengths(
   result: MailAuthCheckResult,
@@ -113,7 +121,7 @@ export function mailAuthToIdentifierStrengths(
   const displayName: IdentifierAuthentication = "mutable";
 
   if (!provenanceEstablished(result)) {
-    return { address: "asserted", domain: "asserted", displayName };
+    return { address: "mutable", domain: "mutable", displayName };
   }
 
   // A DKIM pass authenticates the *signing* domain (header.d), which is not automatically
@@ -124,14 +132,24 @@ export function mailAuthToIdentifierStrengths(
     dkimPassed && domainsAlign(result.checks?.dkim?.signingDomain, senderDomain(result.sender));
   // `match` on spf already folds in alignment; `aligned` is kept for diagnostics.
   const spfPassedAligned = result.checks?.spf?.match === true;
+  const domainAuthenticated = dkimAligned || spfPassedAligned;
 
+  // auth-check returns `verified` only when a DKIM signature matched the sender's configured
+  // expectedDkimDomains. That operator assertion is what carries the claim from domain to
+  // mailbox; without it the address can be no stronger than its domain.
+  const operatorAssertedMailbox = result.verdict === "verified";
+
+  const address: IdentifierAuthentication = operatorAssertedMailbox
+    ? "verified"
+    : domainAuthenticated
+      ? "asserted"
+      : "mutable";
+
+  // An expected signer need not align: mailbox providers routinely sign with their own
+  // domain (fastmail.com for a shahine.com address). Naming that signer for that sender is
+  // a narrower operator statement than alignment, so it carries the domain claim as well.
   const domain: IdentifierAuthentication =
-    dkimAligned || spfPassedAligned ? "verified" : "asserted";
-
-  // auth-check only returns `verified` when a DKIM signature matched the sender's
-  // configured expectedDkimDomains (and SPF, unless that sender sets requireSpf=false).
-  // That operator assertion is what carries the claim from domain to mailbox.
-  const address: IdentifierAuthentication = result.verdict === "verified" ? "verified" : "asserted";
+    domainAuthenticated || operatorAssertedMailbox ? "verified" : "mutable";
 
   return { address, domain, displayName };
 }

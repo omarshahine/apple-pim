@@ -54,8 +54,9 @@ It is inert until `channels.apple-mail` exists in `openclaw.json`.
       // Who may drive the agent.
       "allowFrom": ["omar@shahine.com", "lora@shahine.com"],
       // Minimum strength an identifier needs before it authorizes a sender.
-      // "asserted" is the compatible default; "verified" is the strict posture and
-      // requires an expectedDkimDomains entry for each address below.
+      // "asserted" (default) requires the sender's domain to have authenticated.
+      // "verified" additionally requires an expectedDkimDomains entry for each address
+      // below; until one exists, that sender is readable but never actioned.
       "minIdentifierAuthentication": "verified",
       // Carries expectedDkimDomains (address -> legitimate signing domains) and
       // trustedAuthservIds (which Authentication-Results headers are believed).
@@ -82,9 +83,20 @@ Two lists, two jobs, and they are deliberately not the same file:
   operator assertion binding an address to its legitimate signers. DMARC alignment proves a
   **domain**, never a mailbox.
 
-They will list overlapping addresses. That duplication is intended, but it is a drift risk
-worth knowing about: adding someone to `allowFrom` without enrolling them caps them at
-`asserted`, so under `minIdentifierAuthentication: "verified"` they are silently not admitted.
+They will list overlapping addresses. That duplication is intended, and the drift between
+them is checked rather than merely documented: adding someone to `allowFrom` without
+enrolling them caps that address at `asserted`, so under `minIdentifierAuthentication:
+"verified"` their mail is readable but never actioned. The channel reports every such entry
+at startup:
+
+```
+apple-mail [allowlisted_not_enrolled]: lora@shahine.com is in channels.apple-mail.allowFrom
+but has no expectedDkimDomains entry in ~/.config/lobster/trusted-senders.json. ...
+```
+
+It also warns when `selfAddresses` is empty (the loop guard cannot fire), when no
+`trustedAuthservIds` covers the account (nothing authenticates, everything drops), and when
+an enrolled sender names no signing domains (that address can never reach `verified`).
 
 Scenario-by-scenario behavior, inbound and outbound, is in
 [`docs/mail-channel-scenarios.md`](../docs/mail-channel-scenarios.md).

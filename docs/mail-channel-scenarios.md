@@ -64,7 +64,24 @@ because DMARC alignment authenticates a **domain**, never a mailbox.
 | Full address | The above, **and** the signing domain is one the operator listed for that specific sender |
 
 That last row is the only thing that carries a claim from "this domain sent it" to "this
-person sent it", and it requires an explicit operator assertion. Nothing infers it.
+person sent it", and it requires an explicit operator assertion. Nothing infers it. In
+particular an aligned SPF pass alone never gets there: SPF authenticates an envelope
+*domain*, so on any shared domain every user of it passes aligned SPF and would authenticate
+as every other.
+
+The three levels have to stay honest about the bottom of the scale, which is the part that
+is easy to get wrong:
+
+| Level | Means | An address gets it when |
+| --- | --- | --- |
+| `verified` | our boundary proved this exact mailbox | an expected signer signed it |
+| `asserted` | our boundary proved the domain, and nothing narrower | the domain authenticated but no operator assertion names the mailbox |
+| `mutable` | nobody vouched for it; it is a string the sender typed | authentication produced nothing |
+
+A `From` header on a message that failed authentication belongs in `mutable`. Scoring it
+`asserted` gives the address identifier a floor, which silently turns the lowest configurable
+minimum into no minimum at all, and every scenario below that says `drop` stops dropping.
+That was a real defect here, not a hypothetical.
 
 ### Provenance
 
@@ -87,21 +104,25 @@ not act or reply. `drop` means it never reaches the agent.
 | # | Scenario | Domain | Address | Outcome |
 | --- | --- | --- | --- | --- |
 | I1 | Operator, authenticated, enrolled | `verified` | `verified` | `dispatch` |
-| I2 | Operator's address, authentication failed | `asserted` | `asserted` | `drop` |
-| I3 | Operator's address, no trusted `authserv-id` configured | `asserted` | `asserted` | `drop`, with a config warning |
+| I2 | Operator's address, authentication failed | `mutable` | `mutable` | `drop` |
+| I3 | Operator's address, no trusted `authserv-id` configured | `mutable` | `mutable` | `drop`, with a config warning |
 | I4 | Enrolled non-operator (family, colleague) | `verified` | `verified` | `dispatch`, subject to sender policy |
+| I4a | Allowlisted, domain authenticated, **not** enrolled | `verified` | `asserted` | `dispatch` at the default minimum, `observe` under `verified` |
 | I5 | Authenticated stranger | `verified` | `asserted` | `observe` |
-| I6 | Unauthenticated stranger | `asserted` | `asserted` | `drop` |
-| I7 | Spoofed operator, forged `Authentication-Results` | `asserted` | `asserted` | `drop`, forged header never read |
-| I8 | Spoofed operator, valid SPF for the attacker's own domain | `asserted` | `asserted` | `drop`, unaligned pass does not count |
-| I9 | Reply inside a thread the agent started, from an addressed participant | inherits | inherits | `dispatch` (see E1) |
+| I6 | Unauthenticated stranger | `mutable` | `mutable` | `drop` |
+| I7 | Spoofed operator, forged `Authentication-Results` | `mutable` | `mutable` | `drop`, forged header never read |
+| I8 | Spoofed operator, valid SPF for the attacker's own domain | `mutable` | `mutable` | `drop`, unaligned pass does not count |
+| I9 | Reply inside a thread the agent started, from an addressed participant | inherits | inherits | `dispatch`, or `observe` if the address is under the minimum (see E1) |
 | I10 | Reply inside a thread the agent did not start | per I1-I6 | | as if new |
 | I10a | Claimed thread membership from a non-participant | per I1-I6 | | thread claim ignored, treated as new |
 | I11 | Bulk or marketing mail, authenticated | `verified` | `asserted` | `observe` |
-| I12 | Forwarded mail | usually `asserted` | `asserted` | `observe` at best |
+| I12 | Forwarded mail, alignment broken in transit | usually `mutable` | `mutable` | `drop` unless the forwarding address is enrolled |
 | I13 | Mail from the agent's own address | n/a | n/a | `drop`, loop guard |
 | I14 | Mail in Junk | n/a | n/a | not polled |
 | I15 | Mail with attachments | per above | | admission unchanged; attachments separately gated |
+
+Every row is executed against the real policy in `openclaw/src/mail-channel/scenarios.test.ts`,
+at both configured minimums, so this table and the code cannot drift apart again.
 
 ### The scenarios worth explaining
 
@@ -123,6 +144,23 @@ message; nothing proved this human should be able to direct an agent. Reading it
 Acting on it is not acceptable. A binary allow/deny model cannot express this, which is why
 the older "sender is in my address book" rule could not either: it never fired for
 strangers at all, so an authenticated stranger and a spoofed one were equally invisible.
+
+**I4a is the configuration everyone actually has.** Two lists must agree for an address to
+reach `verified`: `allowFrom` says who may drive the agent, and `trusted-senders.json` says
+what proves they are who they claim. Adding someone to the first and forgetting the second
+is the normal state of a half-configured install, and it is not an attack.
+
+So a grant that fails to apply must leave the sender exactly where an ungranted one lands,
+never below it. An allowlisted sender whose mailbox is not enrolled is the I5 case, an
+authenticated stranger, and is treated as one. The earlier design dropped them instead,
+which meant adding an address to `allowFrom` *reduced* what the channel did with their mail:
+a silent inversion landing precisely on the addresses the operator cared enough to
+configure. The same reasoning applies to thread permission (I9).
+
+Under `minIdentifierAuthentication: "verified"` this is still a real restriction. The
+message is readable and not actionable, which is the honest answer, and the channel reports
+every `allowFrom` entry with no enrollment behind it when the account starts, so the gap is
+visible rather than inferred from an agent that reads mail and never answers.
 
 **I7 and I8 are the two live attacks.** Both were real defects in this codebase before the
 current design. I7 is a forged `Authentication-Results` header that a naive parser reads as
@@ -298,7 +336,11 @@ what the agent is even allowed to see.
 - **Thread membership asserted by the sender.** `References` and `In-Reply-To` are claims,
   not credentials. Membership is checked against what the agent recorded sending.
 - **Authenticating a mailbox from a domain proof.** Requires an explicit per-sender
-  assertion; nothing derives it.
+  assertion; nothing derives it. There is deliberately no way to reach `verified` on an
+  aligned SPF pass alone, because on a shared domain every user of it passes aligned SPF and
+  would authenticate as every other.
+- **A grant that lowers admission.** Being on `allowFrom`, or inside a thread the agent
+  started, can only ever admit a sender further than they would get without it (I4a, I9).
 
 ## Configuration summary
 
@@ -306,9 +348,23 @@ what the agent is even allowed to see.
 | --- | --- | --- |
 | Trusted `authserv-id`, per account | Which authentication results are believed | none, fails closed |
 | Per-sender expected signing domains | Whether an address can reach `verified` | none, so no address is verified |
-| Minimum identifier strength | The bar for admission | `asserted`, matching existing behavior |
+| Minimum identifier strength | The bar for admission | `asserted`: the sender's domain must have authenticated |
 | Egress recipient allowlist | Who the agent may originate mail to | empty, default-deny |
 | Attachment allowed roots | Outbound attachments | empty, default-deny |
+
+The two minimums are different postures, not strictness dials on the same one:
+
+- **`asserted`** requires the transport to have proved the sender's *domain*. It admits an
+  allowlisted sender whose mailbox is not separately enrolled, and rejects every message
+  that authenticated nothing. This is the useful default.
+- **`verified`** additionally requires an operator assertion binding that mailbox to its
+  signers. It is the right posture once enrollment is complete, and until then it leaves
+  allowlisted senders readable but not actioned (I4a).
+
+`asserted` is a real bar only because an unauthenticated `From` address scores `mutable`.
+If it scored `asserted`, this row would be decorative and I2, I7, and I8 would all dispatch.
+The channel reports any `allowFrom` entry with no enrollment behind it at startup, so the
+gap between the two files is visible rather than inferred.
 
 Every default is closed. An install that configures nothing reads nothing and sends nothing,
 which is the correct resting state for a system whose failure mode is an agent acting on a
