@@ -101,6 +101,46 @@ describe("dispatchAdmittedMessage", () => {
     assert.deepEqual(sent, []);
   });
 
+  // Greptile P1: the agent used to receive only the subject line.
+  it("gives the agent the body, not just the subject", async () => {
+    const bodies: (string | undefined)[] = [];
+    const { deps: d } = deps({
+      readBody: async () => "the actual message body",
+      dispatchReply: async ({ ctx }) => {
+        bodies.push(ctx.Body);
+      },
+    });
+    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    assert.equal(bodies[0], "Subject: hello\n\nthe actual message body");
+  });
+
+  it("still dispatches something useful when there is no subject", async () => {
+    const bodies: (string | undefined)[] = [];
+    const { deps: d } = deps({
+      readBody: async () => "body only",
+      dispatchReply: async ({ ctx }) => {
+        bodies.push(ctx.Body);
+      },
+    });
+    const m = classified("omar@shahine.com");
+    m.message.subject = undefined;
+    await dispatchAdmittedMessage(m, d, OPTIONS);
+    assert.equal(bodies[0], "body only");
+  });
+
+  // Greptile P2: permission is not delivery.
+  it("does not report a reply when the model produced nothing", async () => {
+    const { deps: d, sent } = deps({
+      dispatchReply: async ({ dispatcherOptions }) => {
+        await dispatcherOptions.deliver({ text: "   " });
+      },
+    });
+    const r = await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    assert.deepEqual(sent, []);
+    assert.equal(r.replied, false);
+    assert.equal(r.reason, "empty_reply");
+  });
+
   it("scopes the session per sender so correspondents cannot read each other", async () => {
     const keys: (string | undefined)[] = [];
     const { deps: d } = deps({

@@ -145,3 +145,23 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
     });
   };
 }
+
+/** Reads a message body via `mail-cli get`, for the agent prompt. */
+export function createMailCliBodyReader(
+  options: MailCliOptions,
+): (messageId: string) => Promise<string | undefined> {
+  const accountArgs = options.account ? ["--account", options.account] : [];
+  return async (messageId) => {
+    const result = await runJson<{ message?: { content?: string }; content?: string }>(options, [
+      "get",
+      "--id",
+      messageId,
+      ...accountArgs,
+      "--engine",
+      "sqlite",
+      "--format",
+      "json",
+    ]);
+    return result.message?.content ?? result.content;
+  };
+}

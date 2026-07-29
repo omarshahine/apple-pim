@@ -21,7 +21,7 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { ClassifiedMessage, PollCursor } from "./inbound.ts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { runPollLoop, type CursorStore } from "./poll.ts";
-import { createMailCliDeps, createMailCliSender } from "./runtime.ts";
+import { createMailCliBodyReader, createMailCliDeps, createMailCliSender } from "./runtime.ts";
 import { dispatchAdmittedMessage } from "./dispatch.ts";
 import { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-dispatch-runtime";
 
@@ -190,9 +190,8 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
               message,
               {
                 dispatchReply: dispatchReplyWithBufferedBlockDispatcher,
-                sendReply: createMailCliSender({
-                  account: config.account,
-                }),
+                sendReply: createMailCliSender({ account: config.account }),
+                readBody: createMailCliBodyReader({ account: config.account }),
                 onSuppressed: ({ address, reason }) =>
                   ctx.log?.info?.(`apple-mail: reply to ${address} suppressed (${reason})`),
               },

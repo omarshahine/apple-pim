@@ -37,6 +37,12 @@ export type ReplyDispatcher = (params: {
 export type DispatchDeps = {
   dispatchReply: ReplyDispatcher;
   sendReply: ReplySender;
+  /**
+   * Fetches the message body. Read here rather than during classification so a dropped
+   * message never costs a body fetch, and so the body is only ever loaded for mail the
+   * agent is actually going to see.
+   */
+  readBody?: (messageId: string) => Promise<string | undefined>;
   onSuppressed?: (params: { address: string; reason: string }) => void;
 };
 
@@ -51,6 +57,23 @@ export type DispatchOptions = {
   /** Channel + account, so replies to different accounts do not share a session. */
   sessionPrefix: string;
 };
+
+/**
+ * Builds the prompt body.
+ *
+ * The subject and body are attacker-authored for any sender the operator has not vetted,
+ * so they are presented as quoted message content rather than as bare instructions.
+ */
+function buildPrompt(subject: string | undefined, body: string | undefined): string {
+  const parts: string[] = [];
+  if (subject) {
+    parts.push(`Subject: ${subject}`);
+  }
+  if (body?.trim()) {
+    parts.push(body.trim());
+  }
+  return parts.join("\n\n");
+}
 
 /** Decides whether the agent's reply to this sender may actually be sent. */
 export function decideReplyDelivery(
@@ -82,6 +105,8 @@ export async function dispatchAdmittedMessage(
   options: DispatchOptions,
 ): Promise<{ replied: boolean; reason: string }> {
   const observeOnly = message.decision.admission === "observe";
+  const body = await deps.readBody?.(message.message.messageId);
+  let sentCount = 0;
   const egress = decideReplyDelivery(message, options);
   const mayReply = !observeOnly && egress.permitted.length > 0;
 
@@ -92,9 +117,9 @@ export async function dispatchAdmittedMessage(
 
   await deps.dispatchReply({
     ctx: {
-      Body: message.message.subject
-        ? `Subject: ${message.message.subject}`
-        : undefined,
+      // Subject and body together. Without the body the agent sees a subject line and
+      // nothing else, which reads as a real message and is not one.
+      Body: buildPrompt(message.message.subject, body),
       From: message.address,
       To: options.operatorAddresses[0],
       // One session per sender per account: mail threads outlive any single exchange,
@@ -116,12 +141,15 @@ export async function dispatchAdmittedMessage(
           to: message.address,
           body: text,
         });
+        sentCount += 1;
       },
     },
   });
 
+  // Report what happened, not what was allowed. Permission plus an empty model response
+  // is "nothing was sent", and a caller logging delivery must not be told otherwise.
   return {
-    replied: mayReply,
-    reason: mayReply ? (egress.reasons[0] ?? "permitted") : "suppressed",
+    replied: sentCount > 0,
+    reason: !mayReply ? "suppressed" : sentCount > 0 ? (egress.reasons[0] ?? "permitted") : "empty_reply",
   };
 }
