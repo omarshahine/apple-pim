@@ -33,9 +33,8 @@ const OPTIONS: PollOptions = {
   limit: 25,
   cursorKey: "apple-mail:default",
   classify: {
-    allowlisted: true,
+    allowFrom: ["omar@shahine.com"],
     minIdentifierAuthentication: "verified",
-    selfAddressed: false,
   },
 };
 
@@ -256,6 +255,75 @@ describe("runPollLoop", () => {
       signal,
     );
     assert.deepEqual(delivered, ["a"]);
+  });
+
+  // Greptile P1: reporting truncation was not enough; the cursor still advanced past the
+  // mail still sitting behind the ceiling.
+  it("does not advance the cursor on a truncated cycle", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
+    const before = store.values.get(OPTIONS.cursorKey);
+    const { signal, sleep } = boundedSignal(1);
+    let truncations = 0;
+    await runPollLoop(
+      {
+        listMessages: async ({ limit }) =>
+          Array.from({ length: limit }, (_, i) => msg(`x${i}`, "2026-07-28T11:00:00.000Z")),
+        authCheck: async () => VERIFIED,
+        onAdmitted: () => {},
+        onTruncated: () => {
+          truncations += 1;
+        },
+        sleep,
+      },
+      { ...OPTIONS, limit: 2, maxLimit: 8, intervalMs: 1 },
+      store,
+      signal,
+    );
+    assert.equal(truncations, 1);
+    assert.deepEqual(store.values.get(OPTIONS.cursorKey), before);
+  });
+
+  // A truncated cycle must still sleep. An earlier version used `continue`, which skipped
+  // the sleep and spun a tight infinite loop; the only symptom was a hanging test run.
+  it("holds the cursor on truncation without spinning the loop", async () => {
+    const store = memoryStore();
+    // Seed a prior cursor: truncation is only possible once there is a watermark to fall
+    // short of. A cold start deliberately takes the page as-is.
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
+    const seeded = store.values.get(OPTIONS.cursorKey);
+    const controller = new AbortController();
+    let sleeps = 0;
+    let cycles = 0;
+    await runPollLoop(
+      {
+        listMessages: async ({ limit }) => {
+          cycles += 1;
+          if (cycles > 20) {
+            throw new Error("loop spun without sleeping");
+          }
+          // Always a full page newer than the cursor: permanently truncated.
+          return Array.from({ length: limit }, (_, i) => msg(`t${i}`, "2026-07-28T11:00:00.000Z"));
+        },
+        authCheck: async () => VERIFIED,
+        onAdmitted: () => {},
+        sleep: async () => {
+          sleeps += 1;
+          if (sleeps >= 2) {
+            controller.abort();
+          }
+        },
+      },
+      { ...OPTIONS, limit: 2, maxLimit: 8, intervalMs: 1 },
+      store,
+      controller.signal,
+    );
+    assert.equal(sleeps, 2, "each truncated cycle must reach the sleep");
+    assert.deepEqual(
+      store.values.get(OPTIONS.cursorKey),
+      seeded,
+      "cursor must not advance past a truncated page",
+    );
   });
 
   it("stops immediately when already aborted", async () => {

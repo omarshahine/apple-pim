@@ -137,10 +137,15 @@ export type ClassifiedMessage = {
   decision: IngressDecision;
 };
 
-export type ClassifyOptions = Pick<
-  IngressInput,
-  "allowlisted" | "minIdentifierAuthentication" | "selfAddressed"
-> & {
+export type ClassifyOptions = Pick<IngressInput, "minIdentifierAuthentication"> & {
+  /**
+   * Configured inbound allowlist. Membership is derived per message rather than passed
+   * as a boolean: the caller does not know the sender address until this function has
+   * parsed it, so asking the caller to precompute it invites passing a constant.
+   */
+  allowFrom?: readonly string[];
+  /** Addresses the agent sends as, for the loop guard. */
+  selfAddresses?: readonly string[];
   /** Threads the agent originated, for the reply rule. */
   threadRecords?: Iterable<AgentThreadRecord>;
 };
@@ -157,6 +162,12 @@ export async function classifyMessage(
   options: ClassifyOptions,
 ): Promise<ClassifiedMessage> {
   const address = senderAddress(message.sender);
+  const allowlisted = (options.allowFrom ?? []).some(
+    (entry) => entry.trim().toLowerCase() === address,
+  );
+  const selfAddressed = (options.selfAddresses ?? []).some(
+    (entry) => entry.trim().toLowerCase() === address,
+  );
   const auth = await deps.authCheck(message.messageId);
   const strengths = mailAuthToIdentifierStrengths(auth);
 
@@ -176,9 +187,9 @@ export async function classifyMessage(
     decision: decideIngress({
       strengths,
       senderAddress: address,
-      allowlisted: options.allowlisted,
+      allowlisted,
       minIdentifierAuthentication: options.minIdentifierAuthentication,
-      selfAddressed: options.selfAddressed,
+      selfAddressed,
       threadPermitted,
     }),
   };

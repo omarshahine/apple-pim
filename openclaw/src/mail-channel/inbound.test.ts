@@ -107,9 +107,8 @@ describe("selectNewMessages", () => {
 describe("classifyMessage", () => {
   it("dispatches an authenticated allowlisted sender", async () => {
     const r = await classifyMessage(msg(), deps(), {
-      allowlisted: true,
+      allowFrom: ["omar@shahine.com"],
       minIdentifierAuthentication: "verified",
-      selfAddressed: false,
     });
     assert.equal(r.decision.admission, "dispatch");
     assert.equal(r.address, "omar@shahine.com");
@@ -124,7 +123,7 @@ describe("classifyMessage", () => {
     const r = await classifyMessage(
       msg({ sender: "Apple <noreply@email.apple.com>" }),
       deps({ authCheck: async () => stranger }),
-      { allowlisted: false, minIdentifierAuthentication: "verified", selfAddressed: false },
+      { minIdentifierAuthentication: "verified" },
     );
     assert.equal(r.decision.admission, "observe");
   });
@@ -132,9 +131,8 @@ describe("classifyMessage", () => {
   it("drops a spoofed sender whose provenance never held", async () => {
     const forged: MailAuthCheckResult = { verdict: "unknown", sender: "omar@shahine.com" };
     const r = await classifyMessage(msg(), deps({ authCheck: async () => forged }), {
-      allowlisted: true,
+      allowFrom: ["omar@shahine.com"],
       minIdentifierAuthentication: "verified",
-      selfAddressed: false,
     });
     assert.equal(r.decision.admission, "drop");
     assert.equal(r.decision.reason, "identifier_authentication_too_weak");
@@ -150,9 +148,35 @@ describe("classifyMessage", () => {
           return {};
         },
       }),
-      { allowlisted: true, minIdentifierAuthentication: "verified", selfAddressed: false },
+      { allowFrom: ["omar@shahine.com"], minIdentifierAuthentication: "verified" },
     );
     assert.equal(called, false);
+  });
+
+  it("derives allowlist membership from the configured list", async () => {
+    // Greptile P1: startAccount passed constant false, so trusted senders were strangers.
+    const r = await classifyMessage(msg(), deps(), {
+      allowFrom: ["OMAR@Shahine.com"],
+      minIdentifierAuthentication: "verified",
+    });
+    assert.equal(r.decision.admission, "dispatch");
+    assert.equal(r.decision.reason, "allowlisted_and_authenticated");
+  });
+
+  it("treats a sender absent from the list as not allowlisted", async () => {
+    const r = await classifyMessage(msg(), deps(), {
+      allowFrom: ["someone-else@example.com"],
+      minIdentifierAuthentication: "verified",
+    });
+    assert.notEqual(r.decision.reason, "allowlisted_and_authenticated");
+  });
+
+  it("activates the loop guard from configured self addresses", async () => {
+    const r = await classifyMessage(msg(), deps(), {
+      selfAddresses: ["Omar@Shahine.com"],
+      minIdentifierAuthentication: "verified",
+    });
+    assert.deepEqual(r.decision, { admission: "drop", reason: "self_addressed" });
   });
 
   it("admits a thread reply from an addressed participant", async () => {
@@ -163,9 +187,7 @@ describe("classifyMessage", () => {
         readThreadHeaders: async () => ({ inReplyTo: "<agent-1@lobster.local>" }),
       }),
       {
-        allowlisted: false,
         minIdentifierAuthentication: "verified",
-        selfAddressed: false,
         threadRecords: [
           {
             sentMessageIds: ["<agent-1@lobster.local>"],
@@ -186,9 +208,7 @@ describe("classifyMessage", () => {
         readThreadHeaders: async () => ({ inReplyTo: "<agent-1@lobster.local>" }),
       }),
       {
-        allowlisted: false,
         minIdentifierAuthentication: "verified",
-        selfAddressed: false,
         threadRecords: [
           {
             sentMessageIds: ["<agent-1@lobster.local>"],

@@ -171,8 +171,6 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       trustedSendersPath: config.trustedSendersPath,
     });
 
-    const selfAddresses = config.selfAddresses ?? [];
-    const allowFrom = (config.allowFrom ?? []).map((entry) => String(entry).toLowerCase());
 
     const loop = runPollLoop(
       {
@@ -200,9 +198,9 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
         cursorKey: `${CHANNEL_ID}:${ctx.accountId}`,
         intervalMs: (config.pollIntervalSeconds ?? DEFAULT_POLL_SECONDS) * 1000,
         classify: {
-          allowlisted: false,
           minIdentifierAuthentication: config.minIdentifierAuthentication ?? "asserted",
-          selfAddressed: false,
+          allowFrom: (config.allowFrom ?? []).map((entry) => String(entry)),
+          selfAddresses: config.selfAddresses ?? [],
         },
       },
       store,
@@ -210,8 +208,6 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
     );
 
     loops.set(ctx.accountId, loop);
-    void allowFrom;
-    void selfAddresses;
   },
 
   stopAccount: async (ctx) => {

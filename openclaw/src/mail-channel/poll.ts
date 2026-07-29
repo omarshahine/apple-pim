@@ -164,7 +164,16 @@ export async function runPollLoop(
         // retried next cycle rather than silently skipped.
         await deps.onAdmitted(admitted);
       }
-      await store.register(options.cursorKey, cursor);
+      // Reporting truncation is not enough. The cursor derives from a newest-first
+      // partial page, so persisting it would bury the older mail still behind the
+      // ceiling. Holding it reprocesses this page next cycle, which is duplicates
+      // instead of loss, and truncation keeps being reported until the backlog drains
+      // or the operator raises maxLimit.
+      //
+      // Deliberately not `continue`: that would skip the sleep below and spin the loop.
+      if (!truncated) {
+        await store.register(options.cursorKey, cursor);
+      }
     } catch (error) {
       deps.onError?.(error);
     }
