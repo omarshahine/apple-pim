@@ -13,9 +13,12 @@ const AUTHENTICATED_STRANGER: MailIdentifierStrengths = {
   domain: "verified",
   displayName: "mutable",
 };
+// Nothing authenticated, so both identifiers are `unverified`: presented by a party nobody
+// vouched for. `asserted` here would model a state the mapper cannot produce and would stop
+// these cases distinguishing a proven domain from an unproven one.
 const UNAUTHENTICATED: MailIdentifierStrengths = {
-  address: "asserted",
-  domain: "asserted",
+  address: "unverified",
+  domain: "unverified",
   displayName: "mutable",
 };
 
@@ -62,7 +65,8 @@ describe("ingress admission", () => {
   });
 
   it("I7/I8: a forged or unaligned pass lands as unauthenticated, not as a stranger to read", () => {
-    // Both attacks resolve to asserted/asserted upstream, so they cannot even reach observe.
+    // Both attacks resolve to unverified/unverified upstream, so they cannot reach observe:
+    // the `observe` branch needs a verified domain, and nothing proved one.
     const forged = decideIngress(ingress({ strengths: UNAUTHENTICATED, allowlisted: false }));
     assert.equal(forged.admission, "drop");
   });
@@ -99,12 +103,22 @@ describe("ingress admission", () => {
     );
   });
 
-  it("honors a relaxed minimum, matching today's default behavior", () => {
-    // minIdentifierAuthentication: "asserted" is the shipped default, under which an
-    // allowlisted sender is admitted without any authentication improvement.
+  // This test used to assert the opposite, and passed only because the fixture above scored
+  // an unauthenticated address `asserted`. It was the original bypass written down as
+  // expected behavior: allowlisted plus the shipped default minimum, admitted with nothing
+  // authenticated. Correcting the fixture surfaced it.
+  it("drops an allowlisted sender who authenticated nothing, at the shipped default", () => {
+    const decision = decideIngress(
+      ingress({ strengths: UNAUTHENTICATED, minIdentifierAuthentication: "asserted" }),
+    );
+    assert.equal(decision.admission, "drop");
+    assert.equal(decision.reason, "identifier_authentication_too_weak");
+  });
+
+  it("admits that same sender only under the break-glass minimum", () => {
     assert.equal(
       decideIngress(
-        ingress({ strengths: UNAUTHENTICATED, minIdentifierAuthentication: "asserted" }),
+        ingress({ strengths: UNAUTHENTICATED, minIdentifierAuthentication: "mutable" }),
       ).admission,
       "dispatch",
     );
