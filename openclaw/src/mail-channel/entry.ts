@@ -45,7 +45,17 @@ export type ResolvedAppleMailAccount = {
     account?: string;
     dmPolicy?: string;
     allowFrom?: Array<string | number>;
-    /** Minimum identifier authentication strength required to authorize a sender. */
+    /**
+     * Minimum identifier authentication strength required to authorize a sender.
+     *
+     * Deliberately narrower than `IdentifierAuthentication`, which also has `unverified`.
+     * Offering it here would add a setting with no distinct effect: this channel never scores
+     * an address or a domain `mutable`, so a minimum of `unverified` and a minimum of
+     * `mutable` admit exactly the same mail. `mutable` stays as the single break-glass value
+     * because it is the one already shipped. A test pins the equivalence, so if a future
+     * mapping does emit `mutable` for an address, the omission stops being harmless and the
+     * test fails.
+     */
     minIdentifierAuthentication?: "verified" | "asserted" | "mutable";
     /** Addresses the agent sends as. Used for the inbound and outbound loop guards. */
     selfAddresses?: string[];

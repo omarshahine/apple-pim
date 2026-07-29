@@ -335,11 +335,57 @@ describe("scenario doc: invariants across the table", () => {
     }
   });
 
-  // A `From` header nobody vouched for must not clear the lowest configurable bar.
-  it("no unauthenticated row reaches dispatch at any minimum", () => {
-    for (const row of ROWS.filter((r) => r.strengths.domain === "unverified")) {
+  // A `From` header nobody vouched for must not clear either posture an operator would
+  // realistically run. Named for the two minimums it actually checks: the weak values are
+  // break-glass and are asserted separately below, rather than folded in here where the
+  // stored expectations would make this pass without testing them.
+  it("no unauthenticated row reaches dispatch at either supported minimum", () => {
+    const unauthenticated = ROWS.filter((r) => r.strengths.domain === "unverified");
+    assert.ok(unauthenticated.length > 0, "the table must cover unauthenticated senders");
+    for (const row of unauthenticated) {
       assert.equal(row.atDefault, "drop", `${row.id} at the default minimum`);
       assert.equal(row.atStrict, "drop", `${row.id} at the strict minimum`);
     }
+  });
+
+  // `unverified` is not offered as a config value because it would do nothing distinct: this
+  // channel never scores an address or domain `mutable`, so the two weakest minimums admit
+  // the same mail. If a future mapping emits `mutable` for an address, that stops being true
+  // and this fails, which is the point.
+  it("treats `unverified` and `mutable` as the same minimum, which is why only one is configurable", () => {
+    for (const row of ROWS) {
+      if (row.selfAddressed) {
+        continue;
+      }
+      const strengths = mailAuthToIdentifierStrengths(row.auth);
+      const base = {
+        strengths,
+        senderAddress: row.auth.sender ?? "",
+        allowlisted: row.allowlisted ?? false,
+        selfAddressed: false,
+        threadPermitted: row.threadPermitted ?? false,
+      };
+      assert.equal(
+        decideIngress({ ...base, minIdentifierAuthentication: "unverified" }).admission,
+        decideIngress({ ...base, minIdentifierAuthentication: "mutable" }).admission,
+        row.id,
+      );
+    }
+  });
+
+  // And the break-glass value is genuinely break-glass: it admits what the real postures
+  // reject, so nobody reads the equivalence above as "the weak setting is safe".
+  it("the break-glass minimum does admit what the supported ones drop", () => {
+    const spoofed = ROWS.find((r) => r.id === "I7");
+    assert.ok(spoofed, "I7 is the spoofed-operator row");
+    const decision = decideIngress({
+      strengths: mailAuthToIdentifierStrengths(spoofed.auth),
+      senderAddress: spoofed.auth.sender ?? "",
+      allowlisted: true,
+      selfAddressed: false,
+      threadPermitted: false,
+      minIdentifierAuthentication: "mutable",
+    });
+    assert.equal(decision.admission, "dispatch", "break-glass means exactly that");
   });
 });
