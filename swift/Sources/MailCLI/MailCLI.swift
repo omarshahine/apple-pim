@@ -336,13 +336,82 @@ func validateDestDir(_ url: URL) throws {
     }
 }
 
-func ensureMailRunning() throws {
-    let running = NSWorkspace.shared.runningApplications.contains {
+func mailIsRunning() -> Bool {
+    NSWorkspace.shared.runningApplications.contains {
         $0.bundleIdentifier == "com.apple.mail"
     }
-    guard running else {
-        throw CLIError.appNotRunning("Mail.app is not running. Please open Mail.app first.")
+}
+
+/// Ensures Mail.app is running, launching it if it is not.
+///
+/// This used to only check and throw, which made the name a lie and left every JXA-backed
+/// command failing on a host where Mail.app does not stay open. Reads no longer reach here
+/// (the SQLite/emlx path is tried first), so by the time this runs the caller genuinely
+/// needs Mail.app and launching is useful rather than a surprise GUI launch.
+///
+/// Launched without activating, so it does not steal focus on a machine in use.
+func ensureMailRunning() throws {
+    if mailIsRunning() {
+        return
     }
+
+    guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: "com.apple.mail") else {
+        throw CLIError.appNotRunning("Mail.app is not installed or could not be located.")
+    }
+
+    let config = NSWorkspace.OpenConfiguration()
+    config.activates = false
+
+    let group = DispatchGroup()
+    group.enter()
+    var launched: NSRunningApplication?
+    var launchError: Error?
+    NSWorkspace.shared.openApplication(at: url, configuration: config) { app, error in
+        launched = app
+        launchError = error
+        group.leave()
+    }
+    _ = group.wait(timeout: .now() + 30)
+
+    if let launchError {
+        throw CLIError.appNotRunning("Failed to launch Mail.app: \(launchError.localizedDescription)")
+    }
+    guard let app = launched else {
+        throw CLIError.appNotRunning("Mail.app did not launch.")
+    }
+
+    // Readiness is polled by asking Mail a trivial question over Apple Events, because
+    // that is the capability every caller here actually needs.
+    //
+    // The two obvious proxies both fail in a short-lived CLI: NSWorkspace.runningApplications
+    // is a per-process snapshot refreshed by notifications, and isFinishedLaunching is
+    // KVO-backed, so neither updates without a running app's event loop. Both reported
+    // failure for launches that had in fact succeeded.
+    _ = app
+    let deadline = Date().addingTimeInterval(30)
+    while Date() < deadline {
+        if mailAnswersAppleEvents() {
+            return
+        }
+        Thread.sleep(forTimeInterval: 0.5)
+    }
+    throw CLIError.appNotRunning("Mail.app launched but did not answer Apple Events within 30s.")
+}
+
+/// Cheapest possible round-trip that proves Mail is scriptable, not merely running.
+func mailAnswersAppleEvents() -> Bool {
+    let proc = Process()
+    proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+    proc.arguments = ["-l", "JavaScript", "-e", "Application('Mail').name()"]
+    proc.standardOutput = Pipe()
+    proc.standardError = Pipe()
+    do {
+        try proc.run()
+    } catch {
+        return false
+    }
+    proc.waitUntilExit()
+    return proc.terminationStatus == 0
 }
 
 func runJXA(_ script: String) throws -> Any {
