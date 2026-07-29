@@ -27,6 +27,7 @@ import {
   readTrustedSenders,
 } from "./runtime.ts";
 import { checkChannelConfig } from "./config-check.ts";
+import { RunBudget, resolveRateLimits, type BreakerStore } from "./rate-limit.ts";
 import { ThreadRecords, type ThreadRecordStore } from "./thread-store.ts";
 import {
   loadQuarantine,
@@ -60,6 +61,12 @@ export type ResolvedAppleMailAccount = {
     pageSize?: number;
     /** Path to trusted-senders.json. */
     trustedSendersPath?: string;
+    /**
+     * Circuit breaker on agent runs. Default-deny bounds who may drive the agent, not how
+     * much: one permitted correspondent in a loop is otherwise unlimited model calls.
+     */
+    maxAgentRunsPerHour?: number;
+    maxAgentRunsPerDay?: number;
   };
 };
 
@@ -212,6 +219,17 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
     const quarantineKey = `${CHANNEL_ID}:${ctx.accountId}`;
     loadQuarantine(await quarantineStore.lookup(quarantineKey));
 
+    const limits = resolveRateLimits(config);
+    const budget = new RunBudget(
+      state.openKeyedStore({
+        namespace: `${CHANNEL_ID}:budget`,
+        maxEntries: 64,
+      }) as BreakerStore,
+      `${CHANNEL_ID}:${ctx.accountId}`,
+      limits,
+    );
+    await budget.hydrate();
+
     const minIdentifierAuthentication = config.minIdentifierAuthentication ?? "asserted";
     const allowFrom = (config.allowFrom ?? []).map((entry) => String(entry));
 
@@ -246,6 +264,9 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
             return;
           }
           for (const message of messages) {
+            // Spend before the run, not after: a run that throws still consumed a model
+            // call, and a breaker that only counts successes cannot bound a crash loop.
+            await budget.consume();
             await dispatchAdmittedMessage(
               message,
               {
@@ -277,6 +298,14 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
           }
         },
         onError: (error) => ctx.log?.warn?.(`apple-mail poll failed: ${String(error)}`),
+        checkBudget: () => budget.check(),
+        onThrottled: ({ window, retryAtMs, pending }) =>
+          ctx.log?.warn?.(
+            `apple-mail: circuit breaker open (${window} limit of ` +
+              `${window === "day" ? limits.perDay : limits.perHour} agent runs reached); ` +
+              `holding ${pending} message(s)` +
+              (retryAtMs ? ` until ${new Date(retryAtMs).toISOString()}` : ""),
+          ),
         onTruncated: ({ mailbox, limit }) =>
           ctx.log?.warn?.(
             `apple-mail: ${mailbox} had more than ${limit} unread messages; some were not read this cycle`,

@@ -128,6 +128,14 @@ export type PollLoopDeps = {
   onError?: (error: unknown) => void;
   /** Reports that the page ceiling was hit with unread mail still behind it. */
   onTruncated?: (params: { mailbox: string; limit: number }) => void;
+  /**
+   * Whether the agent may run at all this cycle. Returns a refusal when the circuit breaker
+   * is open, which holds the cursor rather than discarding the batch: a burst is deferred,
+   * never lost.
+   */
+  checkBudget?: () => { allowed: boolean; window?: string; retryAtMs?: number };
+  /** Reports a cycle skipped because the breaker was open. */
+  onThrottled?: (params: { window?: string; retryAtMs?: number; pending: number }) => void;
   /** Injected so tests do not wait in real time. */
   sleep?: (ms: number, signal: AbortSignal) => Promise<void>;
 };
@@ -173,6 +181,23 @@ export async function runPollLoop(
         await deps.onDropped?.(dropped);
       }
       const admitted = classified.filter((entry) => entry.decision.admission !== "drop");
+      // The breaker is consulted only when there is something to spend budget on, so a quiet
+      // mailbox never reports itself throttled.
+      const budget = admitted.length > 0 ? (deps.checkBudget?.() ?? { allowed: true }) : { allowed: true };
+      if (!budget.allowed) {
+        // Hold the cursor. Reclassifying this page next cycle costs an auth-check per
+        // message, which is the right price for not losing an operator's mail to a burst
+        // of newsletters.
+        deps.onThrottled?.({
+          window: budget.window,
+          retryAtMs: budget.retryAtMs,
+          pending: admitted.length,
+        });
+        if (!signal.aborted) {
+          await sleep(options.intervalMs, signal);
+        }
+        continue;
+      }
       if (admitted.length > 0) {
         // Deliver first. If this throws, the cursor is left untouched and the batch is
         // retried next cycle rather than silently skipped.

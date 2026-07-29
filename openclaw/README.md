@@ -69,7 +69,12 @@ It is inert until `channels.apple-mail` exists in `openclaw.json`.
       "egressAllowlist": [],
       // Not always INBOX: mail is often archived on arrival.
       "mailbox": "INBOX",
-      "pollIntervalSeconds": 60
+      "pollIntervalSeconds": 60,
+      // Circuit breaker on agent runs. Default-deny bounds who may drive the agent, not
+      // how much; one permitted correspondent in a loop is otherwise unlimited model
+      // calls. When tripped the channel holds its cursor, so mail is deferred, not lost.
+      "maxAgentRunsPerHour": 30,
+      "maxAgentRunsPerDay": 200
     }
   }
 }

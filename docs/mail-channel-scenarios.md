@@ -343,12 +343,35 @@ sees is indistinguishable from a bug.
 it. "Why did the agent not answer that?" must be answerable after the fact, and the answer
 must not require re-reading the mailbox.
 
-**Rate and volume.** Default-deny bounds *who* the agent may contact, not *how much*. A
-permitted recipient plus a loop the loop guard does not catch is still a way to send a
-hundred messages. Volume limits are a separate control and are not covered here.
+**Rate and volume.** Default-deny bounds *who* may drive the agent, not *how much*. One
+permitted correspondent, a mailing list that starts looping, or a mail rule gone wrong all
+produce unbounded agent runs from an entirely authorized sender, and every control above
+correctly waves each one through.
+
+A circuit breaker counts runs per hour and per day (`maxAgentRunsPerHour`,
+`maxAgentRunsPerDay`). It counts runs rather than judging senders: a per-sender breaker
+would let ten senders cost ten times as much, which is the failure it exists to prevent.
+When it trips the channel holds its cursor instead of discarding the backlog, so a burst is
+deferred and never lost. That costs a re-authentication per held message each cycle, which
+is the right trade: authentication is cheap, and losing the operator's mail to a flood of
+newsletters is not recoverable.
 
 **Attachments.** Orthogonal to admission. Inbound attachments do not change a sender's
 strength; outbound attachments are default-denied unless the operator opts specific paths in.
+
+Inbound attachments are never fetched automatically. The envelope reports that they exist
+and the agent saves one only if it decides to, through the same gate as a body.
+
+**What the agent is given.** The envelope, never the message: sender, subject, date,
+attachment count, and the message id. Sender and subject are usually enough to tell a
+newsletter from an instruction, and on a real mailbox most admitted mail is `observe`, so
+fetching every body meant a model call per newsletter whose reply was then discarded.
+
+This moves the security boundary onto the tool. A dropped message still has an id, and a
+general-purpose mail tool will read any id it is given, so an agent that learns one could
+fetch the body the channel just refused to deliver. The channel therefore quarantines the
+ids it drops, and `apple_pim_mail` refuses to read or save attachments from them. Lazy
+fetch without that gate is a bypass, not an optimization.
 
 **Polling, not push.** The channel reads the local mail store on an interval rather than
 depending on a mail-client rule to wake it. That removes a GUI dependency, and it means the

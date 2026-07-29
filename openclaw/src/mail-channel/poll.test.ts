@@ -373,3 +373,101 @@ describe("runPollLoop", () => {
     assert.equal(maxInFlight, 1);
   });
 });
+
+// The breaker has to defer, not discard. Holding the cursor costs a re-classification next
+// cycle; advancing it would lose an operator's mail to a burst of newsletters.
+describe("circuit breaker", () => {
+  const message = {
+    messageId: "m1",
+    sender: "omar@shahine.com",
+    dateReceived: "2026-07-29T10:00:00Z",
+  };
+
+  function loopDeps(allowed: boolean) {
+    const registered: unknown[] = [];
+    const admitted: string[] = [];
+    const throttled: { pending: number }[] = [];
+    const controller = new AbortController();
+    return {
+      registered,
+      admitted,
+      throttled,
+      controller,
+      run: () =>
+        runPollLoop(
+          {
+            listMessages: async () => [message],
+            authCheck: async () => ({
+              verdict: "verified" as const,
+              sender: "omar@shahine.com",
+              checks: {
+                dkim: { result: "pass", signingDomain: "shahine.com", match: true },
+                spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+              },
+            }),
+            onAdmitted: async (m) => {
+              admitted.push(...m.map((e) => e.message.messageId));
+            },
+            checkBudget: () => ({ allowed, window: "hour", retryAtMs: 1 }),
+            onThrottled: (p) => throttled.push(p),
+            sleep: async () => controller.abort(),
+          },
+          {
+            mailbox: "INBOX",
+            limit: 10,
+            cursorKey: "k",
+            intervalMs: 1,
+            classify: { minIdentifierAuthentication: "asserted" },
+          },
+          {
+            lookup: async () => undefined,
+            register: async (_k, v) => {
+              registered.push(v);
+            },
+          },
+          controller.signal,
+        ),
+    };
+  }
+
+  it("delivers and advances the cursor when the breaker is closed", async () => {
+    const t = loopDeps(true);
+    await t.run();
+    assert.deepEqual(t.admitted, ["m1"]);
+    assert.equal(t.registered.length, 1, "cursor persisted");
+    assert.deepEqual(t.throttled, []);
+  });
+
+  it("holds the cursor and delivers nothing when the breaker is open", async () => {
+    const t = loopDeps(false);
+    await t.run();
+    assert.deepEqual(t.admitted, [], "no agent run");
+    assert.deepEqual(t.registered, [], "cursor held, so the batch is retried not lost");
+    assert.deepEqual(t.throttled, [{ window: "hour", retryAtMs: 1, pending: 1 }]);
+  });
+
+  it("does not report throttling when there is nothing to deliver", async () => {
+    const controller = new AbortController();
+    const throttled: unknown[] = [];
+    await runPollLoop(
+      {
+        listMessages: async () => [],
+        authCheck: async () => ({ verdict: "verified" as const }),
+        onAdmitted: async () => {},
+        checkBudget: () => ({ allowed: false, window: "hour" }),
+        onThrottled: (p) => throttled.push(p),
+        sleep: async () => controller.abort(),
+      },
+      {
+        mailbox: "INBOX",
+        limit: 10,
+        cursorKey: "k",
+        intervalMs: 1,
+        classify: { minIdentifierAuthentication: "asserted" },
+      },
+      { lookup: async () => undefined, register: async () => {} },
+      controller.signal,
+    );
+    assert.deepEqual(throttled, []);
+  });
+});
