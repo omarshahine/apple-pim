@@ -19,7 +19,6 @@ import {
 import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { ClassifiedMessage, PollCursor } from "./inbound.ts";
-import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { runPollLoop, type CursorStore } from "./poll.ts";
 import {
   createMailCliDeps,
@@ -29,7 +28,7 @@ import {
 import { checkChannelConfig } from "./config-check.ts";
 import { RunBudget, resolveRateLimits, type BreakerStore } from "./rate-limit.ts";
 import { ThreadRecords, type ThreadRecordStore } from "./thread-store.ts";
-import { openStore } from "./store.ts";
+import { openStore, storeDirectory } from "./store.ts";
 import {
   loadQuarantine,
   quarantineMessage,
@@ -87,14 +86,6 @@ const DEFAULT_PAGE = 25;
 export type AdmittedHandler = (messages: ClassifiedMessage[]) => Promise<void> | void;
 
 let admittedHandler: AdmittedHandler | undefined;
-
-/**
- * Captured at registration.
- *
- * The keyed store lives on `PluginRuntime`, not on the `RuntimeEnv` handed to
- * `startAccount`, so it has to be taken here via the entry's `setRuntime` hook.
- */
-let pluginRuntime: PluginRuntime | undefined;
 
 /** Overrides the default handler. Used by the gateway wiring and by tests. */
 export function setAdmittedHandler(handler: AdmittedHandler | undefined): void {
@@ -182,36 +173,67 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       trustedSendersPath: config.trustedSendersPath,
     });
 
-    // Storage the plugin owns. The host's `openKeyedStore` is gated on
-    // `trustedOfficialInstall`, which only packages in OpenClaw's official external catalog
-    // receive; no install path reaches it for a third-party plugin, so this channel keeps
-    // its own SQLite database rather than depending on a grant it cannot obtain.
-    const store = openStore<PollCursor>(`${CHANNEL_ID}:cursor`) as CursorStore;
+    let store: CursorStore;
+    let threads: ThreadRecords;
+    let quarantineStore: ReturnType<typeof openStore<[string, string][]>>;
+    let quarantineKey: string;
+    let budget: RunBudget;
+    let limits: ReturnType<typeof resolveRateLimits>;
+    try {
+      // Storage the plugin owns. The host's `openKeyedStore` is gated on
+      // `trustedOfficialInstall`, which only packages in OpenClaw's official external catalog
+      // receive; no install path reaches it for a third-party plugin, so this channel keeps
+      // its own SQLite database rather than depending on a grant it cannot obtain.
+      //
+      // Opening it can fail for reasons retrying cannot fix: an unwritable state directory, a
+      // Node without `node:sqlite`, a corrupt row. `startAccount` is awaited now, so letting
+      // one of those reject would mark the channel crashed and burn all ten restart attempts
+      // reprinting the same error. Fail once and hold instead.
+      store = openStore<PollCursor>(`${CHANNEL_ID}:cursor`) as CursorStore;
 
-    // Threads the agent has replied in. Hydrated once; admission reads it per message, so it
-    // is held in memory rather than round-tripped to the store inside the poll loop.
-    const threads = new ThreadRecords(
-      openStore(`${CHANNEL_ID}:threads`) as ThreadRecordStore,
-      `${CHANNEL_ID}:${ctx.accountId}`,
-    );
-    await threads.hydrate();
+      // Threads the agent has replied in. Hydrated once; admission reads it per message, so it
+      // is held in memory rather than round-tripped to the store inside the poll loop.
+      threads = new ThreadRecords(
+        openStore(`${CHANNEL_ID}:threads`) as ThreadRecordStore,
+        `${CHANNEL_ID}:${ctx.accountId}`,
+      );
+      await threads.hydrate();
 
-    // Messages the channel refuses are quarantined for the mail tool too. Without this the
-    // envelope-only prompt would be a bypass: a dropped message still has an id, and
-    // `apple_pim_mail` would happily read the body the channel just declined to deliver.
-    // Durable, because the cursor moves past a dropped message and it is never reclassified,
-    // so an in-memory set would forget it at the next restart.
-    const quarantineStore = openStore<[string, string][]>(`${CHANNEL_ID}:quarantine`);
-    const quarantineKey = `${CHANNEL_ID}:${ctx.accountId}`;
-    loadQuarantine(quarantineKey, await quarantineStore.lookup(quarantineKey));
+      // Messages the channel refuses are quarantined for the mail tool too. Without this the
+      // envelope-only prompt would be a bypass: a dropped message still has an id, and
+      // `apple_pim_mail` would happily read the body the channel just declined to deliver.
+      // Durable, because the cursor moves past a dropped message and it is never reclassified,
+      // so an in-memory set would forget it at the next restart.
+      quarantineStore = openStore<[string, string][]>(`${CHANNEL_ID}:quarantine`);
+      quarantineKey = `${CHANNEL_ID}:${ctx.accountId}`;
+      loadQuarantine(quarantineKey, await quarantineStore.lookup(quarantineKey));
 
-    const limits = resolveRateLimits(config);
-    const budget = new RunBudget(
-      openStore(`${CHANNEL_ID}:budget`) as BreakerStore,
-      `${CHANNEL_ID}:${ctx.accountId}`,
-      limits,
-    );
-    await budget.hydrate();
+      limits = resolveRateLimits(config);
+      budget = new RunBudget(
+        openStore(`${CHANNEL_ID}:budget`) as BreakerStore,
+        `${CHANNEL_ID}:${ctx.accountId}`,
+        limits,
+      );
+      await budget.hydrate();
+    } catch (error) {
+      ctx.log?.error?.(
+        `apple-mail: durable storage unavailable (${String(error)}). The channel needs it for ` +
+          `its poll cursor, thread records, quarantine, and run budget, and will not run ` +
+          `without them: a lost cursor reprocesses the mailbox and a lost quarantine ` +
+          `un-blocks refused senders. Check that ${storeDirectory()} is writable and that ` +
+          `this Node build has node:sqlite (22.13+).`,
+      );
+      // Held rather than returned. A returning `startAccount` reads as an exited channel and
+      // is restarted every few seconds; none of the causes above are fixed by retrying.
+      await new Promise<void>((resolve) => {
+        if (ctx.abortSignal.aborted) {
+          resolve();
+          return;
+        }
+        ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
+      return;
+    }
 
     const minIdentifierAuthentication = config.minIdentifierAuthentication ?? "asserted";
     const allowFrom = (config.allowFrom ?? []).map((entry) => String(entry));
@@ -360,9 +382,6 @@ export const appleMailChannelPlugin = createChatChannelPlugin<ResolvedAppleMailA
 });
 
 export const appleMailChannelEntry = defineChannelPluginEntry({
-  setRuntime: (runtime) => {
-    pluginRuntime = runtime;
-  },
   id: CHANNEL_ID,
   name: "Apple Mail",
   description:

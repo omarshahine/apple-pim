@@ -116,12 +116,16 @@ export function openStore<T>(namespace: string): KeyedStore<T> {
       }
       try {
         return JSON.parse(row.value) as T;
-      } catch {
-        // A row that will not parse is corrupt, not absent, but the caller can only act on
-        // absent. Treating it as missing rebuilds the value from scratch, which every caller
-        // here can do; the alternative is a channel that will not start until someone edits
-        // a database by hand.
-        return undefined;
+      } catch (error) {
+        // Corrupt is not absent, and collapsing the two here would fail open on the surfaces
+        // that matter most: an unreadable quarantine row would read as "nothing is
+        // quarantined" and re-expose every sender the channel had refused, and an unreadable
+        // budget row would read as "no runs yet" and hand back a full spend allowance. Throw
+        // instead. The caller holds the channel idle with a message naming this row, which
+        // is recoverable by deleting it and losing only what that row held.
+        throw new Error(
+          `Corrupt value in ${namespace}/${key}: ${String(error)}. Delete this row to rebuild it.`,
+        );
       }
     },
     register: async (key: string, value: T) => {

@@ -12,7 +12,23 @@ import { strict as assert } from "node:assert";
 import { mkdtempSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { createRequire } from "node:module";
 import { closeStore, openStore, storeDirectory } from "./store.ts";
+
+/** Writes unparseable bytes into a row, which only a bug or a bad edit would produce. */
+function corrupt(namespace: string, key: string): void {
+  closeStore();
+  const { DatabaseSync } = createRequire(import.meta.url)("node:sqlite") as {
+    DatabaseSync: new (f: string) => { prepare(s: string): { run(...a: unknown[]): unknown }; close(): void };
+  };
+  const db = new DatabaseSync(path.join(tmp, "apple-pim", "mail-channel.sqlite"));
+  db.prepare("UPDATE keyed_store SET value = ? WHERE namespace = ? AND key = ?").run(
+    "{not json",
+    namespace,
+    key,
+  );
+  db.close();
+}
 
 let tmp: string;
 
@@ -91,5 +107,33 @@ describe("openStore", () => {
 
   it("puts its database under the configured state dir, not the operator's real one", () => {
     assert.equal(storeDirectory(), path.join(tmp, "apple-pim"));
+  });
+});
+
+// Codex: treating a corrupt row as an absent one fails open on the two surfaces where that
+// is worst. An unreadable quarantine reads as "nothing is quarantined" and re-exposes every
+// refused sender; an unreadable budget reads as "no runs yet" and returns a full allowance.
+describe("corrupt rows", () => {
+  it("throws rather than reporting the key as absent", async () => {
+    const store = openStore<string[]>("quarantine");
+    await store.register("acct", ["still-fine"]);
+    corrupt("quarantine", "acct");
+    await assert.rejects(() => store.lookup("acct"), /Corrupt value in quarantine\/acct/);
+  });
+
+  it("names the row so it can be deleted", async () => {
+    const store = openStore<number>("budget");
+    await store.register("work", 1);
+    corrupt("budget", "work");
+    await assert.rejects(() => store.lookup("work"), /Delete this row to rebuild it/);
+  });
+
+  it("leaves neighbouring rows readable", async () => {
+    const store = openStore<string>("cursor");
+    await store.register("a", "good");
+    await store.register("b", "also-good");
+    corrupt("cursor", "a");
+    await assert.rejects(() => store.lookup("a"));
+    assert.equal(await store.lookup("b"), "also-good");
   });
 });

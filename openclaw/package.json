@@ -80,7 +80,7 @@
     "darwin"
   ],
   "engines": {
-    "node": ">=22.5"
+    "node": ">=22.13"
   },
   "dependencies": {
     "mailparser": "^3.9.3",
