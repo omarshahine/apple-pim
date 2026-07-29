@@ -257,9 +257,12 @@ describe("runPollLoop", () => {
     assert.deepEqual(delivered, ["a"]);
   });
 
-  // Greptile P1: reporting truncation was not enough; the cursor still advanced past the
-  // mail still sitting behind the ceiling.
-  it("does not advance the cursor on a truncated cycle", async () => {
+  // Holding the cursor here was an earlier fix and it was wrong, as Codex pointed out.
+  // Listing is newest-first, so a held cursor re-lists and redelivers the same newest page
+  // every cycle and *still* never reaches the older mail, because the page can only grow
+  // back from now. Advancing turns unbounded duplicate delivery plus loss into loss, once,
+  // reported loudly.
+  it("advances the cursor on a truncated cycle, bounding loss instead of looping", async () => {
     const store = memoryStore();
     await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
     const before = store.values.get(OPTIONS.cursorKey);
@@ -281,12 +284,20 @@ describe("runPollLoop", () => {
       signal,
     );
     assert.equal(truncations, 1);
-    assert.deepEqual(store.values.get(OPTIONS.cursorKey), before);
+    assert.notDeepEqual(
+      store.values.get(OPTIONS.cursorKey),
+      before,
+      "cursor must move, or this page is redelivered forever and the backlog is still lost",
+    );
+    assert.equal(
+      store.values.get(OPTIONS.cursorKey)?.lastDateReceived,
+      "2026-07-28T11:00:00.000Z",
+    );
   });
 
   // A truncated cycle must still sleep. An earlier version used `continue`, which skipped
   // the sleep and spun a tight infinite loop; the only symptom was a hanging test run.
-  it("holds the cursor on truncation without spinning the loop", async () => {
+  it("reports truncation and still advances, without spinning the loop", async () => {
     const store = memoryStore();
     // Seed a prior cursor: truncation is only possible once there is a watermark to fall
     // short of. A cold start deliberately takes the page as-is.
@@ -319,10 +330,10 @@ describe("runPollLoop", () => {
       controller.signal,
     );
     assert.equal(sleeps, 2, "each truncated cycle must reach the sleep");
-    assert.deepEqual(
+    assert.notDeepEqual(
       store.values.get(OPTIONS.cursorKey),
       seeded,
-      "cursor must not advance past a truncated page",
+      "the cursor advances; truncation is reported, not held",
     );
   });
 

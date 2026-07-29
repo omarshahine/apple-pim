@@ -221,3 +221,60 @@ describe("classifyMessage", () => {
     assert.notEqual(r.decision.reason, "thread_originated_by_agent");
   });
 });
+
+// Codex: a denied thread claim must not still be honoured for session scoping. Otherwise a
+// stranger who quotes a leaked Message-ID lands in the session of the person the agent was
+// really talking to, and reads their history.
+describe("thread key and session isolation", () => {
+  const records = [
+    {
+      inboundAnchorIds: ["known-thread@example.com"],
+      addressedRecipients: ["omar@shahine.com"],
+    },
+  ];
+  const deps = {
+    listMessages: async () => [],
+    authCheck: async () => ({
+      verdict: "untrusted" as const,
+      sender: "intruder@evil.example",
+      checks: {
+        dkim: { result: "pass", signingDomain: "evil.example", match: false },
+        spf: { result: "pass", mailFrom: "b@evil.example", aligned: true, match: true },
+      },
+    }),
+    readThreadHeaders: async () => ({ references: ["known-thread@example.com"] }),
+  };
+
+  it("does not file a denied claimant into the thread's session", async () => {
+    const result = await classifyMessage(
+      { messageId: "intrusion", sender: "intruder@evil.example" },
+      deps,
+      { minIdentifierAuthentication: "asserted", threadRecords: records },
+    );
+    assert.equal(result.decision.admission, "observe", "authenticated stranger, readable");
+    assert.equal(
+      result.threadKey,
+      "intrusion",
+      "must get its own session, not the one it claimed",
+    );
+  });
+
+  it("does file a real participant into it", async () => {
+    const result = await classifyMessage(
+      { messageId: "reply", sender: "omar@shahine.com" },
+      {
+        ...deps,
+        authCheck: async () => ({
+          verdict: "untrusted" as const,
+          sender: "omar@shahine.com",
+          checks: {
+            dkim: { result: "pass", signingDomain: "shahine.com", match: false },
+            spf: { result: "pass", mailFrom: "o@shahine.com", aligned: true, match: true },
+          },
+        }),
+      },
+      { minIdentifierAuthentication: "asserted", threadRecords: records },
+    );
+    assert.equal(result.threadKey, "known-thread@example.com");
+  });
+});

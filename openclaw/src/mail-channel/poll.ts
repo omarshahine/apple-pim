@@ -114,8 +114,16 @@ export async function runPollCycle(
 }
 
 export type PollLoopDeps = {
-  /** Called with the messages a cycle admitted. Dropped messages never reach it. */
-  onAdmitted: (messages: ClassifiedMessage[]) => Promise<void> | void;
+  /**
+   * Called with the messages a cycle admitted. Dropped messages never reach it.
+   *
+   * May return `{ deferred }` to say it stopped early, which holds the cursor so the
+   * untouched messages are retried. The budget is per run, not per batch, so a batch that
+   * exhausts it mid-way must not let the cursor move past what it never delivered.
+   */
+  onAdmitted: (
+    messages: ClassifiedMessage[],
+  ) => Promise<void | { deferred: number }> | void | { deferred: number };
   /**
    * Called with the messages a cycle refused, before the cursor moves past them.
    *
@@ -198,19 +206,28 @@ export async function runPollLoop(
         }
         continue;
       }
+      let deferred = 0;
       if (admitted.length > 0) {
         // Deliver first. If this throws, the cursor is left untouched and the batch is
         // retried next cycle rather than silently skipped.
-        await deps.onAdmitted(admitted);
+        const outcome = await deps.onAdmitted(admitted);
+        deferred = outcome?.deferred ?? 0;
+        if (deferred > 0) {
+          deps.onThrottled?.({ pending: deferred });
+        }
       }
-      // Reporting truncation is not enough. The cursor derives from a newest-first
-      // partial page, so persisting it would bury the older mail still behind the
-      // ceiling. Holding it reprocesses this page next cycle, which is duplicates
-      // instead of loss, and truncation keeps being reported until the backlog drains
-      // or the operator raises maxLimit.
+      // Truncation advances the cursor even though mail behind the ceiling was never
+      // examined. Holding it instead looks safer and is worse: listing is newest-first, so
+      // a held cursor re-lists the same newest page every cycle, redelivers it every cycle,
+      // and still never reaches the older mail, because the page can only ever grow up to
+      // `maxLimit` back from *now*. That is unbounded duplicate delivery plus the same loss.
+      // Advancing bounds it to loss, once, reported loudly enough for the operator to raise
+      // `maxLimit` or narrow the mailbox.
+      //
+      // A deferred batch is different and is genuinely retryable, so its cursor is held.
       //
       // Deliberately not `continue`: that would skip the sleep below and spin the loop.
-      if (!truncated) {
+      if (deferred === 0) {
         await store.register(options.cursorKey, cursor);
       }
     } catch (error) {

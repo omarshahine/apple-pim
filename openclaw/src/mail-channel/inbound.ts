@@ -195,10 +195,14 @@ export async function classifyMessage(
       records,
     );
     threadPermitted = thread.permitted;
-    // Session scoping follows a resolved thread even when the reply is not permitted: a
-    // denied message still belongs to that conversation, and filing it elsewhere would
-    // split the agent's view of it.
-    threadKey = thread.matchedMessageId ?? threadKey;
+    // Only a *permitted* thread claim sets the session key. `decideThreadReply` also returns
+    // the matched id when it denies, and adopting that would let an authenticated stranger
+    // who quotes a leaked Message-ID be filed into the session of the person the agent was
+    // actually talking to, reading their history. Denying the reply while honouring the
+    // claim for session scoping hands over exactly what the denial was protecting.
+    if (thread.permitted && thread.matchedMessageId) {
+      threadKey = thread.matchedMessageId;
+    }
   }
 
   return {

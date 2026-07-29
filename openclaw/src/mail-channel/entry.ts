@@ -217,7 +217,7 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       register(key: string, value: [string, string][]): Promise<void>;
     };
     const quarantineKey = `${CHANNEL_ID}:${ctx.accountId}`;
-    loadQuarantine(await quarantineStore.lookup(quarantineKey));
+    loadQuarantine(quarantineKey, await quarantineStore.lookup(quarantineKey));
 
     const limits = resolveRateLimits(config);
     const budget = new RunBudget(
@@ -253,9 +253,9 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
         ...deps,
         onDropped: async (messages) => {
           for (const entry of messages) {
-            quarantineMessage(entry.message.messageId, entry.decision.reason);
+            quarantineMessage(quarantineKey, entry.message.messageId, entry.decision.reason);
           }
-          await quarantineStore.register(quarantineKey, quarantineSnapshot());
+          await quarantineStore.register(quarantineKey, quarantineSnapshot(quarantineKey));
         },
         onAdmitted: async (messages) => {
           // Tests and embedders can take over delivery entirely.
@@ -263,10 +263,22 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
             await admittedHandler(messages);
             return;
           }
-          for (const message of messages) {
+          for (const [index, message] of messages.entries()) {
+            // Checked per message, not once per batch. A single check would let a batch of
+            // 25 run against a budget with 1 left, which is not a cap.
+            if (!budget.check().allowed) {
+              // Report what was left untouched so the loop holds the cursor for it.
+              return { deferred: messages.length - index };
+            }
             // Spend before the run, not after: a run that throws still consumed a model
             // call, and a breaker that only counts successes cannot bound a crash loop.
-            await budget.consume();
+            const spend = await budget.consume();
+            if (!spend.persisted) {
+              ctx.log?.warn?.(
+                `apple-mail: agent-run budget not persisted (${String(spend.error)}); the cap ` +
+                  `still holds for this process but will not survive a restart`,
+              );
+            }
             await dispatchAdmittedMessage(
               message,
               {
@@ -296,6 +308,7 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
               },
             );
           }
+          return undefined;
         },
         onError: (error) => ctx.log?.warn?.(`apple-mail poll failed: ${String(error)}`),
         checkBudget: () => budget.check(),
@@ -308,7 +321,9 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
           ),
         onTruncated: ({ mailbox, limit }) =>
           ctx.log?.warn?.(
-            `apple-mail: ${mailbox} had more than ${limit} unread messages; some were not read this cycle`,
+            `apple-mail: ${mailbox} had more than ${limit} unprocessed messages. Older mail ` +
+              `behind that ceiling was skipped and will not be retried, because the cursor ` +
+              `has moved past it. Raise maxLimit or poll a narrower mailbox.`,
           ),
       },
       {

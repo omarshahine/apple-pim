@@ -373,6 +373,20 @@ fetch the body the channel just refused to deliver. The channel therefore quaran
 ids it drops, and `apple_pim_mail` refuses to read or save attachments from them. Lazy
 fetch without that gate is a bypass, not an optimization.
 
+Blocking direct reads is not sufficient on its own. `search --field content` reads every
+candidate body, so an unfiltered hit is a content oracle: the agent probes for a phrase and
+learns from the result whether a quarantined message contains it, without ever opening one.
+Listings leak the envelope the same way. Quarantined messages are therefore withheld from
+listing and search results as well, and the response says how many rows were withheld, since
+a quietly short listing is indistinguishable from an empty mailbox.
+
+**Volume ceiling.** When more unprocessed mail sits in the mailbox than one cycle can page
+through, the cursor advances past the remainder and the skipped mail is reported rather than
+retried. Holding the cursor instead looks safer and is worse: listing is newest-first, so a
+held cursor re-lists and redelivers the same newest page every cycle and still never reaches
+the older mail. That is unbounded duplicate delivery *plus* the same loss. Advancing bounds
+it to loss, once, loudly enough to raise `maxLimit` or narrow the mailbox.
+
 **Polling, not push.** The channel reads the local mail store on an interval rather than
 depending on a mail-client rule to wake it. That removes a GUI dependency, and it means the
 filter lives in the channel where policy belongs, instead of upstream where it would decide

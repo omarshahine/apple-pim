@@ -131,8 +131,21 @@ export class RunBudget {
     return checkBreaker(this.#state, this.#limits, this.#now());
   }
 
-  async consume(): Promise<void> {
+  /**
+   * Counts one run.
+   *
+   * The in-memory count is authoritative and is never rolled back on a persistence failure.
+   * A budget that un-counts when the store is unavailable is a budget an unavailable store
+   * disables, which is exactly backwards: the whole point is to bound spend when something
+   * has gone wrong. Persistence failure costs durability across a restart, not the cap.
+   */
+  async consume(): Promise<{ persisted: boolean; error?: unknown }> {
     this.#state = recordRun(this.#state, this.#now());
-    await this.#store.register(this.#key, this.#state);
+    try {
+      await this.#store.register(this.#key, this.#state);
+      return { persisted: true };
+    } catch (error) {
+      return { persisted: false, error };
+    }
   }
 }

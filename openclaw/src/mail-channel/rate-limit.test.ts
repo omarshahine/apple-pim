@@ -154,3 +154,60 @@ describe("RunBudget", () => {
     assert.equal(budget.check().allowed, false);
   });
 });
+
+// Codex found the cap was checked once per batch and spent per message, so a batch of 25
+// against a budget with 1 left ran all 25. These pin the arithmetic the fix depends on.
+describe("batch spending", () => {
+  it("refuses partway through a batch rather than after it", () => {
+    let state: BreakerState = { runs: [] };
+    const batch = 25;
+    let ran = 0;
+    for (let i = 0; i < batch; i += 1) {
+      if (!checkBreaker(state, LIMITS, T0).allowed) {
+        break;
+      }
+      state = recordRun(state, T0);
+      ran += 1;
+    }
+    assert.equal(ran, LIMITS.perHour, "must stop at the cap, not at the batch size");
+    assert.equal(state.runs.length, LIMITS.perHour);
+  });
+
+  it("reports the untouched remainder so the caller can hold its cursor", () => {
+    let state: BreakerState = { runs: [] };
+    const batch = 10;
+    let index = 0;
+    for (; index < batch; index += 1) {
+      if (!checkBreaker(state, LIMITS, T0).allowed) {
+        break;
+      }
+      state = recordRun(state, T0);
+    }
+    assert.equal(batch - index, batch - LIMITS.perHour);
+  });
+});
+
+// A budget that un-counts when the store is unavailable is a budget an unavailable store
+// disables, which is backwards: bounding spend matters most when something is wrong.
+describe("persistence failure", () => {
+  it("keeps counting when the store throws, and says so", async () => {
+    const budget = new RunBudget(
+      {
+        lookup: async () => undefined,
+        register: async () => {
+          throw new Error("store offline");
+        },
+      },
+      "acct",
+      LIMITS,
+      () => T0,
+    );
+    await budget.hydrate();
+    for (let i = 0; i < LIMITS.perHour; i += 1) {
+      const outcome = await budget.consume();
+      assert.equal(outcome.persisted, false);
+      assert.match(String(outcome.error), /store offline/);
+    }
+    assert.equal(budget.check().allowed, false, "the cap still binds in-process");
+  });
+});
