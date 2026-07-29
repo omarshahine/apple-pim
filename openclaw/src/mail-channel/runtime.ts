@@ -14,6 +14,7 @@ import { promisify } from "node:util";
 import path from "node:path";
 import type { MailAuthCheckResult } from "../mail-auth/strength.ts";
 import type { InboundDeps, MailboxMessage, MessageThreadHeaders } from "./inbound.ts";
+import type { ReplySender } from "./dispatch.ts";
 
 const run = promisify(execFile);
 
@@ -122,5 +123,25 @@ export function parseThreadHeaders(allHeaders: unknown): MessageThreadHeaders {
   return {
     ...(inReplyTo ? { inReplyTo } : {}),
     ...(references && references.length > 0 ? { references } : {}),
+  };
+}
+
+/**
+ * Sends a reply through `mail-cli reply`.
+ *
+ * Note the asymmetry with reading: listing and authentication use `--engine sqlite` and
+ * work with Mail.app closed, but replying goes through JXA and therefore needs Mail.app
+ * running. `mail-cli` launches it, so this does not, but it is why a mailbox can be read
+ * on a machine where it cannot be replied from.
+ */
+export function createMailCliSender(options: MailCliOptions): ReplySender {
+  const accountArgs = options.account ? ["--account", options.account] : [];
+  return async ({ messageId, body }) => {
+    // The body is passed as an argv element, never through a shell, so agent-authored
+    // text cannot become a command. execFile does not spawn a shell.
+    await run(binary(options), ["reply", "--id", messageId, "--body", body, ...accountArgs], {
+      timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
+      maxBuffer: 8 * 1024 * 1024,
+    });
   };
 }

@@ -21,7 +21,9 @@ import type { ChannelPlugin } from "openclaw/plugin-sdk/channel-core";
 import type { ClassifiedMessage, PollCursor } from "./inbound.ts";
 import type { PluginRuntime } from "openclaw/plugin-sdk/runtime-store";
 import { runPollLoop, type CursorStore } from "./poll.ts";
-import { createMailCliDeps } from "./runtime.ts";
+import { createMailCliDeps, createMailCliSender } from "./runtime.ts";
+import { dispatchAdmittedMessage } from "./dispatch.ts";
+import { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-dispatch-runtime";
 
 /** Account shape this channel resolves from config. */
 export type ResolvedAppleMailAccount = {
@@ -37,6 +39,8 @@ export type ResolvedAppleMailAccount = {
     selfAddresses?: string[];
     /** Recipients the agent may originate mail to. Egress is default-deny without this. */
     egressAllowlist?: string[];
+    /** The operator's own addresses. Always permitted reply recipients. */
+    operatorAddresses?: string[];
     /** Seconds between Envelope Index polls. */
     pollIntervalSeconds?: number;
     /** Mailbox to poll. Not always INBOX: mail is often archived on arrival. */
@@ -176,15 +180,31 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       {
         ...deps,
         onAdmitted: async (messages) => {
-          if (!admittedHandler) {
-            // Never silently swallow admitted mail: if nothing is wired to receive it,
-            // say so once per batch rather than letting it vanish.
-            ctx.log?.warn?.(
-              `apple-mail: ${messages.length} message(s) admitted with no handler configured`,
-            );
+          // Tests and embedders can take over delivery entirely.
+          if (admittedHandler) {
+            await admittedHandler(messages);
             return;
           }
-          await admittedHandler(messages);
+          for (const message of messages) {
+            await dispatchAdmittedMessage(
+              message,
+              {
+                dispatchReply: dispatchReplyWithBufferedBlockDispatcher,
+                sendReply: createMailCliSender({
+                  account: config.account,
+                }),
+                onSuppressed: ({ address, reason }) =>
+                  ctx.log?.info?.(`apple-mail: reply to ${address} suppressed (${reason})`),
+              },
+              {
+                cfg: ctx.cfg,
+                operatorAddresses: config.operatorAddresses ?? [],
+                egressAllowlist: config.egressAllowlist ?? [],
+                selfAddresses: config.selfAddresses ?? [],
+                sessionPrefix: `${CHANNEL_ID}:${ctx.accountId}`,
+              },
+            );
+          }
         },
         onError: (error) => ctx.log?.warn?.(`apple-mail poll failed: ${String(error)}`),
         onTruncated: ({ mailbox, limit }) =>
