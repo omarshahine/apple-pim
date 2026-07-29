@@ -102,8 +102,11 @@ Scenario-by-scenario behavior, inbound and outbound, is in
 [`docs/mail-channel-scenarios.md`](../docs/mail-channel-scenarios.md).
 
 **Reading does not need Mail.app; replying does.** Polling and authentication read the
-Envelope Index and the `.emlx` files directly, so they work with Mail.app closed. `reply`
-goes through Apple Events and launches Mail.app on demand.
+Envelope Index and the `.emlx` files directly, so they work with Mail.app closed, but the
+process needs **Full Disk Access** to read them at all. `reply` goes through Apple Events,
+needs **Automation** access to Mail.app, and launches Mail.app on demand. Without those
+permissions the channel does not fall back to a degraded mode: polls and replies simply
+fail.
 
 ### Mail attachment safety
 
