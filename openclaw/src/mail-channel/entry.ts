@@ -323,11 +323,12 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
               `holding ${pending} message(s)` +
               (retryAtMs ? ` until ${new Date(retryAtMs).toISOString()}` : ""),
           ),
+        // Informational now, not a warning: the page is the oldest unprocessed mail, so a
+        // full one means the backlog is still draining, not that anything was skipped.
         onTruncated: ({ mailbox, limit }) =>
-          ctx.log?.warn?.(
-            `apple-mail: ${mailbox} had more than ${limit} unprocessed messages. Older mail ` +
-              `behind that ceiling was skipped and will not be retried, because the cursor ` +
-              `has moved past it. Raise maxLimit or poll a narrower mailbox.`,
+          ctx.log?.info?.(
+            `apple-mail: ${mailbox} returned a full page of ${limit}; more unprocessed mail ` +
+              `remains and will be read next cycle`,
           ),
       },
       {

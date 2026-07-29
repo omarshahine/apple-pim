@@ -97,44 +97,36 @@ function cursorThrough(
 const MAX_SEEN_UNDATED_CURSOR = 200;
 
 /**
- * Lists far enough back to reach the previous cursor.
+ * Lists the oldest unprocessed messages, paging forward from the cursor.
  *
- * Listing is newest-first with a limit, so if more than `limit` messages arrive between
- * cycles the page stops short of the cursor and everything behind it would be skipped
- * forever once the watermark advanced. This widens the page until it reaches back past the
- * cursor, the page is no longer full, or the ceiling is hit.
+ * This used to list newest-first and widen the page until it reached back past the cursor.
+ * That could not work: the page grows backwards from *now*, so once more than `maxLimit`
+ * messages sat between the cursor and the present, older mail was unreachable no matter what
+ * the loop did. Advancing skipped it, holding redelivered the newest page forever, and
+ * either way anyone who could flood the mailbox could push a real message out of reach.
  *
- * With no cursor yet the page is taken as-is: a first run starts from now rather than
- * ingesting the entire mailbox history.
+ * Passing the cursor as `--since` inverts it: the page starts at the backlog's oldest end
+ * and walks forward, so a flood delays delivery by a cycle or two and never prevents it.
+ * Truncation stops being a correctness problem and becomes ordinary paging.
+ *
+ * With no cursor yet the page is taken as-is, newest-first: a first run starts from now
+ * rather than ingesting the entire mailbox history.
  */
 async function listBackToCursor(
   deps: InboundDeps,
   options: PollOptions,
   previousWatermark: string | undefined,
 ): Promise<{ messages: MailboxMessage[]; truncated: boolean }> {
-  const ceiling = options.maxLimit ?? DEFAULT_MAX_LIMIT;
-  let limit = options.limit;
-  let messages = await deps.listMessages({ mailbox: options.mailbox, limit });
+  const limit = options.limit;
+  const messages = await deps.listMessages({
+    mailbox: options.mailbox,
+    limit,
+    since: previousWatermark,
+  });
 
-  if (!previousWatermark) {
-    return { messages, truncated: false };
-  }
-
-  while (messages.length >= limit && limit < ceiling) {
-    const dates = messages.map((m) => m.dateReceived).filter(Boolean) as string[];
-    const oldest = dates.sort()[0];
-    if (oldest && oldest <= previousWatermark) {
-      // The page now spans the cursor, so nothing is hiding behind it.
-      return { messages, truncated: false };
-    }
-    limit = Math.min(limit * 4, ceiling);
-    messages = await deps.listMessages({ mailbox: options.mailbox, limit });
-  }
-
-  const dates = messages.map((m) => m.dateReceived).filter(Boolean) as string[];
-  const oldest = dates.sort()[0];
-  const stillShort = messages.length >= limit && !!oldest && oldest > previousWatermark;
-  return { messages, truncated: stillShort };
+  // A full page means there is more behind it. That is now just "more to do next cycle",
+  // not mail at risk: the next page starts where this one ended.
+  return { messages, truncated: !!previousWatermark && messages.length >= limit };
 }
 
 /**

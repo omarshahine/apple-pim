@@ -78,24 +78,58 @@ describe("runPollCycle", () => {
 
   // Greptile P1: newest-first paging stops short of the cursor when a burst arrives, and
   // advancing the watermark from that subset would skip the rest permanently.
-  it("widens the page to reach back past the cursor", async () => {
+  // Greptile P1: listing newest-first meant a flood of new mail could push an older
+  // unprocessed message past the row limit permanently. The page now starts at the cursor
+  // and walks forward, so the backlog's oldest end is always what gets read.
+  it("pages forward from the cursor rather than grabbing the newest page", async () => {
     const store = memoryStore();
     await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
-    const burst = Array.from({ length: 7 }, (_, i) =>
-      msg(`b${i}`, `2026-07-28T10:0${i}:00.000Z`),
-    );
-    let lastLimit = 0;
+    let sinceSeen: string | undefined;
     const d: InboundDeps = {
-      listMessages: async ({ limit }) => {
-        lastLimit = limit;
-        return burst.slice(-limit);
+      listMessages: async ({ since, limit }) => {
+        sinceSeen = since;
+        return [msg("old", "2026-07-28T09:30:00.000Z")].slice(0, limit);
       },
       authCheck: async () => VERIFIED,
     };
-    const r = await runPollCycle(d, { ...OPTIONS, limit: 2, maxLimit: 64 }, store);
-    assert.ok(lastLimit > 2, "should have widened past the initial limit");
-    assert.equal(r.classified.length, 7);
-    assert.equal(r.truncated, false);
+    await runPollCycle(d, { ...OPTIONS, limit: 2 }, store);
+    assert.equal(sinceSeen, "2026-07-28T09:00:00.000Z", "the cursor bounds the listing");
+  });
+
+  it("takes the newest page on a cold start, not the whole mailbox history", async () => {
+    let sinceSeen: string | undefined = "unset";
+    const d: InboundDeps = {
+      listMessages: async ({ since }) => {
+        sinceSeen = since;
+        return [];
+      },
+      authCheck: async () => VERIFIED,
+    };
+    const r = await runPollCycle(d, OPTIONS, memoryStore());
+    assert.equal(sinceSeen, undefined, "no cursor means no --since, so the CLI's newest page");
+    assert.equal(r.truncated, false, "and a cold start is never truncated");
+  });
+
+  // A flood cannot bury older mail now: the flood is *newer*, so it sorts behind the
+  // backlog and simply waits its turn.
+  it("reads the oldest unprocessed mail even when newer mail floods in", async () => {
+    const store = memoryStore();
+    await store.register(OPTIONS.cursorKey, { lastDateReceived: "2026-07-28T09:00:00.000Z" });
+    const pending = msg("legitimate", "2026-07-28T09:30:00.000Z");
+    const flood = Array.from({ length: 500 }, (_, i) => msg(`spam${i}`, "2026-07-28T23:00:00.000Z"));
+    const d: InboundDeps = {
+      // The engine returns oldest-first when `since` is set, which is the contract the
+      // CLI now implements.
+      listMessages: async ({ limit }) => [pending, ...flood].slice(0, limit),
+      authCheck: async () => VERIFIED,
+    };
+    const r = await runPollCycle(d, { ...OPTIONS, limit: 2 }, store);
+    assert.equal(
+      r.classified[0]?.message.messageId,
+      "legitimate",
+      "the pending message is read first, not buried under the flood",
+    );
+    assert.equal(r.truncated, true, "and the rest is reported as still pending");
   });
 
   it("flags truncation instead of silently skipping when the ceiling is hit", async () => {

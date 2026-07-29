@@ -214,6 +214,10 @@ final class EnvelopeIndex {
         /// LIKE match against subject / sender / both.
         var queryText: String?
         var queryField: String = "all"
+        /// Oldest-first ordering. Newest-first answers "what just arrived"; oldest-first
+        /// answers "what have I not processed yet", which is the only one a cursor can page
+        /// through without a flood of new mail hiding the backlog behind the row limit.
+        var oldestFirst = false
     }
 
     func messages(filter: MessageFilter, limit: Int) throws -> [[String: Any]] {
@@ -257,7 +261,7 @@ final class EnvelopeIndex {
             SELECT \(Self.messageColumns)
             \(Self.messageJoins)
             WHERE \(conditions.joined(separator: " AND "))
-            ORDER BY m.date_received DESC
+            ORDER BY m.date_received \(filter.oldestFirst ? "ASC" : "DESC")
             LIMIT ?
             """
         binds.append(.int(Int64(limit)))

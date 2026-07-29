@@ -88,13 +88,16 @@ export function createMailCliDeps(options: MailCliOptions): InboundDeps {
     : [];
 
   return {
-    listMessages: async ({ mailbox, limit }) => {
+    listMessages: async ({ mailbox, limit, since }) => {
       const result = await runJson<{ messages?: MailboxMessage[] }>(options, [
         "messages",
         "--mailbox",
         mailbox,
         "--limit",
         String(limit),
+        // Pages forward from the cursor. Without it the CLI returns the newest page, so a
+        // burst of new mail hides unprocessed older mail behind the row limit permanently.
+        ...(since ? ["--since", since] : []),
         ...accountArgs,
         "--engine",
         "sqlite",

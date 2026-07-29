@@ -128,7 +128,14 @@ struct SQLiteEngine {
         return ["success": true, "mailboxes": result, "engine": "sqlite"]
     }
 
-    func messages(mailbox: String, account: String?, limit: Int, filter: String?) throws -> [String: Any] {
+    func messages(
+        mailbox: String,
+        account: String?,
+        limit: Int,
+        filter: String?,
+        sinceEpoch: Double? = nil,
+        oldestFirst: Bool = false
+    ) throws -> [String: Any] {
         let refs = try resolveMailboxes(account: account, mailbox: mailbox)
         guard !refs.isEmpty else {
             throw EnvelopeIndexError.notFound("Mailbox not found: \(mailbox)")
@@ -136,6 +143,8 @@ struct SQLiteEngine {
         var messageFilter = EnvelopeIndex.MessageFilter(mailboxRowIDs: refs.map { $0.rowid })
         messageFilter.unreadOnly = filter == "unread"
         messageFilter.flaggedOnly = filter == "flagged"
+        messageFilter.sinceEpoch = sinceEpoch
+        messageFilter.oldestFirst = oldestFirst
 
         let rows = try index.messages(filter: messageFilter, limit: limit)
         let result = rows.map { summaryDict($0, includeJunkAndAttachments: true, includeLocation: false) }

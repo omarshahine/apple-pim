@@ -867,14 +867,35 @@ struct ListMessages: AsyncParsableCommand {
     @Option(name: .long, help: "Read engine: auto (SQLite with JXA fallback), sqlite, or jxa")
     var engine: EngineChoice = .auto
 
+    @Option(name: .long, help: "Only messages received at or after this ISO 8601 timestamp. Implies oldest-first.")
+    var since: String?
+
     func run() async throws {
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
+        // `--since` exists for cursor-driven consumers. Newest-first answers "what just
+        // arrived"; a consumer working through a backlog needs "what have I not processed
+        // yet", and only oldest-first lets it page forward without a burst of new mail
+        // hiding older unprocessed messages behind the row limit. So --since implies it.
+        var sinceEpoch: Double?
+        if let since {
+            guard let epoch = epochFromISO8601(since) else {
+                throw CLIError.invalidInput(
+                    "Invalid date format for --since. Use ISO 8601: YYYY-MM-DD or YYYY-MM-DDTHH:MM:SSZ")
+            }
+            sinceEpoch = epoch
+        }
+
         if engine != .jxa {
             do {
                 outputJSON(try SQLiteEngine().messages(
-                    mailbox: mailbox, account: account, limit: limit, filter: filter))
+                    mailbox: mailbox,
+                    account: account,
+                    limit: limit,
+                    filter: filter,
+                    sinceEpoch: sinceEpoch,
+                    oldestFirst: sinceEpoch != nil))
                 return
             } catch {
                 try rethrowIfForcedSQLite(engine, error)

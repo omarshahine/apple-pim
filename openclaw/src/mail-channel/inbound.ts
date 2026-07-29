@@ -35,8 +35,18 @@ export type MessageThreadHeaders = {
 };
 
 export type InboundDeps = {
-  /** Lists candidate messages, newest first. */
-  listMessages: (params: { mailbox: string; limit: number }) => Promise<MailboxMessage[]>;
+  /**
+   * Lists candidate messages.
+   *
+   * With `since`, returns the *oldest* messages at or after that timestamp; without it, the
+   * newest. The poll loop always passes its cursor, so it pages forward through the backlog
+   * rather than repeatedly grabbing whatever just arrived.
+   */
+  listMessages: (params: {
+    mailbox: string;
+    limit: number;
+    since?: string;
+  }) => Promise<MailboxMessage[]>;
   /** Runs `mail-cli auth-check` for one message. */
   authCheck: (messageId: string) => Promise<MailAuthCheckResult>;
   /** Reads References / In-Reply-To for one message. */

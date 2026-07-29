@@ -380,12 +380,17 @@ Listings leak the envelope the same way. Quarantined messages are therefore with
 listing and search results as well, and the response says how many rows were withheld, since
 a quietly short listing is indistinguishable from an empty mailbox.
 
-**Volume ceiling.** When more unprocessed mail sits in the mailbox than one cycle can page
-through, the cursor advances past the remainder and the skipped mail is reported rather than
-retried. Holding the cursor instead looks safer and is worse: listing is newest-first, so a
-held cursor re-lists and redelivers the same newest page every cycle and still never reaches
-the older mail. That is unbounded duplicate delivery *plus* the same loss. Advancing bounds
-it to loss, once, loudly enough to raise `maxLimit` or narrow the mailbox.
+**Volume ceiling.** The channel reads the *oldest* unprocessed mail each cycle, paging
+forward from its cursor, so a full page simply means the backlog is still draining.
+
+This was originally newest-first, and that could not be made correct. The page grows
+backwards from now, so once more than one page of mail sat between the cursor and the
+present, older messages were unreachable: advancing the cursor skipped them, holding it
+redelivered the newest page forever and still never reached them. Worse, it was reachable on
+purpose. Anyone able to flood the mailbox could push a real message permanently out of view,
+and unauthenticated mail consumed page capacity before it was ever classified. Paging forward
+from the cursor removes the whole class: a flood is newer than the backlog, so it sorts
+behind it and waits its turn.
 
 **Polling, not push.** The channel reads the local mail store on an interval rather than
 depending on a mail-client rule to wake it. That removes a GUI dependency, and it means the
