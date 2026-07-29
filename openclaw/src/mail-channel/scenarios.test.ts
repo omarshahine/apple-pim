@@ -71,7 +71,7 @@ const ROWS: Row[] = [
       checks: { dkim: { result: "fail" }, spf: { result: "fail", match: false } },
     },
     allowlisted: true,
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     // The operator is not special. A failed authentication is dropped, not escalated.
     atDefault: "drop",
     atStrict: "drop",
@@ -82,7 +82,7 @@ const ROWS: Row[] = [
     // auth-check fails closed and returns no checks at all: every header is sender-writable.
     auth: { verdict: "unknown", sender: OPERATOR },
     allowlisted: true,
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     atDefault: "drop",
     atStrict: "drop",
   },
@@ -136,7 +136,7 @@ const ROWS: Row[] = [
       sender: "stranger@example.com",
       checks: { dkim: { result: "none" }, spf: { result: "fail", match: false } },
     },
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     atDefault: "drop",
     atStrict: "drop",
   },
@@ -147,7 +147,7 @@ const ROWS: Row[] = [
     // it and reports no checks. The forgery buys the attacker nothing.
     auth: { verdict: "suspicious", sender: OPERATOR },
     allowlisted: true,
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     atDefault: "drop",
     atStrict: "drop",
   },
@@ -164,7 +164,7 @@ const ROWS: Row[] = [
       },
     },
     allowlisted: true,
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     atDefault: "drop",
     atStrict: "drop",
   },
@@ -195,7 +195,7 @@ const ROWS: Row[] = [
       checks: { dkim: { result: "none" }, spf: { result: "none", match: false } },
     },
     threadPermitted: false,
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     atDefault: "drop",
     atStrict: "drop",
   },
@@ -222,7 +222,7 @@ const ROWS: Row[] = [
         spf: { result: "fail", mailFrom: "bounce@forwarder.example", aligned: false, match: false },
       },
     },
-    strengths: { address: "mutable", domain: "mutable" },
+    strengths: { address: "unverified", domain: "unverified" },
     atDefault: "drop",
     atStrict: "drop",
   },
@@ -337,7 +337,7 @@ describe("scenario doc: invariants across the table", () => {
 
   // A `From` header nobody vouched for must not clear the lowest configurable bar.
   it("no unauthenticated row reaches dispatch at any minimum", () => {
-    for (const row of ROWS.filter((r) => r.strengths.domain === "mutable")) {
+    for (const row of ROWS.filter((r) => r.strengths.domain === "unverified")) {
       assert.equal(row.atDefault, "drop", `${row.id} at the default minimum`);
       assert.equal(row.atStrict, "drop", `${row.id} at the strict minimum`);
     }

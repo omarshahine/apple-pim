@@ -72,16 +72,25 @@ as every other.
 The three levels have to stay honest about the bottom of the scale, which is the part that
 is easy to get wrong:
 
-| Level | Means | An address gets it when |
+| Level | Means | An identifier gets it when |
 | --- | --- | --- |
 | `verified` | our boundary proved this exact mailbox | an expected signer signed it |
 | `asserted` | our boundary proved the domain, and nothing narrower | the domain authenticated but no operator assertion names the mailbox |
-| `mutable` | nobody vouched for it; it is a string the sender typed | authentication produced nothing |
+| `unverified` | presented by a party nobody authenticated; stable, attacker-chosen, unproven | authentication produced nothing |
+| `mutable` | a user-changeable alias that identifies nobody even when honestly set | always, for a display name |
 
-A `From` header on a message that failed authentication belongs in `mutable`. Scoring it
+A `From` header on a message that failed authentication belongs in `unverified`. Scoring it
 `asserted` gives the address identifier a floor, which silently turns the lowest configurable
 minimum into no minimum at all, and every scenario below that says `drop` stops dropping.
 That was a real defect here, not a hypothetical.
+
+The bottom two levels are both untrustworthy and are kept apart because they are
+untrustworthy for *different reasons*. An alias is weak because two people can hold the same
+one. An unauthenticated address is weak because nothing bound it to its sender, though it is
+perfectly precise. This channel emits exactly one of each: the display name is always
+`mutable`, and no address is ever `mutable`. Collapsing them, which an earlier version of
+this channel did, yields the right admission and a diagnostic that calls a precise address a
+nickname.
 
 ### Provenance
 
@@ -104,19 +113,19 @@ not act or reply. `drop` means it never reaches the agent.
 | # | Scenario | Domain | Address | Outcome |
 | --- | --- | --- | --- | --- |
 | I1 | Operator, authenticated, enrolled | `verified` | `verified` | `dispatch` |
-| I2 | Operator's address, authentication failed | `mutable` | `mutable` | `drop` |
-| I3 | Operator's address, no trusted `authserv-id` configured | `mutable` | `mutable` | `drop`, with a config warning |
+| I2 | Operator's address, authentication failed | `unverified` | `unverified` | `drop` |
+| I3 | Operator's address, no trusted `authserv-id` configured | `unverified` | `unverified` | `drop`, with a config warning |
 | I4 | Enrolled non-operator (family, colleague) | `verified` | `verified` | `dispatch`, subject to sender policy |
 | I4a | Allowlisted, domain authenticated, **not** enrolled | `verified` | `asserted` | `dispatch` at the default minimum, `observe` under `verified` |
 | I5 | Authenticated stranger | `verified` | `asserted` | `observe` |
-| I6 | Unauthenticated stranger | `mutable` | `mutable` | `drop` |
-| I7 | Spoofed operator, forged `Authentication-Results` | `mutable` | `mutable` | `drop`, forged header never read |
-| I8 | Spoofed operator, valid SPF for the attacker's own domain | `mutable` | `mutable` | `drop`, unaligned pass does not count |
+| I6 | Unauthenticated stranger | `unverified` | `unverified` | `drop` |
+| I7 | Spoofed operator, forged `Authentication-Results` | `unverified` | `unverified` | `drop`, forged header never read |
+| I8 | Spoofed operator, valid SPF for the attacker's own domain | `unverified` | `unverified` | `drop`, unaligned pass does not count |
 | I9 | Reply inside a thread the agent started, from an addressed participant | inherits | inherits | `dispatch`, or `observe` if the address is under the minimum (see E1) |
 | I10 | Reply inside a thread the agent did not start | per I1-I6 | | as if new |
 | I10a | Claimed thread membership from a non-participant | per I1-I6 | | thread claim ignored, treated as new |
 | I11 | Bulk or marketing mail, authenticated | `verified` | `asserted` | `observe` |
-| I12 | Forwarded mail, alignment broken in transit | usually `mutable` | `mutable` | `drop` unless the forwarding address is enrolled |
+| I12 | Forwarded mail, alignment broken in transit | usually `unverified` | `unverified` | `drop` unless the forwarding address is enrolled |
 | I13 | Mail from the agent's own address | n/a | n/a | `drop`, loop guard |
 | I14 | Mail in Junk | n/a | n/a | not polled |
 | I15 | Mail with attachments | per above | | admission unchanged; attachments separately gated |
@@ -431,7 +440,7 @@ The two minimums are different postures, not strictness dials on the same one:
   signers. It is the right posture once enrollment is complete, and until then it leaves
   allowlisted senders readable but not actioned (I4a).
 
-`asserted` is a real bar only because an unauthenticated `From` address scores `mutable`.
+`asserted` is a real bar only because an unauthenticated `From` address scores `unverified`.
 If it scored `asserted`, this row would be decorative and I2, I7, and I8 would all dispatch.
 The channel reports any `allowFrom` entry with no enrollment behind it at startup, so the
 gap between the two files is visible rather than inferred.

@@ -21,11 +21,15 @@ function result(overrides: Partial<MailAuthCheckResult> = {}): MailAuthCheckResu
 }
 
 describe("ordering", () => {
-  it("ranks verified above asserted above mutable", () => {
+  it("ranks verified above asserted above unverified above mutable", () => {
     assert.equal(meetsMinimum("verified", "asserted"), true);
     assert.equal(meetsMinimum("asserted", "asserted"), true);
+    assert.equal(meetsMinimum("unverified", "asserted"), false);
     assert.equal(meetsMinimum("mutable", "asserted"), false);
     assert.equal(meetsMinimum("asserted", "verified"), false);
+    // The two weak levels are distinct, not aliases: unverified outranks mutable.
+    assert.equal(meetsMinimum("unverified", "mutable"), true);
+    assert.equal(meetsMinimum("mutable", "unverified"), false);
   });
 
   it("takes the weaker side, which is how entry and subject combine", () => {
@@ -36,6 +40,31 @@ describe("ordering", () => {
 });
 
 describe("mailAuthToIdentifierStrengths", () => {
+  // RFC 0027 conformance. The two weak levels mean different things, and this channel emits
+  // exactly one of each: an alias it never checks, and an address nobody authenticated.
+  // Conflating them was the original defect here, and produced a diagnostic that described
+  // a precise address as a nickname.
+  it("separates the unproven address from the alias", () => {
+    const unauthenticated = mailAuthToIdentifierStrengths({
+      verdict: "suspicious",
+      sender: "omar@shahine.com",
+      checks: { dkim: { result: "fail" }, spf: { result: "fail", match: false } },
+    });
+    assert.equal(unauthenticated.address, "unverified", "stable, attacker-chosen, unproven");
+    assert.equal(unauthenticated.displayName, "mutable", "an alias, whoever set it");
+    // Both are below the default minimum, so the distinction is descriptive, not permissive.
+    assert.equal(meetsMinimum(unauthenticated.address, "asserted"), false);
+    assert.equal(meetsMinimum(unauthenticated.displayName, "asserted"), false);
+  });
+
+  it("never emits `mutable` for an address, whatever the verdict", () => {
+    for (const verdict of ["verified", "suspicious", "unknown", "untrusted"] as const) {
+      const s = mailAuthToIdentifierStrengths(result({ verdict }));
+      assert.notEqual(s.address, "mutable", verdict);
+      assert.notEqual(s.domain, "mutable", verdict);
+    }
+  });
+
   it("a display name is never promoted, whatever the verdict", () => {
     for (const verdict of ["verified", "suspicious", "unknown", "untrusted"] as const) {
       assert.equal(mailAuthToIdentifierStrengths(result({ verdict })).displayName, "mutable");
@@ -62,8 +91,8 @@ describe("mailAuthToIdentifierStrengths", () => {
       warnings: ["No trustedAuthservIds configured for account key 'iCloud'"],
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(forged), {
-      address: "mutable",
-      domain: "mutable",
+      address: "unverified",
+      domain: "unverified",
       displayName: "mutable",
     });
   });
@@ -76,8 +105,8 @@ describe("mailAuthToIdentifierStrengths", () => {
         spf: { result: "pass", mailFrom: "bounce@attacker.example", aligned: false, match: false },
       },
     });
-    assert.equal(mailAuthToIdentifierStrengths(unaligned).domain, "mutable");
-    assert.equal(mailAuthToIdentifierStrengths(unaligned).address, "mutable");
+    assert.equal(mailAuthToIdentifierStrengths(unaligned).domain, "unverified");
+    assert.equal(mailAuthToIdentifierStrengths(unaligned).address, "unverified");
   });
 
   // A DKIM pass authenticates header.d, not the From domain. An unaligned signature means
@@ -91,8 +120,8 @@ describe("mailAuthToIdentifierStrengths", () => {
       },
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(unalignedSigner), {
-      address: "mutable",
-      domain: "mutable",
+      address: "unverified",
+      domain: "unverified",
       displayName: "mutable",
     });
   });
@@ -145,7 +174,7 @@ describe("mailAuthToIdentifierStrengths", () => {
     assert.equal(strengths.domain, "verified");
   });
 
-  it("keeps an unauthenticated stranger fully mutable", () => {
+  it("keeps an unauthenticated stranger fully unverified", () => {
     const stranger = result({
       verdict: "untrusted",
       sender: "spoofed@example.com",
@@ -155,16 +184,16 @@ describe("mailAuthToIdentifierStrengths", () => {
       },
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(stranger), {
-      address: "mutable",
-      domain: "mutable",
+      address: "unverified",
+      domain: "unverified",
       displayName: "mutable",
     });
   });
 
   it("treats missing checks as unproven rather than absent-therefore-fine", () => {
     assert.deepEqual(mailAuthToIdentifierStrengths({ verdict: "suspicious" }), {
-      address: "mutable",
-      domain: "mutable",
+      address: "unverified",
+      domain: "unverified",
       displayName: "mutable",
     });
   });
@@ -192,7 +221,7 @@ describe("mailAuthToIdentifierStrengths", () => {
 
   // The bug this mapping exists to prevent. `address` used to have a floor of `asserted`,
   // so `mutable` was unreachable for it and the default `asserted` minimum was not a bar.
-  it("reaches mutable on the address, so the default minimum is a real bar", () => {
+  it("reaches unverified on the address, so the default minimum is a real bar", () => {
     const unauthenticated: MailAuthCheckResult[] = [
       { verdict: "unknown", sender: "omar@shahine.com" },
       { verdict: "suspicious", sender: "omar@shahine.com" },
@@ -200,7 +229,7 @@ describe("mailAuthToIdentifierStrengths", () => {
     ];
     for (const r of unauthenticated) {
       const strengths = mailAuthToIdentifierStrengths(r);
-      assert.equal(strengths.address, "mutable", `verdict ${r.verdict}`);
+      assert.equal(strengths.address, "unverified", `verdict ${r.verdict}`);
       assert.equal(meetsMinimum(strengths.address, "asserted"), false, `verdict ${r.verdict}`);
     }
   });

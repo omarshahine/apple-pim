@@ -14,12 +14,26 @@
  * alignment); this module refuses to promote anything it cannot justify.
  */
 
-/** Ordered authentication strength. Mirrors the RFC 0027 scale. */
-export type IdentifierAuthentication = "verified" | "asserted" | "mutable";
+/**
+ * Ordered authentication strength. Mirrors the RFC 0027 scale.
+ *
+ * `unverified` and `mutable` are both untrustworthy and are separated because they are
+ * untrustworthy for different reasons. A display name is weak because it is an *alias*: two
+ * people can hold the same one, and it identifies nobody even when honestly set. An
+ * unauthenticated `From:` is weak because nothing *bound* it to its sender: it is an exact,
+ * stable identifier whose claimed ownership is simply unproven.
+ *
+ * This module originally collapsed the two, scoring an unauthenticated address `mutable`,
+ * because three levels were all the scale had. That produced the right admission and the
+ * wrong reason, which is how a diagnostic ends up describing a precise address as a
+ * nickname. The RFC gained the fourth level after implementing it here surfaced the gap.
+ */
+export type IdentifierAuthentication = "verified" | "asserted" | "unverified" | "mutable";
 
 const RANK: Record<IdentifierAuthentication, number> = {
-  verified: 2,
-  asserted: 1,
+  verified: 3,
+  asserted: 2,
+  unverified: 1,
   mutable: 0,
 };
 
@@ -121,7 +135,7 @@ export function mailAuthToIdentifierStrengths(
   const displayName: IdentifierAuthentication = "mutable";
 
   if (!provenanceEstablished(result)) {
-    return { address: "mutable", domain: "mutable", displayName };
+    return { address: "unverified", domain: "unverified", displayName };
   }
 
   // A DKIM pass authenticates the *signing* domain (header.d), which is not automatically
@@ -143,13 +157,13 @@ export function mailAuthToIdentifierStrengths(
     ? "verified"
     : domainAuthenticated
       ? "asserted"
-      : "mutable";
+      : "unverified";
 
   // An expected signer need not align: mailbox providers routinely sign with their own
   // domain (fastmail.com for a shahine.com address). Naming that signer for that sender is
   // a narrower operator statement than alignment, so it carries the domain claim as well.
   const domain: IdentifierAuthentication =
-    domainAuthenticated || operatorAssertedMailbox ? "verified" : "mutable";
+    domainAuthenticated || operatorAssertedMailbox ? "verified" : "unverified";
 
   return { address, domain, displayName };
 }
