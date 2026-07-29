@@ -5,6 +5,93 @@
   "channels": [
     "apple-mail"
   ],
+  "channelConfigs": {
+    "apple-mail": {
+      "label": "Apple Mail",
+      "blurb": "Polls the local Mail.app store and authorizes senders by DKIM/SPF authentication strength.",
+      "docsPath": "docs/mail-channel-scenarios.md",
+      "configSchema": {
+        "type": "object",
+        "additionalProperties": true,
+        "properties": {
+          "dmPolicy": {
+            "type": "string",
+            "enum": [
+              "allowlist",
+              "open",
+              "closed"
+            ],
+            "description": "Who may drive the agent. Default allowlist."
+          },
+          "allowFrom": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Addresses permitted to drive the agent. Policy only: authentication is proved separately via trustedSendersPath."
+          },
+          "minIdentifierAuthentication": {
+            "type": "string",
+            "enum": [
+              "verified",
+              "asserted",
+              "mutable"
+            ],
+            "default": "asserted",
+            "description": "Minimum strength before an identifier may authorize a sender. 'asserted' requires the sender's domain to have authenticated; 'verified' additionally requires a per-sender expectedDkimDomains entry."
+          },
+          "trustedSendersPath": {
+            "type": "string",
+            "description": "Path to trusted-senders.json, carrying expectedDkimDomains and trustedAuthservIds."
+          },
+          "selfAddresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Addresses the agent sends as. Required: this is the inbound and outbound loop guard."
+          },
+          "operatorAddresses": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "The operator's own addresses. Always permitted reply recipients."
+          },
+          "egressAllowlist": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Recipients the agent may originate mail to. Egress is default-deny without this."
+          },
+          "mailbox": {
+            "type": "string",
+            "default": "INBOX",
+            "description": "Mailbox to poll. Not always INBOX: mail is often archived on arrival."
+          },
+          "pollIntervalSeconds": {
+            "type": "number",
+            "default": 60
+          },
+          "pageSize": {
+            "type": "number",
+            "default": 25,
+            "description": "Messages read per cycle, oldest unprocessed first."
+          },
+          "maxAgentRunsPerHour": {
+            "type": "number",
+            "default": 30,
+            "description": "Circuit breaker. Default-deny bounds who may drive the agent, not how much."
+          },
+          "maxAgentRunsPerDay": {
+            "type": "number",
+            "default": 200
+          }
+        }
+      }
+    }
+  },
   "version": "3.10.0",
   "configSchema": {
     "type": "object",
