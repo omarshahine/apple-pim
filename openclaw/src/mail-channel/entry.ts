@@ -202,6 +202,17 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
           `un-blocks refused senders. Install the plugin through ClawHub rather than a local ` +
           `path so the host grants it storage access.`,
       );
+      // Deliberately not `return`. The gateway reads a returned `startAccount` as an exited
+      // channel and restarts it, so returning would repeat this diagnostic every few seconds
+      // for ten attempts. Retrying cannot change a trust decision, so the channel stays up
+      // and idle instead: one message, then nothing until shutdown.
+      await new Promise<void>((resolve) => {
+        if (ctx.abortSignal.aborted) {
+          resolve();
+          return;
+        }
+        ctx.abortSignal.addEventListener("abort", () => resolve(), { once: true });
+      });
       return;
     }
 
