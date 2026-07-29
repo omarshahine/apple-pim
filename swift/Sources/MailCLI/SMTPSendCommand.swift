@@ -67,6 +67,12 @@ struct SMTPSend: AsyncParsableCommand {
     @Option(name: .long, parsing: .singleValue, help: "Attachment file path (repeatable).")
     var attachment: [String] = []
 
+    @Option(name: .customLong("in-reply-to"), help: "Message-ID this message replies to. Sets In-Reply-To.")
+    var inReplyTo: String?
+
+    @Option(name: .long, parsing: .singleValue, help: "Message-ID for the References chain, oldest first (repeatable).")
+    var references: [String] = []
+
     @Option(name: .long, help: "From address. Defaults to smtp.username from config.")
     var from: String?
 
@@ -151,7 +157,12 @@ struct SMTPSend: AsyncParsableCommand {
             subject: subject,
             text: body,
             html: htmlContent,
-            attachments: attachments
+            attachments: attachments,
+            inReplyTo: inReplyTo,
+            // A reply's References is the parent's chain plus the parent itself. Callers pass
+            // the chain they read off the inbound message; append the parent when they did
+            // not, so a bare --in-reply-to still threads.
+            references: references.isEmpty ? [inReplyTo].compactMap { $0 } : references
         )
 
         if dryRun {

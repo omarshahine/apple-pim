@@ -57,6 +57,17 @@ public struct MIMEMessage: Sendable {
     public var messageID: String?
     public var date: Date
 
+    /// `In-Reply-To` and `References`, so a reply joins the recipient's existing thread
+    /// instead of starting a new one. Emitted only when non-empty.
+    ///
+    /// These matter beyond presentation: an agent that records the `Message-ID` it sent can
+    /// later prove a thread was its own, which is what lets a reply be permitted without
+    /// widening into standing permission to contact that address. Sending unthreaded means
+    /// the recipient's client picks its own `References`, and the agent has nothing to
+    /// check a later claim against.
+    public var inReplyTo: String?
+    public var references: [String]
+
     /// When `true` (default) and the message has `html` but no `text`, a plain-text
     /// fallback is synthesized from the HTML so the message is emitted as
     /// `multipart/alternative` rather than a single `text/html` part. Set to `false`
@@ -78,6 +89,8 @@ public struct MIMEMessage: Sendable {
         attachments: [Attachment] = [],
         messageID: String? = nil,
         date: Date = Date(),
+        inReplyTo: String? = nil,
+        references: [String] = [],
         autoDeriveTextFallback: Bool = true
     ) {
         self.from = from
@@ -90,7 +103,18 @@ public struct MIMEMessage: Sendable {
         self.attachments = attachments
         self.messageID = messageID
         self.date = date
+        self.inReplyTo = inReplyTo
+        self.references = references
         self.autoDeriveTextFallback = autoDeriveTextFallback
+    }
+
+    /// Message-IDs travel in angle brackets. Callers hand us bare ids as often as bracketed
+    /// ones, and a `References` chain mixing both breaks threading in some clients.
+    static func bracketed(_ raw: String) -> String? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.hasPrefix("<") && trimmed.hasSuffix(">") { return trimmed }
+        return "<\(trimmed.trimmingCharacters(in: CharacterSet(charactersIn: "<>")))>"
     }
 
     /// All recipients (To + Cc + Bcc) for the SMTP `RCPT TO` phase.
@@ -119,6 +143,16 @@ public struct MIMEMessage: Sendable {
         headers.append(("Subject", subject))
         headers.append(("Date", Self.formatRFC5322Date(date)))
         headers.append(("Message-ID", resolvedMessageID))
+        // Threading headers sit next to Message-ID because they are the same kind of fact.
+        // Emitted only when populated: an empty References is meaningless to RFC 5322 and
+        // some relays reject the bare header.
+        if let parent = inReplyTo.flatMap(Self.bracketed) {
+            headers.append(("In-Reply-To", parent))
+        }
+        let chain = references.compactMap(Self.bracketed)
+        if !chain.isEmpty {
+            headers.append(("References", chain.joined(separator: " ")))
+        }
         headers.append(("MIME-Version", "1.0"))
         for (name, value) in bodyHeaders {
             headers.append((name, value))

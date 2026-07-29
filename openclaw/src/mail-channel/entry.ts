@@ -28,6 +28,7 @@ import {
   readTrustedSenders,
 } from "./runtime.ts";
 import { checkChannelConfig } from "./config-check.ts";
+import { ThreadRecords, type ThreadRecordStore } from "./thread-store.ts";
 import { dispatchAdmittedMessage } from "./dispatch.ts";
 import { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-dispatch-runtime";
 
@@ -181,6 +182,17 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       trustedSendersPath: config.trustedSendersPath,
     });
 
+    // Threads the agent has replied in. Hydrated once; admission reads it per message, so it
+    // is held in memory rather than round-tripped to the store inside the poll loop.
+    const threads = new ThreadRecords(
+      state.openKeyedStore({
+        namespace: `${CHANNEL_ID}:threads`,
+        maxEntries: 64,
+      }) as ThreadRecordStore,
+      `${CHANNEL_ID}:${ctx.accountId}`,
+    );
+    await threads.hydrate();
+
     const minIdentifierAuthentication = config.minIdentifierAuthentication ?? "asserted";
     const allowFrom = (config.allowFrom ?? []).map((entry) => String(entry));
 
@@ -217,6 +229,18 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
                 readBody: createMailCliBodyReader({ account: config.account }),
                 onSuppressed: ({ address, reason }) =>
                   ctx.log?.info?.(`apple-mail: reply to ${address} suppressed (${reason})`),
+                // The reply has already been sent by this point, so a store failure must not
+                // surface as a failed dispatch. It fails closed instead: the thread goes
+                // unrecorded and a later answer is denied, which is worth a warning.
+                recordThread: async (reply) => {
+                  try {
+                    await threads.record(reply);
+                  } catch (error) {
+                    ctx.log?.warn?.(
+                      `apple-mail: reply sent but thread not recorded (${String(error)}); a later reply in this thread will not be permitted`,
+                    );
+                  }
+                },
               },
               {
                 cfg: ctx.cfg,
@@ -243,6 +267,11 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
           minIdentifierAuthentication,
           allowFrom,
           selfAddresses: config.selfAddresses ?? [],
+          // A live view, not a snapshot: a reply sent this cycle has to be visible to the
+          // next one, or the correspondent's answer arrives before the thread is recorded.
+          get threadRecords() {
+            return threads.all();
+          },
         },
       },
       store,

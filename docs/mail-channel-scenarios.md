@@ -220,15 +220,43 @@ narrow exception to it.
 
 So the claim is checked against the agent's own record, on both ends:
 
-1. The claimed parent must be a `Message-ID` **the agent itself generated**. A thread root
-   the agent never sent is not an agent-originated thread, whatever the headers say.
-2. The sender must be an address **the agent actually addressed** in that thread. Forging
+1. The claimed parent must be a `Message-ID` **the agent recorded** for that thread.
+2. The sender must be an address **the agent actually addressed** in it. Forging
    `In-Reply-To` gains nothing unless you were already a participant, and a participant
    already had permission.
 
-Both conditions come from state the agent wrote down when it sent the message. Neither is
-read from the inbound message. That is the same discipline the rest of this document applies
-to authentication: the evidence must come from a side the sender does not control.
+Both come from state the agent wrote down when it sent. Neither is read from the inbound
+message.
+
+### Two kinds of anchor, and why the weaker one is still sound
+
+Condition 1 would ideally match only Message-IDs the agent *generated*: unguessable, and
+absent from inbound mail until the agent sends. `mail-cli smtp-send` mints its own and
+returns it, so that anchor is available on that path. Mail.app does not — it assigns a
+Message-ID internally and reports nothing back — so a reply sent through `mail-cli reply`
+can only record the **inbound** Message-ID it was replying to.
+
+Inbound anchors are not secret. The original sender knows one, and so does anyone Cc'd or
+forwarded a copy. Recording them anyway is safe, but the reason is worth stating plainly
+rather than glossing:
+
+> An anchor selects a thread. It does not grant entry to one.
+
+Knowing an anchor buys an attacker nothing on its own, because condition 2 still requires
+them to be an address the agent addressed, and admission independently requires that address
+to meet `minIdentifierAuthentication` — thread permission waives the allowlist, never
+authentication (I9). To use a stolen anchor you must authenticate as a participant, at which
+point you are that participant.
+
+The two are kept as separate fields and the decision reports which one matched, so an audit
+can tell a thread proven by the agent's own Message-ID from one resolved through an anchor
+the sender could also have known. Moving a deployment to `smtp-send` upgrades its threads to
+the strong anchor with no policy change.
+
+A consequence worth knowing: a correspondent whose client sets `In-Reply-To` but writes no
+`References` chain names only the agent's own reply, which the Mail.app path never learned.
+That reply is denied. Full `References` chains are near-universal, but this is a real
+false-negative and the reason the strong anchor is worth having.
 
 Two further properties the rule must preserve:
 

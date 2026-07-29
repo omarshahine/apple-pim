@@ -19,7 +19,12 @@ export type ReplySender = (params: {
   messageId: string;
   to: string;
   body: string;
-}) => Promise<void> | void;
+  /**
+   * Message-ID the reply carried, when the transport reports one. `mail-cli smtp-send`
+   * mints and returns it; Mail.app assigns one internally and reports nothing, so this is
+   * optional rather than a lie.
+   */
+}) => Promise<{ sentMessageId?: string } | void> | { sentMessageId?: string } | void;
 
 /**
  * The reply pipeline, narrowed to what this module uses.
@@ -44,6 +49,18 @@ export type DispatchDeps = {
    */
   readBody?: (messageId: string) => Promise<string | undefined>;
   onSuppressed?: (params: { address: string; reason: string }) => void;
+  /**
+   * Records that the agent replied in this thread, which is what lets a later reply from
+   * this correspondent be permitted under the thread rule.
+   *
+   * Called only after a reply was actually sent. Recording on permission rather than on
+   * delivery would grant thread standing for a message that never left.
+   */
+  recordThread?: (reply: {
+    inboundMessageId: string;
+    sentMessageId?: string;
+    recipients: readonly string[];
+  }) => Promise<void> | void;
 };
 
 export type DispatchOptions = {
@@ -136,12 +153,19 @@ export async function dispatchAdmittedMessage(
         if (!text) {
           return;
         }
-        await deps.sendReply({
+        const sent = await deps.sendReply({
           messageId: message.message.messageId,
           to: message.address,
           body: text,
         });
         sentCount += 1;
+        // After delivery, never before: thread standing has to follow a message that
+        // actually left, or a suppressed reply would still widen permission.
+        await deps.recordThread?.({
+          inboundMessageId: message.message.messageId,
+          sentMessageId: sent?.sentMessageId,
+          recipients: [message.address],
+        });
       },
     },
   });

@@ -107,3 +107,62 @@ describe("thread reply permission", () => {
     assert.equal(d.reason, "sender_not_addressed_in_thread");
   });
 });
+
+// Two anchor kinds, deliberately not blurred together. Both are safe only because the
+// sender must also be an address the agent addressed, and decideIngress independently
+// requires that address to authenticate.
+describe("anchor kinds", () => {
+  const record = {
+    sentMessageIds: ["agent-1@lobster.example"],
+    inboundAnchorIds: ["m1@example.com"],
+    addressedRecipients: ["omar@shahine.com"],
+  };
+
+  it("reports an agent-generated match as the strong anchor", () => {
+    const d = decideThreadReply(
+      { inReplyTo: "<agent-1@lobster.example>", senderAddress: "omar@shahine.com" },
+      [record],
+    );
+    assert.equal(d.permitted, true);
+    assert.equal(d.matchedAnchor, "agent_generated");
+  });
+
+  it("reports an inbound-anchor match as the weaker one", () => {
+    const d = decideThreadReply(
+      { references: ["m1@example.com"], senderAddress: "omar@shahine.com" },
+      [record],
+    );
+    assert.equal(d.permitted, true);
+    assert.equal(d.matchedAnchor, "inbound_anchor");
+  });
+
+  it("prefers the agent-generated anchor when the chain names both", () => {
+    const d = decideThreadReply(
+      {
+        references: ["m1@example.com", "agent-1@lobster.example"],
+        senderAddress: "omar@shahine.com",
+      },
+      [record],
+    );
+    assert.equal(d.matchedAnchor, "agent_generated");
+  });
+
+  it("works on a record carrying only an inbound anchor", () => {
+    const d = decideThreadReply(
+      { references: ["m1@example.com"], senderAddress: "omar@shahine.com" },
+      [{ inboundAnchorIds: ["m1@example.com"], addressedRecipients: ["omar@shahine.com"] }],
+    );
+    assert.equal(d.permitted, true);
+  });
+
+  it("denies a sender who was never addressed, whichever anchor they name", () => {
+    for (const claim of [
+      { inReplyTo: "agent-1@lobster.example" },
+      { references: ["m1@example.com"] },
+    ]) {
+      const d = decideThreadReply({ ...claim, senderAddress: "attacker@example.com" }, [record]);
+      assert.equal(d.permitted, false, JSON.stringify(claim));
+      assert.equal(d.reason, "sender_not_addressed_in_thread");
+    }
+  });
+});

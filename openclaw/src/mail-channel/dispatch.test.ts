@@ -156,3 +156,64 @@ describe("dispatchAdmittedMessage", () => {
     ]);
   });
 });
+
+// The thread rule is only as good as the record behind it, and the record must follow
+// delivery: writing it on permission would grant thread standing for a message that a
+// suppressed or empty reply never actually sent.
+describe("thread recording", () => {
+  it("records the thread after a reply is sent", async () => {
+    const recorded: unknown[] = [];
+    const { deps: d } = deps({
+      sendReply: async () => ({ sentMessageId: "<agent-1@lobster.example>" }),
+      recordThread: async (reply) => {
+        recorded.push(reply);
+      },
+    });
+    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    assert.deepEqual(recorded, [
+      {
+        inboundMessageId: "m1",
+        sentMessageId: "<agent-1@lobster.example>",
+        recipients: ["omar@shahine.com"],
+      },
+    ]);
+  });
+
+  it("records nothing when the reply was suppressed", async () => {
+    const recorded: unknown[] = [];
+    const { deps: d } = deps({
+      recordThread: async (reply) => {
+        recorded.push(reply);
+      },
+    });
+    await dispatchAdmittedMessage(classified("stranger@example.com", "observe"), d, OPTIONS);
+    assert.deepEqual(recorded, []);
+  });
+
+  it("records nothing when the model produced an empty reply", async () => {
+    const recorded: unknown[] = [];
+    const { deps: d } = deps({
+      dispatchReply: async ({ dispatcherOptions }) => {
+        await dispatcherOptions.deliver({ text: "   " });
+      },
+      recordThread: async (reply) => {
+        recorded.push(reply);
+      },
+    });
+    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    assert.deepEqual(recorded, []);
+  });
+
+  // Mail.app assigns its own Message-ID and reports nothing back, which is the common path.
+  it("still records the inbound anchor when the transport reports no id", async () => {
+    const recorded: { sentMessageId?: string }[] = [];
+    const { deps: d } = deps({
+      recordThread: async (reply) => {
+        recorded.push(reply);
+      },
+    });
+    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    assert.equal(recorded.length, 1);
+    assert.equal(recorded[0]?.sentMessageId, undefined);
+  });
+});
