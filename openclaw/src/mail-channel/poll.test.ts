@@ -482,3 +482,100 @@ describe("circuit breaker", () => {
     assert.deepEqual(throttled, []);
   });
 });
+
+// Codex, second pass: holding the whole cursor on a partial batch replayed everything
+// already delivered, and could starve the undelivered tail forever if the batch kept
+// exceeding the budget. Oldest-first dispatch makes a partial cursor expressible.
+describe("partial delivery", () => {
+  function boundedSignal(cycles: number) {
+    const controller = new AbortController();
+    let seen = 0;
+    return {
+      signal: controller.signal,
+      sleep: async () => {
+        seen += 1;
+        if (seen >= cycles) {
+          controller.abort();
+        }
+      },
+    };
+  }
+
+  it("hands messages to the delivery callback oldest first", async () => {
+    const { signal, sleep } = boundedSignal(1);
+    const seen: string[] = [];
+    await runPollLoop(
+      {
+        listMessages: async () => [
+          msg("newest", "2026-07-28T12:00:00.000Z"),
+          msg("oldest", "2026-07-28T10:00:00.000Z"),
+          msg("middle", "2026-07-28T11:00:00.000Z"),
+        ],
+        authCheck: async () => VERIFIED,
+        onAdmitted: (messages) => {
+          seen.push(...messages.map((m) => m.message.messageId));
+        },
+        sleep,
+      },
+      { ...OPTIONS, intervalMs: 1 },
+      memoryStore(),
+      signal,
+    );
+    assert.deepEqual(seen, ["oldest", "middle", "newest"]);
+  });
+
+  it("advances the cursor through the delivered prefix only", async () => {
+    const store = memoryStore();
+    const { signal, sleep } = boundedSignal(1);
+    await runPollLoop(
+      {
+        listMessages: async () => [
+          msg("a", "2026-07-28T10:00:00.000Z"),
+          msg("b", "2026-07-28T11:00:00.000Z"),
+          msg("c", "2026-07-28T12:00:00.000Z"),
+        ],
+        authCheck: async () => VERIFIED,
+        // Budget runs out after two.
+        onAdmitted: () => ({ completed: 2 }),
+        sleep,
+      },
+      { ...OPTIONS, intervalMs: 1 },
+      store,
+      signal,
+    );
+    const cursor = store.values.get(OPTIONS.cursorKey);
+    assert.equal(
+      cursor?.lastDateReceived,
+      "2026-07-28T11:00:00.000Z",
+      "cursor sits at the last delivered message, not the last listed one",
+    );
+  });
+
+  it("redelivers neither the prefix nor loses the suffix across cycles", async () => {
+    const store = memoryStore();
+    const { signal, sleep } = boundedSignal(2);
+    const delivered: string[] = [];
+    let cycle = 0;
+    await runPollLoop(
+      {
+        listMessages: async () => [
+          msg("a", "2026-07-28T10:00:00.000Z"),
+          msg("b", "2026-07-28T11:00:00.000Z"),
+          msg("c", "2026-07-28T12:00:00.000Z"),
+        ],
+        authCheck: async () => VERIFIED,
+        onAdmitted: (messages) => {
+          cycle += 1;
+          const budget = cycle === 1 ? 2 : messages.length;
+          delivered.push(...messages.slice(0, budget).map((m) => m.message.messageId));
+          return { completed: budget };
+        },
+        sleep,
+      },
+      { ...OPTIONS, intervalMs: 1 },
+      store,
+      signal,
+    );
+    assert.deepEqual(delivered, ["a", "b", "c"], "each message delivered exactly once");
+  });
+});

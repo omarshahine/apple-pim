@@ -49,6 +49,26 @@ export type PollCycleResult = {
 const DEFAULT_MAX_LIMIT = 500;
 
 /**
+ * A cursor covering exactly the messages handed in, for a partially delivered batch.
+ *
+ * Undated messages are recorded by id, because they cannot be placed against a watermark
+ * and would otherwise be redelivered on every cycle.
+ */
+function cursorThrough(delivered: readonly ClassifiedMessage[]): PollCursor {
+  const dates = delivered.map((e) => e.message.dateReceived).filter(Boolean) as string[];
+  const highest = dates.sort().at(-1);
+  return {
+    lastDateReceived: highest,
+    seenAtWatermark: delivered
+      .filter((e) => e.message.dateReceived && e.message.dateReceived === highest)
+      .map((e) => e.message.messageId),
+    seenUndated: delivered
+      .filter((e) => !e.message.dateReceived)
+      .map((e) => e.message.messageId),
+  };
+}
+
+/**
  * Lists far enough back to reach the previous cursor.
  *
  * Listing is newest-first with a limit, so if more than `limit` messages arrive between
@@ -117,13 +137,17 @@ export type PollLoopDeps = {
   /**
    * Called with the messages a cycle admitted. Dropped messages never reach it.
    *
-   * May return `{ deferred }` to say it stopped early, which holds the cursor so the
-   * untouched messages are retried. The budget is per run, not per batch, so a batch that
-   * exhausts it mid-way must not let the cursor move past what it never delivered.
+   * Receives messages **oldest first**, and may return `{ completed }` to say it stopped
+   * early. The cursor then advances through exactly the completed prefix, so the untouched
+   * suffix is retried next cycle and the delivered prefix is not.
+   *
+   * Oldest-first is what makes a partial cursor expressible. Dispatching newest-first would
+   * leave the undelivered messages *behind* the watermark, where advancing loses them and
+   * holding replays everything already delivered.
    */
   onAdmitted: (
     messages: ClassifiedMessage[],
-  ) => Promise<void | { deferred: number }> | void | { deferred: number };
+  ) => Promise<void | { completed: number }> | void | { completed: number };
   /**
    * Called with the messages a cycle refused, before the cursor moves past them.
    *
@@ -206,14 +230,22 @@ export async function runPollLoop(
         }
         continue;
       }
-      let deferred = 0;
+      let partialCursor: PollCursor | undefined;
       if (admitted.length > 0) {
+        // Oldest first, so a partial delivery has a cursor that can describe it.
+        const ordered = [...admitted].sort((a, b) =>
+          (a.message.dateReceived ?? "").localeCompare(b.message.dateReceived ?? ""),
+        );
         // Deliver first. If this throws, the cursor is left untouched and the batch is
         // retried next cycle rather than silently skipped.
-        const outcome = await deps.onAdmitted(admitted);
-        deferred = outcome?.deferred ?? 0;
-        if (deferred > 0) {
-          deps.onThrottled?.({ pending: deferred });
+        const outcome = await deps.onAdmitted(ordered);
+        const completed = outcome?.completed ?? ordered.length;
+        if (completed < ordered.length) {
+          deps.onThrottled?.({ pending: ordered.length - completed });
+          // Advance only through what was delivered. Holding everything would replay the
+          // delivered prefix on every retry and, if the batch keeps exceeding the budget,
+          // starve the suffix forever.
+          partialCursor = cursorThrough(ordered.slice(0, completed));
         }
       }
       // Truncation advances the cursor even though mail behind the ceiling was never
@@ -227,9 +259,11 @@ export async function runPollLoop(
       // A deferred batch is different and is genuinely retryable, so its cursor is held.
       //
       // Deliberately not `continue`: that would skip the sleep below and spin the loop.
-      if (deferred === 0) {
-        await store.register(options.cursorKey, cursor);
-      }
+      // A partial cursor wins over the full one, and over truncation: it describes exactly
+      // what was delivered, which is the only claim safe to persist. When it is absent the
+      // full cursor applies, truncated or not, because a fully delivered page has nothing
+      // left to retry and holding it would re-list the same newest page forever.
+      await store.register(options.cursorKey, partialCursor ?? cursor);
     } catch (error) {
       deps.onError?.(error);
     }

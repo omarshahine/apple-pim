@@ -258,17 +258,13 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
           await quarantineStore.register(quarantineKey, quarantineSnapshot(quarantineKey));
         },
         onAdmitted: async (messages) => {
-          // Tests and embedders can take over delivery entirely.
-          if (admittedHandler) {
-            await admittedHandler(messages);
-            return;
-          }
-          for (const [index, message] of messages.entries()) {
+          let completed = 0;
+          for (const message of messages) {
             // Checked per message, not once per batch. A single check would let a batch of
-            // 25 run against a budget with 1 left, which is not a cap.
+            // 25 run against a budget with 1 left, which is not a cap. Ahead of the
+            // embedder override too, so taking over delivery cannot take over the cap.
             if (!budget.check().allowed) {
-              // Report what was left untouched so the loop holds the cursor for it.
-              return { deferred: messages.length - index };
+              return { completed };
             }
             // Spend before the run, not after: a run that throws still consumed a model
             // call, and a breaker that only counts successes cannot bound a crash loop.
@@ -278,6 +274,13 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
                 `apple-mail: agent-run budget not persisted (${String(spend.error)}); the cap ` +
                   `still holds for this process but will not survive a restart`,
               );
+            }
+            // Tests and embedders can take over delivery, one message at a time so the
+            // budget and the partial cursor still apply to them.
+            if (admittedHandler) {
+              await admittedHandler([message]);
+              completed += 1;
+              continue;
             }
             await dispatchAdmittedMessage(
               message,
@@ -307,8 +310,9 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
                 sessionPrefix: `${CHANNEL_ID}:${ctx.accountId}`,
               },
             );
+            completed += 1;
           }
-          return undefined;
+          return { completed };
         },
         onError: (error) => ctx.log?.warn?.(`apple-mail poll failed: ${String(error)}`),
         checkBudget: () => budget.check(),

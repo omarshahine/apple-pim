@@ -125,11 +125,24 @@ describe("filterQuarantinedResults", () => {
     assert.equal(filtered.count, 2, "count must match what was returned");
   });
 
-  // A quietly short listing reads as an empty mailbox. The agent cannot tell "nothing
-  // matched" from "you may not see it" unless we say so.
-  it("says how many rows it withheld", () => {
+  // A quietly short listing reads as an empty mailbox, so listings say what was withheld.
+  it("reports the withheld count when asked", () => {
     quarantineMessage("acct", "spoofed", "unauthenticated_sender");
-    assert.equal(filterQuarantinedResults(payload()).withheldByChannelPolicy, 1);
+    assert.equal(
+      filterQuarantinedResults(payload(), { reportWithheld: true }).withheldByChannelPolicy,
+      1,
+    );
+  });
+
+  // Codex, second pass: the count is itself an oracle for a search. "1 withheld" for
+  // `--field content "secret phrase"` confirms the phrase is in quarantined mail without
+  // returning it, which is the leak filtering the rows was meant to close.
+  it("stays silent about the count by default, since a query-dependent count leaks", () => {
+    quarantineMessage("acct", "spoofed", "unauthenticated_sender");
+    const filtered = filterQuarantinedResults(payload());
+    assert.equal(filtered.withheldByChannelPolicy, undefined);
+    assert.equal(filtered.messages.length, 2);
+    assert.equal(filtered.count, 2);
   });
 
   it("leaves a non-listing payload alone", () => {
