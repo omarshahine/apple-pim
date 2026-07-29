@@ -40,6 +40,59 @@ Requires macOS 13+ and Swift 5.9+ (Xcode 15+).
 | `configDir` | Override the PIM config root (default `~/.config/apple-pim/`). |
 | `mailAttachmentsConfig` | Path to the mail attachment policy JSON. |
 
+### Apple Mail channel
+
+The plugin also registers an inbound mail **channel** (`apple-mail`). It polls the local
+Mail.app store, authenticates each sender, and admits messages by authentication strength.
+It is inert until `channels.apple-mail` exists in `openclaw.json`.
+
+```jsonc
+{
+  "channels": {
+    "apple-mail": {
+      "dmPolicy": "allowlist",
+      // Who may drive the agent.
+      "allowFrom": ["omar@shahine.com", "lora@shahine.com"],
+      // Minimum strength an identifier needs before it authorizes a sender.
+      // "asserted" is the compatible default; "verified" is the strict posture and
+      // requires an expectedDkimDomains entry for each address below.
+      "minIdentifierAuthentication": "verified",
+      // Carries expectedDkimDomains (address -> legitimate signing domains) and
+      // trustedAuthservIds (which Authentication-Results headers are believed).
+      "trustedSendersPath": "~/.config/lobster/trusted-senders.json",
+      // Addresses the agent sends as. Required: this is the inbound and outbound loop guard.
+      "selfAddresses": ["lobster@example.com"],
+      // Always-permitted reply recipients.
+      "operatorAddresses": ["omar@shahine.com"],
+      // Recipients the agent may originate mail to. Egress is default-deny without this.
+      "egressAllowlist": [],
+      // Not always INBOX: mail is often archived on arrival.
+      "mailbox": "INBOX",
+      "pollIntervalSeconds": 60
+    }
+  }
+}
+```
+
+Two lists, two jobs, and they are deliberately not the same file:
+
+- **`allowFrom`** answers *who may drive the agent*. Policy.
+- **`trustedSendersPath`** answers *what proves they are who they claim*. Only addresses with
+  an `expectedDkimDomains` entry can ever reach `verified`, because that entry is the
+  operator assertion binding an address to its legitimate signers. DMARC alignment proves a
+  **domain**, never a mailbox.
+
+They will list overlapping addresses. That duplication is intended, but it is a drift risk
+worth knowing about: adding someone to `allowFrom` without enrolling them caps them at
+`asserted`, so under `minIdentifierAuthentication: "verified"` they are silently not admitted.
+
+Scenario-by-scenario behavior, inbound and outbound, is in
+[`docs/mail-channel-scenarios.md`](../docs/mail-channel-scenarios.md).
+
+**Reading does not need Mail.app; replying does.** Polling and authentication read the
+Envelope Index and the `.emlx` files directly, so they work with Mail.app closed. `reply`
+goes through Apple Events and launches Mail.app on demand.
+
 ### Mail attachment safety
 
 Mail send/reply attachments are **default-denied**. To allow them, point
