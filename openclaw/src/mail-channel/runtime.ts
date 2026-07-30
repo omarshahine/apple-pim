@@ -32,7 +32,8 @@ const run = promisify(execFile);
  * account, which is correct, just broader.
  *
  * JXA-backed commands (`reply`) do take it, because there the display name is the right
- * identifier.
+ * identifier. SQLite reads take `accountId`, the account UUID, which is the identifier that
+ * namespace uses.
  */
 export type MailCliOptions = {
   /** Directory holding the Swift CLIs. Falls back to whatever is on PATH. */
@@ -41,6 +42,15 @@ export type MailCliOptions = {
   trustedSendersPath?: string;
   /** Mail.app account name, passed as a lookup hint. */
   account?: string;
+  /**
+   * SQLite account UUID, from `mail-cli accounts --engine sqlite`.
+   *
+   * Scopes reads to one account. Without it a mailbox name matches in every configured
+   * account, so a multi-account Mail.app would feed one account's policy with another
+   * account's mail. Optional because a single-account install cannot be harmed by the
+   * broader query, and `checkChannelConfig` reports the risk when it is absent.
+   */
+  accountId?: string;
   /** Per-call timeout. A hung CLI must not stall the poll loop forever. */
   timeoutMs?: number;
 };
@@ -95,8 +105,9 @@ export async function readTrustedSenders(
 
 /** Builds the inbound dependency set backed by the real CLI. */
 export function createMailCliDeps(options: MailCliOptions): InboundDeps {
-  // No --account here: every command below uses --engine sqlite. See MailCliOptions.
-  const accountArgs: string[] = [];
+  // SQLite keys accounts by UUID, so only accountId belongs here. Passing the JXA display
+  // name fails outright ("Account not found: iCloud").
+  const accountArgs = options.accountId ? ["--account", options.accountId] : [];
   const trustedArgs = options.trustedSendersPath
     ? ["--trusted-senders", options.trustedSendersPath]
     : [];
@@ -204,8 +215,8 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
 export function createMailCliBodyReader(
   options: MailCliOptions,
 ): (messageId: string) => Promise<string | undefined> {
-  // Also --engine sqlite, so also no --account. See MailCliOptions.
-  const accountArgs: string[] = [];
+  // Also --engine sqlite, so also the UUID. See MailCliOptions.
+  const accountArgs = options.accountId ? ["--account", options.accountId] : [];
   return async (messageId) => {
     const result = await runJson<{ message?: { content?: string }; content?: string }>(options, [
       "get",

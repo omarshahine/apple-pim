@@ -43,6 +43,11 @@ export type ResolvedAppleMailAccount = {
   config: {
     /** Mail.app account name, as reported by JXA. Selects the trusted authserv-id set. */
     account?: string;
+    /**
+     * SQLite account UUID, from `mail-cli accounts --engine sqlite`. Scopes reads to one
+     * account; without it a mailbox name matches in every account.
+     */
+    accountId?: string;
     dmPolicy?: string;
     allowFrom?: Array<string | number>;
     /**
@@ -180,6 +185,7 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
 
     const deps = createMailCliDeps({
       account: config.account,
+      accountId: config.accountId,
       trustedSendersPath: config.trustedSendersPath,
     });
 

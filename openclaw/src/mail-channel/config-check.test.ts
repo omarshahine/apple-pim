@@ -114,3 +114,32 @@ describe("checkChannelConfig", () => {
     assert.deepEqual(found, ["loop_guard_disabled", "no_trusted_authserv_id"]);
   });
 });
+
+describe("unscoped mailbox reads", () => {
+  const base = {
+    allowFrom: [],
+    selfAddresses: [],
+    minIdentifierAuthentication: "verified" as const,
+  };
+
+  // Greptile P1 on #96: dropping --account fixed a crash and silently removed account
+  // isolation, so one account's policy would ingest another account's mail.
+  it("flags an unscoped read on a multi-account mailbox", () => {
+    const codes = checkChannelConfig({ ...base, knownAccountCount: 2 }).map((f) => f.code);
+    assert.ok(codes.includes("unscoped_mailbox_reads"));
+  });
+
+  it("stays quiet once accountId scopes the read", () => {
+    const codes = checkChannelConfig({
+      ...base,
+      knownAccountCount: 2,
+      accountId: "168231BA-20A5-4B91-B54D-8D9906C76D25",
+    }).map((f) => f.code);
+    assert.equal(codes.includes("unscoped_mailbox_reads"), false);
+  });
+
+  it("stays quiet on a single-account mailbox, where the broader query is harmless", () => {
+    const codes = checkChannelConfig({ ...base, knownAccountCount: 1 }).map((f) => f.code);
+    assert.equal(codes.includes("unscoped_mailbox_reads"), false);
+  });
+});

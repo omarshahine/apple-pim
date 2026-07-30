@@ -21,7 +21,8 @@ export type ConfigFinding = {
     | "trusted_senders_unreadable"
     | "no_trusted_authserv_id"
     | "allowlisted_not_enrolled"
-    | "enrolled_without_expected_signers";
+    | "enrolled_without_expected_signers"
+    | "unscoped_mailbox_reads";
   message: string;
 };
 
@@ -41,6 +42,10 @@ export type ConfigCheckInput = {
   trustedSenders?: readonly TrustedSenderEntry[];
   /** Parsed `trustedAuthservIds`, keyed by Mail.app account name, with `*` as the wildcard. */
   trustedAuthservIds?: Readonly<Record<string, readonly string[]>>;
+  /** SQLite account UUID used to scope reads. */
+  accountId?: string;
+  /** How many accounts Mail.app reports. Only >1 makes unscoped reads dangerous. */
+  knownAccountCount?: number;
 };
 
 function normalize(values: readonly string[] | undefined): Set<string> {
@@ -55,6 +60,18 @@ function normalize(values: readonly string[] | undefined): Set<string> {
  */
 export function checkChannelConfig(input: ConfigCheckInput): ConfigFinding[] {
   const findings: ConfigFinding[] = [];
+
+  // Unscoped reads match a mailbox name in every account, so on a multi-account Mail.app
+  // this account's policy would be applied to another account's mail.
+  if (!input.accountId && (input.knownAccountCount ?? 1) > 1) {
+    findings.push({
+      code: "unscoped_mailbox_reads",
+      message:
+        `accountId is not set and Mail.app reports ${input.knownAccountCount} accounts, so ` +
+        "mailbox reads are not scoped and will include mail from other accounts. Set " +
+        "accountId to the UUID from `mail-cli accounts --engine sqlite`.",
+    });
+  }
   const path = input.trustedSendersPath ?? "trusted-senders.json";
 
   // I13. Without this the agent can answer its own mail, and the loop is only bounded by
