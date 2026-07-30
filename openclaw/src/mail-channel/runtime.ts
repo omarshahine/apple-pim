@@ -21,6 +21,19 @@ import type { ConfigCheckInput } from "./config-check.ts";
 
 const run = promisify(execFile);
 
+/**
+ * `account` is the **JXA display name** (for example `iCloud`).
+ *
+ * It is deliberately not passed to `--engine sqlite` commands. The two engines identify
+ * accounts in different namespaces: JXA reports the display name, SQLite reports the
+ * account UUID, and handing SQLite a display name fails with "Account not found". The
+ * field exists for keying `trustedAuthservIds`, which is the security-relevant use, and
+ * the `--account` hint on a read is only an optimization: omitting it searches every
+ * account, which is correct, just broader.
+ *
+ * JXA-backed commands (`reply`) do take it, because there the display name is the right
+ * identifier.
+ */
 export type MailCliOptions = {
   /** Directory holding the Swift CLIs. Falls back to whatever is on PATH. */
   binDir?: string;
@@ -82,7 +95,8 @@ export async function readTrustedSenders(
 
 /** Builds the inbound dependency set backed by the real CLI. */
 export function createMailCliDeps(options: MailCliOptions): InboundDeps {
-  const accountArgs = options.account ? ["--account", options.account] : [];
+  // No --account here: every command below uses --engine sqlite. See MailCliOptions.
+  const accountArgs: string[] = [];
   const trustedArgs = options.trustedSendersPath
     ? ["--trusted-senders", options.trustedSendersPath]
     : [];
@@ -190,7 +204,8 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
 export function createMailCliBodyReader(
   options: MailCliOptions,
 ): (messageId: string) => Promise<string | undefined> {
-  const accountArgs = options.account ? ["--account", options.account] : [];
+  // Also --engine sqlite, so also no --account. See MailCliOptions.
+  const accountArgs: string[] = [];
   return async (messageId) => {
     const result = await runJson<{ message?: { content?: string }; content?: string }>(options, [
       "get",
