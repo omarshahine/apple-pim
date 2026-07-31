@@ -9,6 +9,11 @@
 
 import { definePluginEntry } from "openclaw/plugin-sdk/plugin-entry";
 import { appleMailChannelEntry } from "./mail-channel/entry.js";
+import {
+  describeSendApproval,
+  evaluateSend,
+  resolveSendEgressPolicy,
+} from "./mail-channel/send-approval.js";
 import { createCLIRunner, findSwiftBinDir } from "../lib/cli-runner.js";
 import { tools } from "../lib/schemas.js";
 import { markToolResult, getDatamarkingPreamble } from "../lib/sanitize.js";
@@ -154,6 +159,54 @@ export default definePluginEntry({
     // has to be reached from here or defineChannelPluginEntry never runs and the
     // channel is silently absent at runtime.
     appleMailChannelEntry.register(api);
+
+    // Govern agent-originated mail (`apple_pim_mail action:"send"`) against the same egress
+    // policy the channel's reply path enforces. Without this, envelope-only containment covers
+    // replies but not sends: an agent could originate mail to anyone, outside the allowlist and
+    // loop guard (#98). Reply is already gated in the tool handler and cannot add recipients, so
+    // only `send` needs a hook. Runs in the gateway, where `api.config` carries the channel
+    // block the tool process never sees.
+    api.on("before_tool_call", (event) => {
+      if (event.toolName !== "apple_pim_mail") {
+        return;
+      }
+      if ((event.params as { action?: unknown }).action !== "send") {
+        return;
+      }
+      // Scope the policy to the sender identity the send claims (`from`), so a multi-account
+      // install cannot let one account's allowlist authorize a send as another.
+      const from = typeof event.params.from === "string" ? event.params.from : undefined;
+      const policy = resolveSendEgressPolicy(api.config, from);
+      // No apple-mail channel configured: the send tool stays ungoverned, as it was before the
+      // channel existed. Containment is the channel's contribution, not the bare tool's.
+      if (!policy) {
+        return;
+      }
+      const decision = evaluateSend(event.params, policy);
+      if (decision.kind === "allow") {
+        return;
+      }
+      if (decision.kind === "loop") {
+        return {
+          block: true,
+          blockReason:
+            `Refusing to send: ${decision.addresses.join(", ")} is one of the agent's own ` +
+            `addresses, so this send would loop mail back into the channel.`,
+        };
+      }
+      const subject = typeof event.params.subject === "string" ? event.params.subject : "";
+      return {
+        requireApproval: {
+          title: "Send email to unlisted recipient",
+          description: describeSendApproval(decision.unlisted, subject),
+          severity: "warning",
+          // No allow-always: persisting an arbitrary recipient into the egress allowlist is a
+          // config decision the operator should make deliberately, not a one-tap side effect.
+          allowedDecisions: ["allow-once", "deny"],
+          timeoutMs: 120_000,
+        },
+      };
+    });
 
     const config = api.pluginConfig as PluginConfig | undefined;
     const binDir = resolveBinDir(config);

@@ -208,6 +208,34 @@ who sent you a message says nothing about who you may contact.
 | E9 | Mail with attachments | separately gated | Attachment policy is default-deny with explicit allowed roots |
 | E10 | Mail to the agent's own address | no | Loop guard |
 
+### Enforcing egress on `send`
+
+The reply path is contained by the admission store: an `observe`-only sender cannot be
+answered, because the channel records that decision and the `apple_pim_mail` tool honors it.
+`send` originates a fresh message to arbitrary recipients with no message id, so that store
+has nothing to key on. Left ungoverned, `send` would be a hole straight through default-deny:
+an agent that read a stranger's mail could email that stranger, or anyone, without ever
+touching the reply gate.
+
+A `before_tool_call` hook closes it by running the send's recipients through the same
+`decideEgress` the reply path uses, so the two cannot disagree about who the agent may
+originate mail to. A fresh send is neither a thread the agent started nor proof the operator
+asked for this exact message, so only two grants apply silently: the operator, and the
+explicit egress allowlist. Everything else resolves to one of:
+
+- **operator or allowlisted recipient** — the send proceeds.
+- **any recipient off the allowlist** — the operator is asked to approve, over their regular
+  channel (the same approval surface as `/approve`), naming the recipients and subject. The
+  send fails closed on deny or timeout. Approval is `allow-once`: adding a correspondent
+  permanently is an `egressAllowlist` edit the operator makes deliberately, not a one-tap
+  side effect.
+- **the agent's own address** — hard-denied without an approval prompt. Emailing itself is a
+  loop (E10, I13), never a decision to delegate.
+
+The hook runs inside the OpenClaw runtime, where the channel config and the approval surfaces
+live. A bare MCP deployment of the tool has neither, so there the tool's own caller is the
+trust boundary, exactly as it is for the read/reply gate when the shared store is absent.
+
 ### The thread rule
 
 A reply is permitted when both hold:
