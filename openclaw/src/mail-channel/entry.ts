@@ -30,9 +30,8 @@ import { RunBudget, resolveRateLimits, type BreakerStore } from "./rate-limit.ts
 import { ThreadRecords, type ThreadRecordStore } from "./thread-store.ts";
 import { openStore, storeDirectory } from "./store.ts";
 import {
-  loadQuarantine,
-  quarantineMessage,
-  quarantineSnapshot,
+  recordRefused,
+  recordReplyBlocked,
 } from "../../lib/mail-quarantine.js";
 import { dispatchAdmittedMessage } from "./dispatch.ts";
 import { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-dispatch-runtime";
@@ -183,16 +182,28 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
   startAccount: async (ctx) => {
     const config = ctx.account.config;
 
+    // `selfAddresses[0]` is load-bearing twice: it is the loop guard (a reply must be
+    // recognizable as the channel's own on the way back in) and, since replies now compose
+    // their own MIME, the envelope sender. Empty is not a soft warning here: without it the
+    // channel would answer every allowlisted message and then have `smtp-send` reject the
+    // reply for a missing `--from`, i.e. dispatch that always fails. Refuse to start instead
+    // of failing every reply after the fact.
+    const replyFrom = config.selfAddresses?.[0];
+    if (!replyFrom) {
+      throw new Error(
+        "apple-mail: channels.apple-mail.selfAddresses must list at least one address; it is " +
+          "the reply sender and the self-reply loop guard, and the channel cannot answer mail " +
+          "safely without it.",
+      );
+    }
+
     const deps = createMailCliDeps({
-      account: config.account,
       accountId: config.accountId,
       trustedSendersPath: config.trustedSendersPath,
     });
 
     let store: CursorStore;
     let threads: ThreadRecords;
-    let quarantineStore: ReturnType<typeof openStore<[string, string][]>>;
-    let quarantineKey: string;
     let budget: RunBudget;
     let limits: ReturnType<typeof resolveRateLimits>;
     try {
@@ -215,14 +226,12 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       );
       await threads.hydrate();
 
-      // Messages the channel refuses are quarantined for the mail tool too. Without this the
-      // envelope-only prompt would be a bypass: a dropped message still has an id, and
-      // `apple_pim_mail` would happily read the body the channel just declined to deliver.
-      // Durable, because the cursor moves past a dropped message and it is never reclassified,
-      // so an in-memory set would forget it at the next restart.
-      quarantineStore = openStore<[string, string][]>(`${CHANNEL_ID}:quarantine`);
-      quarantineKey = `${CHANNEL_ID}:${ctx.accountId}`;
-      loadQuarantine(quarantineKey, await quarantineStore.lookup(quarantineKey));
+      // The mail tool must honor two of the channel's admission decisions, because the
+      // envelope-only prompt hands the agent an id it can act on: a dropped message must not
+      // be read, and an observe message must not be answered. Both are written by id to the
+      // shared SQLite store (see `lib/mail-quarantine.js`) rather than held in memory, so the
+      // gate binds the tool even in a separate process and never expires under eviction. No
+      // hydration step: the store is the source of truth, read per tool call.
 
       limits = resolveRateLimits(config);
       budget = new RunBudget(
@@ -273,12 +282,21 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
       {
         ...deps,
         onDropped: async (messages) => {
+          // Refused before the cursor moves past them, so a decision that is never made
+          // again still binds the tool. One durable row per id; the write is synchronous.
           for (const entry of messages) {
-            quarantineMessage(quarantineKey, entry.message.messageId, entry.decision.reason);
+            recordRefused(entry.message.messageId, entry.decision.reason);
           }
-          await quarantineStore.register(quarantineKey, quarantineSnapshot(quarantineKey));
         },
         onAdmitted: async (messages) => {
+          // Ahead of every agent run in the batch, not per message: the block has to exist
+          // before any model sees any id, or the first turn can answer a later message's
+          // sender before its turn comes round.
+          for (const entry of messages) {
+            if (entry.decision.admission === "observe") {
+              recordReplyBlocked(entry.message.messageId, entry.decision.reason);
+            }
+          }
           let completed = 0;
           for (const message of messages) {
             // Checked per message, not once per batch. A single check would let a batch of
@@ -307,7 +325,10 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
               message,
               {
                 dispatchReply: dispatchReplyWithBufferedBlockDispatcher,
-                sendReply: createMailCliSender({ account: config.account }),
+                // Replies leave as the channel's own address, which is also what
+                // `selfAddresses` marks as ours on the way back in, so a reply cannot be
+                // read as a new inbound message from a stranger. Required at startup above.
+                sendReply: createMailCliSender({ fromAddress: replyFrom }),
                 onSuppressed: ({ address, reason }) =>
                   ctx.log?.info?.(`apple-mail: reply to ${address} suppressed (${reason})`),
                 // The reply has already been sent by this point, so a store failure must not

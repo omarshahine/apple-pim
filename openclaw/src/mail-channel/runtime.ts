@@ -22,26 +22,19 @@ import type { ConfigCheckInput } from "./config-check.ts";
 const run = promisify(execFile);
 
 /**
- * `account` is the **JXA display name** (for example `iCloud`).
+ * Every command this module runs identifies accounts by UUID, never by display name.
  *
- * It is deliberately not passed to `--engine sqlite` commands. The two engines identify
- * accounts in different namespaces: JXA reports the display name, SQLite reports the
- * account UUID, and handing SQLite a display name fails with "Account not found". The
- * field exists for keying `trustedAuthservIds`, which is the security-relevant use, and
- * the `--account` hint on a read is only an optimization: omitting it searches every
- * account, which is correct, just broader.
- *
- * JXA-backed commands (`reply`) do take it, because there the display name is the right
- * identifier. SQLite reads take `accountId`, the account UUID, which is the identifier that
- * namespace uses.
+ * The two engines use different namespaces: JXA reports the account's display name (for
+ * example `iCloud`) while SQLite reports its UUID, and handing SQLite a display name fails
+ * with "Account not found". Reads go through `--engine sqlite`, and replies now go through
+ * `smtp-send`, which is account-agnostic, so no caller here needs the display name. It
+ * survives in config only for keying `trustedAuthservIds`, which is a different concern.
  */
 export type MailCliOptions = {
   /** Directory holding the Swift CLIs. Falls back to whatever is on PATH. */
   binDir?: string;
   /** Path to trusted-senders.json, which carries expectedDkimDomains and authserv-ids. */
   trustedSendersPath?: string;
-  /** Mail.app account name, passed as a lookup hint. */
-  account?: string;
   /**
    * SQLite account UUID, from `mail-cli accounts --engine sqlite`.
    *
@@ -51,6 +44,14 @@ export type MailCliOptions = {
    * broader query, and `checkChannelConfig` reports the risk when it is absent.
    */
   accountId?: string;
+  /**
+   * Envelope sender for replies, normally the channel's own address.
+   *
+   * `smtp-send` falls back to `smtp.username` from mail-cli's own config when this is
+   * absent, so it is optional; passing it keeps the address the channel replies from tied
+   * to the account it reads, rather than to whatever the CLI happens to be configured with.
+   */
+  fromAddress?: string;
   /** Per-call timeout. A hung CLI must not stall the poll loop forever. */
   timeoutMs?: number;
 };
@@ -191,23 +192,61 @@ export function parseThreadHeaders(allHeaders: unknown): MessageThreadHeaders {
   };
 }
 
+/** Prefixes `Re:` unless the subject already carries one, matching normal client behavior. */
+export function replySubject(subject: string | undefined): string {
+  const trimmed = subject?.trim();
+  if (!trimmed) {
+    return "Re:";
+  }
+  return /^re:/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
+}
+
 /**
- * Sends a reply through `mail-cli reply`.
+ * Sends a reply through `mail-cli smtp-send`.
  *
- * Note the asymmetry with reading: listing and authentication use `--engine sqlite` and
- * work with Mail.app closed, but replying goes through JXA and therefore needs Mail.app
- * running. `mail-cli` launches it, so this does not, but it is why a mailbox can be read
- * on a machine where it cannot be replied from.
+ * Deliberately not `mail-cli reply`, which drives Mail.app over JXA. That path asks Mail to
+ * build a reply draft, and a draft arrives already quoting the original with the insertion
+ * point inside quote level 1; writing the body into it renders the agent's own words as
+ * quoted text. No prompt can undo that, because the quoting is applied after the text is
+ * handed over.
+ *
+ * Composing the MIME message directly also settles two things the JXA path could not:
+ *
+ * - Reading already works with Mail.app closed (`--engine sqlite`), and now replying does
+ *   too, so the channel no longer needs a GUI app running to answer.
+ * - `smtp-send` mints and reports the `Message-ID`. Mail.app assigns one internally and
+ *   reports nothing, which left `sentMessageIds` empty and forced thread permission to fall
+ *   back to anchoring on inbound ids. Recording what we actually sent is what lets a later
+ *   reply be proven to belong to a thread the agent started.
  */
 export function createMailCliSender(options: MailCliOptions): ReplySender {
-  const accountArgs = options.account ? ["--account", options.account] : [];
-  return async ({ messageId, body }) => {
-    // The body is passed as an argv element, never through a shell, so agent-authored
-    // text cannot become a command. execFile does not spawn a shell.
-    await run(binary(options), ["reply", "--id", messageId, "--body", body, ...accountArgs], {
-      timeout: options.timeoutMs ?? DEFAULT_TIMEOUT_MS,
-      maxBuffer: 8 * 1024 * 1024,
-    });
+  return async ({ messageId, to, body, subject }) => {
+    // Every value is an argv element, never a shell word, so agent-authored text cannot
+    // become a command. execFile does not spawn a shell.
+    const args = [
+      "smtp-send",
+      "--to",
+      to,
+      "--subject",
+      replySubject(subject),
+      "--body",
+      body,
+      // Threads the reply onto the original. `smtp-send` derives `References` from this when
+      // none is passed, which is correct for answering a message directly.
+      "--in-reply-to",
+      messageId,
+      ...(options.fromAddress ? ["--from", options.fromAddress] : []),
+    ];
+    const result = await runJson<{ success?: boolean; messageId?: string; rejected?: unknown[] }>(
+      options,
+      args,
+    );
+    if (result.success === false) {
+      throw new Error(
+        `mail-cli smtp-send refused the reply to ${to}: ${JSON.stringify(result.rejected ?? [])}`,
+      );
+    }
+    return { sentMessageId: result.messageId };
   };
 }
 
