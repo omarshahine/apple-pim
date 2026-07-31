@@ -8,9 +8,9 @@
   "channelConfigs": {
     "apple-mail": {
       "label": "Apple Mail",
-      "blurb": "Polls the local Mail.app store and authorizes senders by DKIM/SPF authentication strength.",
+      "description": "Polls the local Mail.app store and authorizes senders by DKIM/SPF authentication strength.",
       "docsPath": "docs/mail-channel-scenarios.md",
-      "configSchema": {
+      "schema": {
         "type": "object",
         "additionalProperties": true,
         "properties": {
