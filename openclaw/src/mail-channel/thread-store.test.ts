@@ -18,10 +18,10 @@ describe("foldReply", () => {
   it("records the inbound anchor and the recipient", () => {
     const [record] = foldReply([], {
       inboundMessageId: "<m1@example.com>",
-      recipients: ["Omar@Shahine.com"],
+      recipients: ["Operator@example.com"],
     });
     assert.deepEqual(record?.inboundAnchorIds, ["m1@example.com"]);
-    assert.deepEqual(record?.addressedRecipients, ["omar@shahine.com"]);
+    assert.deepEqual(record?.addressedRecipients, ["operator@example.com"]);
     // Mail.app reports no id, so there is nothing to claim here and it does not pretend.
     assert.deepEqual(record?.sentMessageIds, []);
   });
@@ -30,7 +30,7 @@ describe("foldReply", () => {
     const [record] = foldReply([], {
       inboundMessageId: "m1@example.com",
       sentMessageId: "<agent-1@lobster.example>",
-      recipients: ["omar@shahine.com"],
+      recipients: ["operator@example.com"],
     });
     assert.deepEqual(record?.sentMessageIds, ["agent-1@lobster.example"]);
   });
@@ -40,32 +40,32 @@ describe("foldReply", () => {
     let records = foldReply([], {
       inboundMessageId: "m1@example.com",
       sentMessageId: "agent-1@lobster.example",
-      recipients: ["omar@shahine.com"],
+      recipients: ["operator@example.com"],
     });
     records = foldReply(records, {
       inboundMessageId: "m1@example.com",
       sentMessageId: "agent-2@lobster.example",
-      recipients: ["lora@shahine.com"],
+      recipients: ["family@example.com"],
     });
     assert.equal(records.length, 1);
     assert.deepEqual(records[0]?.sentMessageIds, [
       "agent-1@lobster.example",
       "agent-2@lobster.example",
     ]);
-    assert.deepEqual(records[0]?.addressedRecipients, ["omar@shahine.com", "lora@shahine.com"]);
+    assert.deepEqual(records[0]?.addressedRecipients, ["operator@example.com", "family@example.com"]);
   });
 
   it("recognizes the same thread through the agent's own id when the anchor differs", () => {
     const first = foldReply([], {
       inboundMessageId: "m1@example.com",
       sentMessageId: "agent-1@lobster.example",
-      recipients: ["omar@shahine.com"],
+      recipients: ["operator@example.com"],
     });
     // Next turn: a new inbound message, but the same agent id already on record.
     const merged = foldReply(first, {
       inboundMessageId: "m2@example.com",
       sentMessageId: "agent-1@lobster.example",
-      recipients: ["omar@shahine.com"],
+      recipients: ["operator@example.com"],
     });
     assert.equal(merged.length, 1);
     assert.deepEqual(merged[0]?.inboundAnchorIds, ["m1@example.com", "m2@example.com"]);
@@ -94,10 +94,10 @@ describe("foldReply", () => {
   it("normalizes brackets and case on both sides", () => {
     const [record] = foldReply([], {
       inboundMessageId: "  <M1@Example.COM>  ",
-      recipients: ["  Omar@Shahine.com "],
+      recipients: ["  Operator@example.com "],
     });
     assert.deepEqual(record?.inboundAnchorIds, ["m1@example.com"]);
-    assert.deepEqual(record?.addressedRecipients, ["omar@shahine.com"]);
+    assert.deepEqual(record?.addressedRecipients, ["operator@example.com"]);
   });
 });
 
@@ -118,13 +118,13 @@ describe("ThreadRecords", () => {
     const { store } = fakeStore();
     const first = new ThreadRecords(store, "apple-mail:default");
     await first.hydrate();
-    await first.record({ inboundMessageId: "m1@example.com", recipients: ["omar@shahine.com"] });
+    await first.record({ inboundMessageId: "m1@example.com", recipients: ["operator@example.com"] });
 
     const second = new ThreadRecords(store, "apple-mail:default");
     await second.hydrate();
     assert.equal(
       decideThreadReply(
-        { references: ["<m1@example.com>"], senderAddress: "omar@shahine.com" },
+        { references: ["<m1@example.com>"], senderAddress: "operator@example.com" },
         second.all(),
       ).permitted,
       true,
@@ -135,7 +135,7 @@ describe("ThreadRecords", () => {
     const { store } = fakeStore();
     const a = new ThreadRecords(store, "apple-mail:work");
     await a.hydrate();
-    await a.record({ inboundMessageId: "m1@example.com", recipients: ["omar@shahine.com"] });
+    await a.record({ inboundMessageId: "m1@example.com", recipients: ["operator@example.com"] });
 
     const b = new ThreadRecords(store, "apple-mail:personal");
     await b.hydrate();

@@ -6,7 +6,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 
 const OPTIONS: DispatchOptions = {
   cfg: {} as OpenClawConfig,
-  operatorAddresses: ["omar@shahine.com"],
+  operatorAddresses: ["operator@example.com"],
   egressAllowlist: ["known@example.com"],
   selfAddresses: ["lobster@example.com"],
   sessionPrefix: "apple-mail:default",
@@ -44,9 +44,9 @@ function deps(overrides: Partial<DispatchDeps> = {}) {
 describe("dispatchAdmittedMessage", () => {
   it("replies to the operator", async () => {
     const { deps: d, sent } = deps();
-    const r = await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    const r = await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.equal(r.replied, true);
-    assert.deepEqual(sent, [{ to: "omar@shahine.com", body: "the agent's reply" }]);
+    assert.deepEqual(sent, [{ to: "operator@example.com", body: "the agent's reply" }]);
   });
 
   it("replies to an egress-allowlisted correspondent", async () => {
@@ -98,7 +98,7 @@ describe("dispatchAdmittedMessage", () => {
         await dispatcherOptions.deliver({ text: "   " });
       },
     });
-    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.deepEqual(sent, []);
   });
 
@@ -111,13 +111,13 @@ describe("dispatchAdmittedMessage", () => {
         bodies.push(ctx.Body);
       },
     });
-    const m = classified("omar@shahine.com");
+    const m = classified("operator@example.com");
     m.message.dateReceived = "2026-07-29T14:02:00Z";
     m.message.attachmentCount = 2;
     await dispatchAdmittedMessage(m, d, OPTIONS);
     assert.equal(
       bodies[0],
-      "From: omar@shahine.com\nSubject: hello\nDate: 2026-07-29T14:02:00Z\nAttachments: 2\nMessage-ID: m1",
+      "From: operator@example.com\nSubject: hello\nDate: 2026-07-29T14:02:00Z\nAttachments: 2\nMessage-ID: m1",
     );
   });
 
@@ -128,10 +128,10 @@ describe("dispatchAdmittedMessage", () => {
         bodies.push(ctx.Body);
       },
     });
-    const m = classified("omar@shahine.com");
+    const m = classified("operator@example.com");
     m.message.subject = undefined;
     return dispatchAdmittedMessage(m, d, OPTIONS).then(() => {
-      assert.equal(bodies[0], "From: omar@shahine.com\nSubject: (none)\nMessage-ID: m1");
+      assert.equal(bodies[0], "From: operator@example.com\nSubject: (none)\nMessage-ID: m1");
     });
   });
 
@@ -144,7 +144,7 @@ describe("dispatchAdmittedMessage", () => {
         bodies.push(ctx.Body);
       },
     });
-    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.match(bodies[0] ?? "", /Summary:\nA receipt for one coffee\.$/);
   });
 
@@ -155,7 +155,7 @@ describe("dispatchAdmittedMessage", () => {
         await dispatcherOptions.deliver({ text: "   " });
       },
     });
-    const r = await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    const r = await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.deepEqual(sent, []);
     assert.equal(r.replied, false);
     assert.equal(r.reason, "empty_reply");
@@ -170,11 +170,11 @@ describe("dispatchAdmittedMessage", () => {
         keys.push(ctx.SessionKey);
       },
     });
-    const first = classified("omar@shahine.com");
-    const laterInSameThread = classified("omar@shahine.com");
+    const first = classified("operator@example.com");
+    const laterInSameThread = classified("operator@example.com");
     laterInSameThread.message.messageId = "m2";
     laterInSameThread.threadKey = "m1";
-    const unrelated = classified("omar@shahine.com");
+    const unrelated = classified("operator@example.com");
     unrelated.message.messageId = "m3";
     unrelated.threadKey = "m3";
 
@@ -195,7 +195,7 @@ describe("dispatchAdmittedMessage", () => {
         keys.push(ctx.SessionKey);
       },
     });
-    const a = classified("omar@shahine.com");
+    const a = classified("operator@example.com");
     const b = classified("known@example.com");
     b.threadKey = "m1";
     await dispatchAdmittedMessage(a, d, OPTIONS);
@@ -216,12 +216,12 @@ describe("thread recording", () => {
         recorded.push(reply);
       },
     });
-    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.deepEqual(recorded, [
       {
         inboundMessageId: "m1",
         sentMessageId: "<agent-1@lobster.example>",
-        recipients: ["omar@shahine.com"],
+        recipients: ["operator@example.com"],
       },
     ]);
   });
@@ -247,7 +247,7 @@ describe("thread recording", () => {
         recorded.push(reply);
       },
     });
-    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.deepEqual(recorded, []);
   });
 
@@ -259,7 +259,7 @@ describe("thread recording", () => {
         recorded.push(reply);
       },
     });
-    await dispatchAdmittedMessage(classified("omar@shahine.com"), d, OPTIONS);
+    await dispatchAdmittedMessage(classified("operator@example.com"), d, OPTIONS);
     assert.equal(recorded.length, 1);
     assert.equal(recorded[0]?.sentMessageId, undefined);
   });

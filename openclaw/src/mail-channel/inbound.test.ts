@@ -12,7 +12,7 @@ import type { MailAuthCheckResult } from "../mail-auth/strength.ts";
 function msg(overrides: Partial<MailboxMessage> = {}): MailboxMessage {
   return {
     messageId: "m1@example.com",
-    sender: "Omar Shahine <omar@shahine.com>",
+    sender: "Test Operator <operator@example.com>",
     dateReceived: "2026-07-28T10:00:00.000Z",
     ...overrides,
   };
@@ -20,10 +20,10 @@ function msg(overrides: Partial<MailboxMessage> = {}): MailboxMessage {
 
 const VERIFIED_AUTH: MailAuthCheckResult = {
   verdict: "verified",
-  sender: "omar@shahine.com",
+  sender: "operator@example.com",
   checks: {
-    dkim: { result: "pass", signingDomain: "shahine.com", match: true },
-    spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+    dkim: { result: "pass", signingDomain: "example.com", match: true },
+    spf: { result: "pass", mailFrom: "operator@example.com", aligned: true, match: true },
   },
 };
 
@@ -37,10 +37,10 @@ function deps(overrides: Partial<InboundDeps> = {}): InboundDeps {
 
 describe("senderAddress", () => {
   it("extracts from a display-name form", () => {
-    assert.equal(senderAddress("Omar Shahine <Omar@Shahine.com>"), "omar@shahine.com");
+    assert.equal(senderAddress("Test Operator <Operator@example.com>"), "operator@example.com");
   });
   it("passes a bare address through", () => {
-    assert.equal(senderAddress("  omar@shahine.com "), "omar@shahine.com");
+    assert.equal(senderAddress("  operator@example.com "), "operator@example.com");
   });
 });
 
@@ -107,11 +107,11 @@ describe("selectNewMessages", () => {
 describe("classifyMessage", () => {
   it("dispatches an authenticated allowlisted sender", async () => {
     const r = await classifyMessage(msg(), deps(), {
-      allowFrom: ["omar@shahine.com"],
+      allowFrom: ["operator@example.com"],
       minIdentifierAuthentication: "verified",
     });
     assert.equal(r.decision.admission, "dispatch");
-    assert.equal(r.address, "omar@shahine.com");
+    assert.equal(r.address, "operator@example.com");
   });
 
   it("observes an authenticated stranger", async () => {
@@ -129,9 +129,9 @@ describe("classifyMessage", () => {
   });
 
   it("drops a spoofed sender whose provenance never held", async () => {
-    const forged: MailAuthCheckResult = { verdict: "unknown", sender: "omar@shahine.com" };
+    const forged: MailAuthCheckResult = { verdict: "unknown", sender: "operator@example.com" };
     const r = await classifyMessage(msg(), deps({ authCheck: async () => forged }), {
-      allowFrom: ["omar@shahine.com"],
+      allowFrom: ["operator@example.com"],
       minIdentifierAuthentication: "verified",
     });
     assert.equal(r.decision.admission, "drop");
@@ -148,7 +148,7 @@ describe("classifyMessage", () => {
           return {};
         },
       }),
-      { allowFrom: ["omar@shahine.com"], minIdentifierAuthentication: "verified" },
+      { allowFrom: ["operator@example.com"], minIdentifierAuthentication: "verified" },
     );
     assert.equal(called, false);
   });
@@ -156,7 +156,7 @@ describe("classifyMessage", () => {
   it("derives allowlist membership from the configured list", async () => {
     // Greptile P1: startAccount passed constant false, so trusted senders were strangers.
     const r = await classifyMessage(msg(), deps(), {
-      allowFrom: ["OMAR@Shahine.com"],
+      allowFrom: ["operator@example.com"],
       minIdentifierAuthentication: "verified",
     });
     assert.equal(r.decision.admission, "dispatch");
@@ -173,7 +173,7 @@ describe("classifyMessage", () => {
 
   it("activates the loop guard from configured self addresses", async () => {
     const r = await classifyMessage(msg(), deps(), {
-      selfAddresses: ["Omar@Shahine.com"],
+      selfAddresses: ["Operator@example.com"],
       minIdentifierAuthentication: "verified",
     });
     assert.deepEqual(r.decision, { admission: "drop", reason: "self_addressed" });
@@ -229,7 +229,7 @@ describe("thread key and session isolation", () => {
   const records = [
     {
       inboundAnchorIds: ["known-thread@example.com"],
-      addressedRecipients: ["omar@shahine.com"],
+      addressedRecipients: ["operator@example.com"],
     },
   ];
   const deps = {
@@ -261,15 +261,15 @@ describe("thread key and session isolation", () => {
 
   it("does file a real participant into it", async () => {
     const result = await classifyMessage(
-      { messageId: "reply", sender: "omar@shahine.com" },
+      { messageId: "reply", sender: "operator@example.com" },
       {
         ...deps,
         authCheck: async () => ({
           verdict: "untrusted" as const,
-          sender: "omar@shahine.com",
+          sender: "operator@example.com",
           checks: {
-            dkim: { result: "pass", signingDomain: "shahine.com", match: false },
-            spf: { result: "pass", mailFrom: "o@shahine.com", aligned: true, match: true },
+            dkim: { result: "pass", signingDomain: "example.com", match: false },
+            spf: { result: "pass", mailFrom: "o@example.com", aligned: true, match: true },
           },
         }),
       },

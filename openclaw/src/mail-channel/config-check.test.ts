@@ -4,12 +4,12 @@ import { checkChannelConfig, type ConfigCheckInput } from "./config-check.ts";
 
 function input(overrides: Partial<ConfigCheckInput> = {}): ConfigCheckInput {
   return {
-    allowFrom: ["omar@shahine.com"],
+    allowFrom: ["operator@example.com"],
     selfAddresses: ["lobster@example.com"],
     minIdentifierAuthentication: "verified",
     trustedSendersPath: "~/.config/lobster/trusted-senders.json",
     trustedSenders: [
-      { name: "Omar", emails: ["omar@shahine.com"], expectedDkimDomains: ["shahine.com"] },
+      { name: "Operator", emails: ["operator@example.com"], expectedDkimDomains: ["example.com"] },
     ],
     trustedAuthservIds: { "*": ["mx.icloud.com"] },
     ...overrides,
@@ -30,12 +30,12 @@ describe("checkChannelConfig", () => {
   // The whole reason this module exists: the strict posture makes a missing enrollment
   // change behavior, and nothing else in the system says so.
   it("reports an allowFrom entry with no enrollment behind it", () => {
-    const found = checkChannelConfig(input({ allowFrom: ["omar@shahine.com", "lora@shahine.com"] }));
+    const found = checkChannelConfig(input({ allowFrom: ["operator@example.com", "family@example.com"] }));
     assert.deepEqual(
       found.map((f) => f.code),
       ["allowlisted_not_enrolled"],
     );
-    assert.match(found[0]!.message, /lora@shahine\.com/);
+    assert.match(found[0]!.message, /family@example\.com/);
     assert.match(found[0]!.message, /readable\s+but never actioned/);
   });
 
@@ -43,7 +43,7 @@ describe("checkChannelConfig", () => {
     const found = codes(
       input({
         allowFrom: [],
-        trustedSenders: [{ name: "Omar", emails: ["omar@shahine.com"], expectedDkimDomains: [] }],
+        trustedSenders: [{ name: "Operator", emails: ["operator@example.com"], expectedDkimDomains: [] }],
       }),
     );
     assert.deepEqual(found, ["enrolled_without_expected_signers"]);
@@ -53,7 +53,7 @@ describe("checkChannelConfig", () => {
     const found = codes(
       input({
         trustedSenders: [
-          { name: "Omar", emails: ["omar@shahine.com"], expectedDkimDomains: ["  "] },
+          { name: "Operator", emails: ["operator@example.com"], expectedDkimDomains: ["  "] },
         ],
       }),
     );
@@ -63,7 +63,7 @@ describe("checkChannelConfig", () => {
   });
 
   it("matches allowFrom against enrollment case-insensitively", () => {
-    assert.deepEqual(checkChannelConfig(input({ allowFrom: ["Omar@Shahine.COM"] })), []);
+    assert.deepEqual(checkChannelConfig(input({ allowFrom: ["Operator@example.com"] })), []);
   });
 
   it("reports a missing authserv-id pin, which drops everything", () => {
@@ -78,7 +78,7 @@ describe("checkChannelConfig", () => {
     const maps: Record<string, readonly string[]>[] = [
       { "*": ["mx.icloud.com"] },
       { iCloud: ["mx.icloud.com"] },
-      { "168231BA-20A5-4B91-B54D-8D9906C76D25": ["mx.icloud.com"] },
+      { "00000000-0000-0000-0000-000000000000": ["mx.icloud.com"] },
       { Fastmail: ["mx.fastmail.com"] },
     ];
     for (const map of maps) {
@@ -133,7 +133,7 @@ describe("unscoped mailbox reads", () => {
     const codes = checkChannelConfig({
       ...base,
       knownAccountCount: 2,
-      accountId: "168231BA-20A5-4B91-B54D-8D9906C76D25",
+      accountId: "00000000-0000-0000-0000-000000000000",
     }).map((f) => f.code);
     assert.equal(codes.includes("unscoped_mailbox_reads"), false);
   });

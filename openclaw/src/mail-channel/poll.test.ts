@@ -6,10 +6,10 @@ import type { MailAuthCheckResult } from "../mail-auth/strength.ts";
 
 const VERIFIED: MailAuthCheckResult = {
   verdict: "verified",
-  sender: "omar@shahine.com",
+  sender: "operator@example.com",
   checks: {
-    dkim: { result: "pass", signingDomain: "shahine.com", match: true },
-    spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+    dkim: { result: "pass", signingDomain: "example.com", match: true },
+    spf: { result: "pass", mailFrom: "operator@example.com", aligned: true, match: true },
   },
 };
 
@@ -25,7 +25,7 @@ function memoryStore(): CursorStore & { values: Map<string, PollCursor> } {
 }
 
 function msg(id: string, date = "2026-07-28T10:00:00.000Z"): MailboxMessage {
-  return { messageId: id, sender: "Omar <omar@shahine.com>", dateReceived: date };
+  return { messageId: id, sender: "Operator <operator@example.com>", dateReceived: date };
 }
 
 const OPTIONS: PollOptions = {
@@ -33,7 +33,7 @@ const OPTIONS: PollOptions = {
   limit: 25,
   cursorKey: "apple-mail:default",
   classify: {
-    allowFrom: ["omar@shahine.com"],
+    allowFrom: ["operator@example.com"],
     minIdentifierAuthentication: "verified",
   },
 };
@@ -424,7 +424,7 @@ describe("runPollLoop", () => {
 describe("circuit breaker", () => {
   const message = {
     messageId: "m1",
-    sender: "omar@shahine.com",
+    sender: "operator@example.com",
     dateReceived: "2026-07-29T10:00:00Z",
   };
 
@@ -444,10 +444,10 @@ describe("circuit breaker", () => {
             listMessages: async () => [message],
             authCheck: async () => ({
               verdict: "verified" as const,
-              sender: "omar@shahine.com",
+              sender: "operator@example.com",
               checks: {
-                dkim: { result: "pass", signingDomain: "shahine.com", match: true },
-                spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+                dkim: { result: "pass", signingDomain: "example.com", match: true },
+                spf: { result: "pass", mailFrom: "operator@example.com", aligned: true, match: true },
               },
             }),
             onAdmitted: async (m) => {

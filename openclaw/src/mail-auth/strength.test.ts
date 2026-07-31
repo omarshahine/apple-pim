@@ -11,10 +11,10 @@ import {
 function result(overrides: Partial<MailAuthCheckResult> = {}): MailAuthCheckResult {
   return {
     verdict: "verified",
-    sender: "omar@shahine.com",
+    sender: "operator@example.com",
     checks: {
-      dkim: { result: "pass", signingDomain: "shahine.com", match: true },
-      spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+      dkim: { result: "pass", signingDomain: "example.com", match: true },
+      spf: { result: "pass", mailFrom: "operator@example.com", aligned: true, match: true },
     },
     ...overrides,
   };
@@ -47,7 +47,7 @@ describe("mailAuthToIdentifierStrengths", () => {
   it("separates the unproven address from the alias", () => {
     const unauthenticated = mailAuthToIdentifierStrengths({
       verdict: "suspicious",
-      sender: "omar@shahine.com",
+      sender: "operator@example.com",
       checks: { dkim: { result: "fail" }, spf: { result: "fail", match: false } },
     });
     assert.equal(unauthenticated.address, "unverified", "stable, attacker-chosen, unproven");
@@ -85,8 +85,8 @@ describe("mailAuthToIdentifierStrengths", () => {
     const forged = result({
       verdict: "unknown",
       checks: {
-        dkim: { result: "pass", signingDomain: "shahine.com", match: true },
-        spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+        dkim: { result: "pass", signingDomain: "example.com", match: true },
+        spf: { result: "pass", mailFrom: "operator@example.com", aligned: true, match: true },
       },
       warnings: ["No trustedAuthservIds configured for account key 'iCloud'"],
     });
@@ -130,7 +130,7 @@ describe("mailAuthToIdentifierStrengths", () => {
     const subdomainSigner = result({
       verdict: "suspicious",
       checks: {
-        dkim: { result: "pass", signingDomain: "mail.shahine.com", match: false },
+        dkim: { result: "pass", signingDomain: "mail.example.com", match: false },
         spf: { result: "none", match: false },
       },
     });
@@ -143,7 +143,7 @@ describe("mailAuthToIdentifierStrengths", () => {
     const alignedUnexpected = result({
       verdict: "suspicious",
       checks: {
-        dkim: { result: "pass", signingDomain: "shahine.com", match: false },
+        dkim: { result: "pass", signingDomain: "example.com", match: false },
         spf: { result: "none", match: false },
       },
     });
@@ -206,10 +206,10 @@ describe("mailAuthToIdentifierStrengths", () => {
   it("carries the domain claim when the operator named an unaligned expected signer", () => {
     const providerSigned = result({
       verdict: "verified",
-      sender: "omar@shahine.com",
+      sender: "operator@example.com",
       checks: {
         dkim: { result: "pass", signingDomain: "fastmail.com", match: true },
-        spf: { result: "pass", mailFrom: "omar@shahine.com", aligned: true, match: true },
+        spf: { result: "pass", mailFrom: "operator@example.com", aligned: true, match: true },
       },
     });
     assert.deepEqual(mailAuthToIdentifierStrengths(providerSigned), {
@@ -223,9 +223,9 @@ describe("mailAuthToIdentifierStrengths", () => {
   // so `mutable` was unreachable for it and the default `asserted` minimum was not a bar.
   it("reaches unverified on the address, so the default minimum is a real bar", () => {
     const unauthenticated: MailAuthCheckResult[] = [
-      { verdict: "unknown", sender: "omar@shahine.com" },
-      { verdict: "suspicious", sender: "omar@shahine.com" },
-      { verdict: "untrusted", sender: "omar@shahine.com" },
+      { verdict: "unknown", sender: "operator@example.com" },
+      { verdict: "suspicious", sender: "operator@example.com" },
+      { verdict: "untrusted", sender: "operator@example.com" },
     ];
     for (const r of unauthenticated) {
       const strengths = mailAuthToIdentifierStrengths(r);

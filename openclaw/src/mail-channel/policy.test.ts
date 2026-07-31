@@ -25,7 +25,7 @@ const UNAUTHENTICATED: MailIdentifierStrengths = {
 function ingress(overrides: Partial<IngressInput> = {}): IngressInput {
   return {
     strengths: VERIFIED,
-    senderAddress: "omar@shahine.com",
+    senderAddress: "operator@example.com",
     allowlisted: true,
     minIdentifierAuthentication: "verified",
     selfAddressed: false,
@@ -127,7 +127,7 @@ describe("ingress admission", () => {
 
 describe("egress", () => {
   const base = {
-    operatorAddresses: ["omar@shahine.com"],
+    operatorAddresses: ["operator@example.com"],
     egressAllowlist: ["known@example.com"],
     selfAddresses: ["lobster@example.com"],
     threadPermitted: false,
@@ -135,8 +135,8 @@ describe("egress", () => {
   };
 
   it("E3: always permits the operator", () => {
-    const d = decideEgress({ ...base, recipients: ["omar@shahine.com"] });
-    assert.deepEqual(d.permitted.map((e) => e.address), ["omar@shahine.com"]);
+    const d = decideEgress({ ...base, recipients: ["operator@example.com"] });
+    assert.deepEqual(d.permitted.map((e) => e.address), ["operator@example.com"]);
     assert.equal(d.denied.length, 0);
   });
 
@@ -192,7 +192,7 @@ describe("egress", () => {
     // with threadPermitted set was logged as thread authority it never used.
     const d = decideEgress({
       ...base,
-      recipients: ["omar@shahine.com", "known@example.com"],
+      recipients: ["operator@example.com", "known@example.com"],
       threadPermitted: true,
       threadParticipants: ["someone-else@example.com"],
     });
@@ -203,10 +203,10 @@ describe("egress", () => {
   it("reports each recipient's own basis, not one basis for the send", () => {
     const d = decideEgress({
       ...base,
-      recipients: ["omar@shahine.com", "known@example.com"],
+      recipients: ["operator@example.com", "known@example.com"],
     });
     assert.deepEqual(d.permitted, [
-      { address: "omar@shahine.com", reason: "operator_recipient" },
+      { address: "operator@example.com", reason: "operator_recipient" },
       { address: "known@example.com", reason: "recipient_allowlisted" },
     ]);
   });
@@ -214,9 +214,9 @@ describe("egress", () => {
   it("E8: narrows reply-all instead of leaking to unknown recipients", () => {
     const d = decideEgress({
       ...base,
-      recipients: ["omar@shahine.com", "known@example.com", "stranger@example.com"],
+      recipients: ["operator@example.com", "known@example.com", "stranger@example.com"],
     });
-    assert.deepEqual(d.permitted.map((e) => e.address), ["omar@shahine.com", "known@example.com"]);
+    assert.deepEqual(d.permitted.map((e) => e.address), ["operator@example.com", "known@example.com"]);
     assert.deepEqual(d.denied, [
       { address: "stranger@example.com", reason: "recipient_not_permitted" },
     ]);

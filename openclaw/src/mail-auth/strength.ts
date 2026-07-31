@@ -160,7 +160,7 @@ export function mailAuthToIdentifierStrengths(
       : "unverified";
 
   // An expected signer need not align: mailbox providers routinely sign with their own
-  // domain (fastmail.com for a shahine.com address). Naming that signer for that sender is
+  // domain (fastmail.com for a example.com address). Naming that signer for that sender is
   // a narrower operator statement than alignment, so it carries the domain claim as well.
   const domain: IdentifierAuthentication =
     domainAuthenticated || operatorAssertedMailbox ? "verified" : "unverified";

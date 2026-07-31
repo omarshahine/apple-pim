@@ -22,7 +22,7 @@ import {
 } from "../mail-auth/strength.ts";
 import { decideIngress, type Admission } from "./policy.ts";
 
-const OPERATOR = "omar@shahine.com";
+const OPERATOR = "operator@example.com";
 
 type Row = {
   id: string;
@@ -40,7 +40,7 @@ type Row = {
 
 /** An Authentication-Results header from a trusted authserv-id, DKIM aligned and expected. */
 const GENUINE: MailAuthCheckResult["checks"] = {
-  dkim: { result: "pass", signingDomain: "shahine.com", match: true },
+  dkim: { result: "pass", signingDomain: "example.com", match: true },
   spf: { result: "pass", mailFrom: OPERATOR, aligned: true, match: true },
 };
 
@@ -91,8 +91,8 @@ const ROWS: Row[] = [
     what: "enrolled non-operator (family, colleague)",
     auth: {
       verdict: "verified",
-      sender: "lora@shahine.com",
-      checks: { ...GENUINE, spf: { result: "pass", mailFrom: "lora@shahine.com", match: true } },
+      sender: "family@example.com",
+      checks: { ...GENUINE, spf: { result: "pass", mailFrom: "family@example.com", match: true } },
     },
     allowlisted: true,
     strengths: { address: "verified", domain: "verified" },
@@ -104,8 +104,8 @@ const ROWS: Row[] = [
     what: "allowlisted, domain authenticated, not enrolled in trusted-senders.json",
     auth: {
       verdict: "untrusted",
-      sender: "lora@shahine.com",
-      checks: alignedButUnenrolled("shahine.com"),
+      sender: "family@example.com",
+      checks: alignedButUnenrolled("example.com"),
     },
     allowlisted: true,
     strengths: { address: "asserted", domain: "verified" },

@@ -115,12 +115,12 @@ describe("anchor kinds", () => {
   const record = {
     sentMessageIds: ["agent-1@lobster.example"],
     inboundAnchorIds: ["m1@example.com"],
-    addressedRecipients: ["omar@shahine.com"],
+    addressedRecipients: ["operator@example.com"],
   };
 
   it("reports an agent-generated match as the strong anchor", () => {
     const d = decideThreadReply(
-      { inReplyTo: "<agent-1@lobster.example>", senderAddress: "omar@shahine.com" },
+      { inReplyTo: "<agent-1@lobster.example>", senderAddress: "operator@example.com" },
       [record],
     );
     assert.equal(d.permitted, true);
@@ -129,7 +129,7 @@ describe("anchor kinds", () => {
 
   it("reports an inbound-anchor match as the weaker one", () => {
     const d = decideThreadReply(
-      { references: ["m1@example.com"], senderAddress: "omar@shahine.com" },
+      { references: ["m1@example.com"], senderAddress: "operator@example.com" },
       [record],
     );
     assert.equal(d.permitted, true);
@@ -140,7 +140,7 @@ describe("anchor kinds", () => {
     const d = decideThreadReply(
       {
         references: ["m1@example.com", "agent-1@lobster.example"],
-        senderAddress: "omar@shahine.com",
+        senderAddress: "operator@example.com",
       },
       [record],
     );
@@ -149,8 +149,8 @@ describe("anchor kinds", () => {
 
   it("works on a record carrying only an inbound anchor", () => {
     const d = decideThreadReply(
-      { references: ["m1@example.com"], senderAddress: "omar@shahine.com" },
-      [{ inboundAnchorIds: ["m1@example.com"], addressedRecipients: ["omar@shahine.com"] }],
+      { references: ["m1@example.com"], senderAddress: "operator@example.com" },
+      [{ inboundAnchorIds: ["m1@example.com"], addressedRecipients: ["operator@example.com"] }],
     );
     assert.equal(d.permitted, true);
   });
