@@ -78950,7 +78950,7 @@ function validateDestDir(rawDir) {
 
 // ../lib/mail-quarantine.js
 import { createRequire } from "node:module";
-import { mkdirSync } from "node:fs";
+import { existsSync as existsSync3, mkdirSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 function normalize(id) {
@@ -78963,13 +78963,14 @@ function storeDbPath() {
   return path.join(expanded, "apple-pim", "mail-channel.sqlite");
 }
 var db;
+var loadSqlite = () => createRequire(import.meta.url)("node:sqlite").DatabaseSync;
 function database() {
   if (db !== void 0) {
     return db;
   }
   let DatabaseSync;
   try {
-    DatabaseSync = createRequire(import.meta.url)("node:sqlite").DatabaseSync;
+    DatabaseSync = loadSqlite();
   } catch {
     db = null;
     return null;
@@ -78992,9 +78993,20 @@ function database() {
 }
 var KIND_REFUSED = "refused";
 var KIND_REPLY_BLOCKED = "reply-blocked";
+function unenforceableReason() {
+  if (database() !== null) {
+    return void 0;
+  }
+  const file2 = storeDbPath();
+  return existsSync3(file2) ? `this runtime has no node:sqlite, so the Apple Mail channel's admission decisions in ${file2} cannot be read; run the MCP server on Node >= 22.13 to enforce them` : void 0;
+}
 function reasonFor(id, kind) {
   const key = normalize(id);
   const conn = database();
+  const blocked = unenforceableReason();
+  if (blocked) {
+    return blocked;
+  }
   if (!key || !conn) {
     return void 0;
   }

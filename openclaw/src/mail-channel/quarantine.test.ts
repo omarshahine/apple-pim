@@ -22,6 +22,7 @@ import {
   filterQuarantinedResults,
   resetMailAdmission,
   closeMailAdmissionForTest,
+  setSqliteLoaderForTest,
 } from "../../lib/mail-quarantine.js";
 import { runPollLoop } from "./poll.ts";
 
@@ -231,5 +232,74 @@ describe("the poll loop reports what it dropped", () => {
     );
 
     assert.deepEqual(order, ["dropped:unauthenticated_sender"]);
+  });
+});
+
+// The gate reads `node:sqlite`, which does not exist before Node 22.13 — and
+// `mcp-server/build.mjs` targets `node18`, so the standalone MCP server is allowed to run
+// there. What the channel decided still has to bind it, because the decisions are rows on
+// disk written by a different process on a different runtime, not process state.
+describe("runtimes without node:sqlite", () => {
+  const noSqlite = () => {
+    throw new Error("Cannot find module 'node:sqlite'");
+  };
+
+  after(() => setSqliteLoaderForTest());
+
+  it("denies reads when decisions exist that it cannot read", () => {
+    // The channel's process wrote the store on a newer Node; this one cannot open it.
+    recordRefused("<spoofed@example.com>", "unauthenticated_sender");
+    closeMailAdmissionForTest();
+    setSqliteLoaderForTest(noSqlite);
+
+    assert.throws(
+      () => assertMailReadable("anything@example.com", "read"),
+      /no node:sqlite.*Node >= 22\.13/s,
+      "a runtime that cannot read the store must not wave every message through",
+    );
+    assert.throws(() => assertMailRepliable("anything@example.com", "reply to"), /no node:sqlite/);
+  });
+
+  it("withholds every row from a listing rather than returning unscreened mail", () => {
+    recordRefused("<spoofed@example.com>", "unauthenticated_sender");
+    closeMailAdmissionForTest();
+    setSqliteLoaderForTest(noSqlite);
+
+    const filtered = filterQuarantinedResults(
+      { count: 2, messages: [{ messageId: "a@example.com" }, { messageId: "b@example.com" }] },
+      { reportWithheld: true },
+    );
+    assert.deepEqual(filtered.messages, []);
+    assert.equal(filtered.withheldByChannelPolicy, 2);
+  });
+
+  it("still permits when no store exists, because no decision was ever made", () => {
+    // The channel-less case the degrade-open path is for: `store.ts` hard-requires
+    // `node:sqlite`, so a runtime without it never ran a channel. Breaking every read here
+    // would be a regression with no security benefit.
+    setSqliteLoaderForTest(noSqlite);
+    process.env.OPENCLAW_STATE_DIR = path.join(tmp, "never-written");
+
+    assert.doesNotThrow(() => assertMailReadable("anything@example.com", "read"));
+    assert.doesNotThrow(() => assertMailRepliable("anything@example.com", "reply to"));
+
+    process.env.OPENCLAW_STATE_DIR = tmp;
+  });
+
+  it("re-checks the store instead of latching open at first touch", () => {
+    // A long-lived MCP server can start before the channel has written anything. Caching
+    // "nothing to enforce" then would keep the gate open for the rest of its life.
+    process.env.OPENCLAW_STATE_DIR = path.join(tmp, "written-later");
+    setSqliteLoaderForTest(noSqlite);
+    assert.doesNotThrow(() => assertMailReadable("anything@example.com", "read"));
+
+    // The channel comes up and records a decision, as it would on a newer Node.
+    setSqliteLoaderForTest();
+    recordRefused("<spoofed@example.com>", "unauthenticated_sender");
+    closeMailAdmissionForTest();
+    setSqliteLoaderForTest(noSqlite);
+
+    assert.throws(() => assertMailReadable("anything@example.com", "read"), /no node:sqlite/);
+    process.env.OPENCLAW_STATE_DIR = tmp;
   });
 });
