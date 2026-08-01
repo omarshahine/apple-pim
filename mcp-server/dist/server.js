@@ -2249,8 +2249,8 @@ var require_resolve = __commonJS({
       }
       return count;
     }
-    function getFullPath(resolver, id = "", normalize) {
-      if (normalize !== false)
+    function getFullPath(resolver, id = "", normalize2) {
+      if (normalize2 !== false)
         id = normalizeId(id);
       const p = resolver.parse(id);
       return _getFullPath(resolver, p);
@@ -3241,8 +3241,8 @@ var require_utils = __commonJS({
       }
       return ind;
     }
-    function removeDotSegments(path) {
-      let input = path;
+    function removeDotSegments(path2) {
+      let input = path2;
       const output = [];
       let nextSlash = -1;
       let len = 0;
@@ -3441,8 +3441,8 @@ var require_schemes = __commonJS({
         wsComponent.secure = void 0;
       }
       if (wsComponent.resourceName) {
-        const [path, query] = wsComponent.resourceName.split("?");
-        wsComponent.path = path && path !== "/" ? path : void 0;
+        const [path2, query] = wsComponent.resourceName.split("?");
+        wsComponent.path = path2 && path2 !== "/" ? path2 : void 0;
         wsComponent.query = query;
         wsComponent.resourceName = void 0;
       }
@@ -3591,7 +3591,7 @@ var require_fast_uri = __commonJS({
     "use strict";
     var { normalizeIPv6, removeDotSegments, recomposeAuthority, normalizeComponentEncoding, isIPv4, nonSimpleDomain } = require_utils();
     var { SCHEMES, getSchemeHandler } = require_schemes();
-    function normalize(uri, options) {
+    function normalize2(uri, options) {
       if (typeof uri === "string") {
         uri = /** @type {T} */
         serialize(parse3(uri, options), options);
@@ -3828,7 +3828,7 @@ var require_fast_uri = __commonJS({
     }
     var fastUri = {
       SCHEMES,
-      normalize,
+      normalize: normalize2,
       resolve: resolve2,
       resolveComponent,
       equal,
@@ -37144,22 +37144,22 @@ ${"".padEnd(offset)}${"^".repeat(len)}`;
         (m, dq, bs, nl2, ctrl) => dq ? '\\"' : bs ? "\\\\" : nl2 ? "\uFFFD" : _codePoint(ctrl)
       );
     }
-    function normalize(selector) {
+    function normalize2(selector) {
       if (!selector.type) {
         throw new Error("This is not an AST node.");
       }
       switch (selector.type) {
         case "compound": {
-          selector.list.forEach(normalize);
+          selector.list.forEach(normalize2);
           selector.list.sort((a, b) => _compareArrays(_getSelectorPriority(a), _getSelectorPriority(b)));
           break;
         }
         case "combinator": {
-          normalize(selector.left);
+          normalize2(selector.left);
           break;
         }
         case "list": {
-          selector.list.forEach(normalize);
+          selector.list.forEach(normalize2);
           selector.list.sort((a, b) => serialize(a) < serialize(b) ? -1 : 1);
           break;
         }
@@ -37206,7 +37206,7 @@ ${"".padEnd(offset)}${"^".repeat(len)}`;
     exports.Ast = ast;
     exports.compareSelectors = compareSelectors;
     exports.compareSpecificity = compareSpecificity;
-    exports.normalize = normalize;
+    exports.normalize = normalize2;
     exports.parse = parse3;
     exports.parse1 = parse1;
     exports.serialize = serialize;
@@ -40997,8 +40997,8 @@ var require_html_to_text = __commonJS({
       return [...map2.values()].reverse();
     }
     var overwriteMerge$1 = (acc, src, options) => [...src];
-    function get(obj, path) {
-      for (const key of path) {
+    function get(obj, path2) {
+      for (const key of path2) {
         if (!obj) {
           return void 0;
         }
@@ -42147,8 +42147,8 @@ var require_html_to_text = __commonJS({
       const rbr = typeof brackets[1] === "string" ? brackets[1] : "]";
       return lbr + str + rbr;
     }
-    function pathRewrite(path, rewriter, baseUrl, metadata, elem) {
-      const modifiedPath = typeof rewriter === "function" ? rewriter(path, metadata, elem) : path;
+    function pathRewrite(path2, rewriter, baseUrl, metadata, elem) {
+      const modifiedPath = typeof rewriter === "function" ? rewriter(path2, metadata, elem) : path2;
       return modifiedPath[0] === "/" && baseUrl ? trimCharacterEnd(baseUrl, "/") + modifiedPath : modifiedPath;
     }
     function formatImage(elem, walk, builder, formatOptions) {
@@ -42479,9 +42479,9 @@ var require_html_to_text = __commonJS({
         options.selectors.push(...tagDefinitions);
         options.selectors = mergeDuplicatesPreferLast(options.selectors, (s) => s.selector);
       }
-      function set2(obj, path, value) {
-        const valueKey = path.pop();
-        for (const key of path) {
+      function set2(obj, path2, value) {
+        const valueKey = path2.pop();
+        for (const key of path2) {
           let nested = obj[key];
           if (!nested) {
             nested = {};
@@ -43171,7 +43171,7 @@ var require_index_cjs2 = __commonJS({
       compile(this);
       return this;
     };
-    LinkifyIt.prototype.normalize = function normalize(match) {
+    LinkifyIt.prototype.normalize = function normalize2(match) {
       if (!match.schema) {
         match.url = "http://" + match.url;
       }
@@ -50922,33 +50922,33 @@ var require_URL = __commonJS({
           else
             return basepath.substring(0, lastslash + 1) + refpath;
         }
-        function remove_dot_segments(path) {
-          if (!path)
-            return path;
+        function remove_dot_segments(path2) {
+          if (!path2)
+            return path2;
           var output = "";
-          while (path.length > 0) {
-            if (path === "." || path === "..") {
-              path = "";
+          while (path2.length > 0) {
+            if (path2 === "." || path2 === "..") {
+              path2 = "";
               break;
             }
-            var twochars = path.substring(0, 2);
-            var threechars = path.substring(0, 3);
-            var fourchars = path.substring(0, 4);
+            var twochars = path2.substring(0, 2);
+            var threechars = path2.substring(0, 3);
+            var fourchars = path2.substring(0, 4);
             if (threechars === "../") {
-              path = path.substring(3);
+              path2 = path2.substring(3);
             } else if (twochars === "./") {
-              path = path.substring(2);
+              path2 = path2.substring(2);
             } else if (threechars === "/./") {
-              path = "/" + path.substring(3);
-            } else if (twochars === "/." && path.length === 2) {
-              path = "/";
-            } else if (fourchars === "/../" || threechars === "/.." && path.length === 3) {
-              path = "/" + path.substring(4);
+              path2 = "/" + path2.substring(3);
+            } else if (twochars === "/." && path2.length === 2) {
+              path2 = "/";
+            } else if (fourchars === "/../" || threechars === "/.." && path2.length === 3) {
+              path2 = "/" + path2.substring(4);
               output = output.replace(/\/?[^\/]*$/, "");
             } else {
-              var segment = path.match(/(\/?([^\/]*))/)[0];
+              var segment = path2.match(/(\/?([^\/]*))/)[0];
               output += segment;
-              path = path.substring(segment.length);
+              path2 = path2.substring(segment.length);
             }
           }
           return output;
@@ -63616,8 +63616,8 @@ function getErrorMap() {
 
 // node_modules/zod/v3/helpers/parseUtil.js
 var makeIssue = (params) => {
-  const { data, path, errorMaps, issueData } = params;
-  const fullPath = [...path, ...issueData.path || []];
+  const { data, path: path2, errorMaps, issueData } = params;
+  const fullPath = [...path2, ...issueData.path || []];
   const fullIssue = {
     ...issueData,
     path: fullPath
@@ -63732,11 +63732,11 @@ var errorUtil;
 
 // node_modules/zod/v3/types.js
 var ParseInputLazyPath = class {
-  constructor(parent, value, path, key) {
+  constructor(parent, value, path2, key) {
     this._cachedPath = [];
     this.parent = parent;
     this.data = value;
-    this._path = path;
+    this._path = path2;
     this._key = key;
   }
   get path() {
@@ -67382,10 +67382,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path) {
-  if (!path)
+function getElementAtPath(obj, path2) {
+  if (!path2)
     return obj;
-  return path.reduce((acc, key) => acc?.[key], obj);
+  return path2.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys = Object.keys(promisesObj);
@@ -67768,11 +67768,11 @@ function aborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path, issues) {
+function prefixIssues(path2, issues) {
   return issues.map((iss) => {
     var _a2;
     (_a2 = iss).path ?? (_a2.path = []);
-    iss.path.unshift(path);
+    iss.path.unshift(path2);
     return iss;
   });
 }
@@ -78948,6 +78948,102 @@ function validateDestDir(rawDir) {
   return resolved;
 }
 
+// ../lib/mail-quarantine.js
+import { createRequire } from "node:module";
+import { mkdirSync } from "node:fs";
+import os from "node:os";
+import path from "node:path";
+function normalize(id) {
+  return String(id ?? "").trim().replace(/^<|>$/g, "").toLowerCase();
+}
+function storeDbPath() {
+  const stateDir = process.env.OPENCLAW_STATE_DIR?.trim();
+  const root = stateDir && stateDir.length > 0 ? stateDir : path.join(os.homedir(), ".openclaw");
+  const expanded = root.startsWith("~/") ? path.join(os.homedir(), root.slice(2)) : root;
+  return path.join(expanded, "apple-pim", "mail-channel.sqlite");
+}
+var db;
+function database() {
+  if (db !== void 0) {
+    return db;
+  }
+  let DatabaseSync;
+  try {
+    DatabaseSync = createRequire(import.meta.url)("node:sqlite").DatabaseSync;
+  } catch {
+    db = null;
+    return null;
+  }
+  const file2 = storeDbPath();
+  mkdirSync(path.dirname(file2), { recursive: true });
+  const opened = new DatabaseSync(file2);
+  opened.exec("PRAGMA journal_mode = WAL");
+  opened.exec("PRAGMA synchronous = NORMAL");
+  opened.exec(`
+    CREATE TABLE IF NOT EXISTS mail_admission (
+      id     TEXT NOT NULL,
+      kind   TEXT NOT NULL,
+      reason TEXT NOT NULL,
+      PRIMARY KEY (id, kind)
+    )
+  `);
+  db = opened;
+  return opened;
+}
+var KIND_REFUSED = "refused";
+var KIND_REPLY_BLOCKED = "reply-blocked";
+function reasonFor(id, kind) {
+  const key = normalize(id);
+  const conn = database();
+  if (!key || !conn) {
+    return void 0;
+  }
+  const row = conn.prepare("SELECT reason FROM mail_admission WHERE id = ? AND kind = ?").get(key, kind);
+  return row?.reason;
+}
+function quarantineReason(id) {
+  return reasonFor(id, KIND_REFUSED);
+}
+function replyBlockReason(id) {
+  return reasonFor(id, KIND_REPLY_BLOCKED);
+}
+function assertMailReadable(id, action) {
+  const reason = quarantineReason(id);
+  if (!reason) {
+    return;
+  }
+  throw new Error(
+    `Refusing to ${action} message ${id}: the Apple Mail channel did not admit it (${reason}). Its sender failed the channel's authentication policy, so its contents are not trusted input. Reading it here would bypass that decision.`
+  );
+}
+function assertMailRepliable(id, action) {
+  const reason = replyBlockReason(id);
+  if (!reason) {
+    return;
+  }
+  throw new Error(
+    `Refusing to ${action} message ${id}: the Apple Mail channel admitted it for reading only (${reason}). Its sender is not authorized to receive replies, and answering here would bypass the channel's egress policy. Summarize it instead, or tell the operator.`
+  );
+}
+function filterQuarantinedResults(result, { reportWithheld = false } = {}) {
+  if (!result || typeof result !== "object" || !Array.isArray(result.messages)) {
+    return result;
+  }
+  const kept = result.messages.filter((m) => !quarantineReason(m?.messageId));
+  const withheld = result.messages.length - kept.length;
+  if (withheld === 0) {
+    return result;
+  }
+  const filtered = { ...result, messages: kept };
+  if (typeof result.count === "number") {
+    filtered.count = kept.length;
+  }
+  if (reportWithheld) {
+    filtered.withheldByChannelPolicy = withheld;
+  }
+  return filtered;
+}
+
 // ../lib/handlers/mail.js
 async function handleMail(args, runCLI2) {
   const cliArgs = [];
@@ -78969,10 +79065,11 @@ async function handleMail(args, runCLI2) {
         cliArgs.push("--limit", String(args.limit));
       if (args.filter)
         cliArgs.push("--filter", args.filter);
-      return await runCLI2("mail-cli", cliArgs);
+      return filterQuarantinedResults(await runCLI2("mail-cli", cliArgs), { reportWithheld: true });
     case "get": {
       if (!args.id)
         throw new Error("Message ID is required for mail get");
+      assertMailReadable(args.id, "read");
       const getArgs = ["get", "--id", args.id];
       if (args.mailbox)
         getArgs.push("--mailbox", args.mailbox);
@@ -78997,7 +79094,7 @@ async function handleMail(args, runCLI2) {
         cliArgs.push("--limit", String(args.limit));
       if (args.since)
         cliArgs.push("--since", args.since);
-      return await runCLI2("mail-cli", cliArgs);
+      return filterQuarantinedResults(await runCLI2("mail-cli", cliArgs));
     case "update": {
       if (!args.id)
         throw new Error("Message ID is required for mail update");
@@ -79107,6 +79204,8 @@ async function handleMail(args, runCLI2) {
         throw new Error("Message ID is required for reply");
       if (!args.body)
         throw new Error("Body is required for reply");
+      assertMailReadable(args.id, "reply to");
+      assertMailRepliable(args.id, "reply to");
       const replyArgs = ["reply", "--id", args.id, "--body", args.body];
       if (args.mailbox)
         replyArgs.push("--mailbox", args.mailbox);
@@ -79122,6 +79221,7 @@ async function handleMail(args, runCLI2) {
     case "save_attachment": {
       if (!args.id)
         throw new Error("Message ID is required for save_attachment");
+      assertMailReadable(args.id, "save an attachment from");
       const saveArgs = ["save-attachment", "--id", args.id];
       if (args.index !== void 0)
         saveArgs.push("--index", String(args.index));
