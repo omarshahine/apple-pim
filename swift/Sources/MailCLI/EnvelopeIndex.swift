@@ -26,6 +26,8 @@ final class EnvelopeIndex {
     private var db: OpaquePointer?
     /// e.g. ~/Library/Mail/V10
     let versionDir: URL
+    /// nil = not yet probed or the probe itself failed; true/false = determined.
+    private var labelsTablePresent: Bool?
 
     // MARK: - Discovery / lifecycle
 
@@ -156,7 +158,17 @@ final class EnvelopeIndex {
         if sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle {
             defer { sqlite3_close_v2(handle) }
             var stmt: OpaquePointer?
-            let sql = "SELECT ZIDENTIFIER, ZACCOUNTDESCRIPTION, ZUSERNAME FROM ZACCOUNT WHERE ZIDENTIFIER IS NOT NULL"
+            // Mail's mailbox URLs are hosted by the *child* (per-dataclass) account row,
+            // whose own description is NULL for IMAP providers (Google, Yahoo, iCloud);
+            // the human-facing name lives on the parent. Fall back to it.
+            let sql = """
+                SELECT c.ZIDENTIFIER,
+                       COALESCE(c.ZACCOUNTDESCRIPTION, p.ZACCOUNTDESCRIPTION),
+                       c.ZUSERNAME
+                FROM ZACCOUNT c
+                LEFT JOIN ZACCOUNT p ON c.ZPARENTACCOUNT = p.Z_PK
+                WHERE c.ZIDENTIFIER IS NOT NULL
+                """
             if sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK, let stmt {
                 defer { sqlite3_finalize(stmt) }
                 while sqlite3_step(stmt) == SQLITE_ROW {
@@ -225,10 +237,12 @@ final class EnvelopeIndex {
         var binds: [Bind] = []
 
         if let rowIDs = filter.mailboxRowIDs {
-            guard !rowIDs.isEmpty else { return [] }
-            let placeholders = rowIDs.map { _ in "?" }.joined(separator: ",")
-            conditions.append("m.mailbox IN (\(placeholders))")
-            binds.append(contentsOf: rowIDs.map { Bind.int($0) })
+            let includeLabels = anyLabelRows(mailboxRowIDs: rowIDs)
+            guard let scope = mailboxScopeClause(rowIDs: rowIDs, includeLabels: includeLabels) else {
+                return [] // an empty mailbox scope selects nothing
+            }
+            conditions.append(scope.sql)
+            binds.append(contentsOf: scope.rowIDBinds.map { Bind.int($0) })
         }
         if filter.unreadOnly { conditions.append("m.read = 0") }
         if filter.flaggedOnly { conditions.append("m.flagged = 1") }
@@ -307,6 +321,33 @@ final class EnvelopeIndex {
     func messageCount() throws -> Int {
         let rows = try query("SELECT COUNT(*) AS n FROM messages WHERE deleted = 0")
         return Int(rows.first?["n"] as? Int64 ?? 0)
+    }
+
+    /// Whether this Envelope Index has Mail's Gmail `labels` table (absent on installs
+    /// with no Gmail-style account). Probed once; only an answer is cached. A failed
+    /// probe reports `true`: wrongly including the arm fails loudly at prepare, wrongly
+    /// dropping it succeeds with zero rows that read as an empty mailbox.
+    private func hasLabelsTable() -> Bool {
+        if let cached = labelsTablePresent { return cached }
+        guard let rows = try? query(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'labels'")
+        else { return true }  // probe failed: include the arm, and do not cache
+        let present = !rows.isEmpty
+        labelsTablePresent = present
+        return present
+    }
+
+    /// Whether any of these mailboxes carry label memberships (covering-index probe).
+    /// When none do, the arm stays off and non-Gmail queries keep their original plan.
+    /// As in `hasLabelsTable`, a failed probe reports `true` rather than risk a silent zero.
+    private func anyLabelRows(mailboxRowIDs: [Int64]) -> Bool {
+        guard !mailboxRowIDs.isEmpty, hasLabelsTable() else { return false }
+        let placeholders = mailboxRowIDs.map { _ in "?" }.joined(separator: ",")
+        guard let rows = try? query(
+            "SELECT 1 AS present FROM labels WHERE mailbox_id IN (\(placeholders)) LIMIT 1",
+            mailboxRowIDs.map { Bind.int($0) })
+        else { return true }  // probe failed: include the arm
+        return !rows.isEmpty
     }
 
     // MARK: - .emlx location

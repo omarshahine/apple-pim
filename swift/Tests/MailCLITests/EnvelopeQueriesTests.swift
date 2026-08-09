@@ -102,6 +102,61 @@ final class EnvelopeQueriesTests: XCTestCase {
         XCTAssertEqual(escapeLikePattern("plain"), "plain")
     }
 
+    // MARK: - Mailbox scope clause
+
+    func testMailboxScopeClauseWithoutLabels() throws {
+        let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [297], includeLabels: false))
+        XCTAssertEqual(scope.sql, "m.mailbox IN (?)")
+        XCTAssertEqual(scope.rowIDBinds, [297])
+    }
+
+    func testMailboxScopeClauseWithLabelsAddsGmailArm() throws {
+        // Gmail keeps the single physical copy under [Gmail]/All Mail and records
+        // INBOX membership in `labels`, so the direct arm alone matches nothing.
+        let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [297], includeLabels: true))
+        XCTAssertEqual(
+            scope.sql,
+            "(m.mailbox IN (?) OR m.ROWID IN "
+                + "(SELECT l.message_id FROM labels l WHERE l.mailbox_id IN (?)))")
+        // Direct arm bound first, label arm second: the clause consumes them in that order.
+        XCTAssertEqual(scope.rowIDBinds, [297, 297])
+    }
+
+    func testMailboxScopeClauseMultipleRowIDs() throws {
+        let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [1, 2, 3], includeLabels: true))
+        XCTAssertTrue(scope.sql.contains("m.mailbox IN (?,?,?)"))
+        XCTAssertTrue(scope.sql.contains("l.mailbox_id IN (?,?,?)"))
+        XCTAssertEqual(scope.rowIDBinds, [1, 2, 3, 1, 2, 3])
+    }
+
+    func testMailboxScopeClauseBindCountInvariant() {
+        // Binds are positional: the mailbox condition is appended first, so a drift
+        // between placeholder count and bind count shifts every later bind.
+        for rowIDs in [[297], [10, 11], [1, 2, 3]] as [[Int64]] {
+            XCTAssertEqual(
+                mailboxScopeClause(rowIDs: rowIDs, includeLabels: false)?.rowIDBinds.count,
+                rowIDs.count)
+            XCTAssertEqual(
+                mailboxScopeClause(rowIDs: rowIDs, includeLabels: true)?.rowIDBinds.count,
+                rowIDs.count * 2)
+        }
+    }
+
+    func testMailboxScopeClauseLabelsOffIsByteIdenticalToUpstream() throws {
+        // Installs with no Gmail labels must emit exactly the clause they emitted before.
+        let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [4, 5], includeLabels: false))
+        XCTAssertEqual(scope.sql, "m.mailbox IN (?,?)")
+        XCTAssertEqual(scope.rowIDBinds, [4, 5])
+    }
+
+    func testMailboxScopeClauseEmptyRowIDsReturnsNil() {
+        // An empty scope selects nothing, so there is no clause to emit and no query to
+        // run. SQLite would accept the `IN ()` this used to build, but only as a
+        // non-standard always-false expression, and both arms would still be dead weight.
+        XCTAssertNil(mailboxScopeClause(rowIDs: [], includeLabels: false))
+        XCTAssertNil(mailboxScopeClause(rowIDs: [], includeLabels: true))
+    }
+
     // MARK: - Message ID normalization
 
     func testMessageIDCandidates() {

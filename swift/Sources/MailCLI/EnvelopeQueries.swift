@@ -82,6 +82,23 @@ func escapeLikePattern(_ text: String) -> String {
         .replacingOccurrences(of: "_", with: "\\_")
 }
 
+/// SQL scope clause for a set of mailbox ROWIDs, plus the ROWID binds in the order the
+/// clause consumes them; `nil` for an empty list (an empty scope selects nothing).
+/// `includeLabels` ORs in the Gmail arm: the physical copy lives under [Gmail]/All Mail
+/// and folder membership lives in `labels`, so `messages.mailbox` alone matches nothing.
+func mailboxScopeClause(rowIDs: [Int64], includeLabels: Bool) -> (sql: String, rowIDBinds: [Int64])? {
+    guard !rowIDs.isEmpty else { return nil }
+    let placeholders = rowIDs.map { _ in "?" }.joined(separator: ",")
+    guard includeLabels else {
+        return (sql: "m.mailbox IN (\(placeholders))", rowIDBinds: rowIDs)
+    }
+    return (
+        sql: "(m.mailbox IN (\(placeholders)) OR m.ROWID IN "
+            + "(SELECT l.message_id FROM labels l WHERE l.mailbox_id IN (\(placeholders))))",
+        rowIDBinds: rowIDs + rowIDs
+    )
+}
+
 /// Mailbox names Mail.app treats as junk destinations.
 private let junkMailboxNames: Set<String> = ["Junk", "Junk Mail", "Junk E-mail", "Junk Email", "Spam", "Bulk Mail"]
 
