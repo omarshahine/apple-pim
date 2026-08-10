@@ -33,11 +33,18 @@ struct SQLiteEngine {
     let index: EnvelopeIndex
     let allMailboxes: [MailboxRef]
     private let mailboxByURL: [String: MailboxRef]
+    private let mailboxByRowID: [Int64: MailboxRef]
 
     init() throws {
-        index = try EnvelopeIndex.open()
-        allMailboxes = try index.mailboxes()
+        let index = try EnvelopeIndex.open()
+        self.init(index: index, allMailboxes: try index.mailboxes())
+    }
+
+    init(index: EnvelopeIndex, allMailboxes: [MailboxRef]) {
+        self.index = index
+        self.allMailboxes = allMailboxes
         mailboxByURL = Dictionary(uniqueKeysWithValues: allMailboxes.map { ($0.url, $0) })
+        mailboxByRowID = Dictionary(uniqueKeysWithValues: allMailboxes.map { ($0.rowid, $0) })
     }
 
     private func accountDisplayName(_ uuid: String) -> String {
@@ -62,8 +69,12 @@ struct SQLiteEngine {
         return candidates
     }
 
-    private func mailboxRef(forURL url: String?) -> MailboxRef? {
-        url.flatMap { mailboxByURL[$0] }
+    private func mailboxRef(forRow row: [String: Any]) -> MailboxRef? {
+        if let logicalRowID = row["logical_mailbox_rowid"] as? Int64,
+           let logicalMailbox = mailboxByRowID[logicalRowID] {
+            return logicalMailbox
+        }
+        return (row["mailbox_url"] as? String).flatMap { mailboxByURL[$0] }
     }
 
     // MARK: - Row mapping
@@ -71,7 +82,7 @@ struct SQLiteEngine {
     /// Shared row -> message summary mapping (the `messages` command shape).
     private func summaryDict(_ row: [String: Any], includeJunkAndAttachments: Bool,
                              includeLocation: Bool) -> [String: Any] {
-        let mailbox = mailboxRef(forURL: row["mailbox_url"] as? String)
+        let mailbox = mailboxRef(forRow: row)
         var dict: [String: Any] = [
             "messageId": stripAngleBrackets(row["message_id"] as? String ?? ""),
             "sender": formatAddress(address: row["sender_address"] as? String ?? "",
@@ -205,7 +216,7 @@ struct SQLiteEngine {
             let hintedAccountUUIDs = accountHint.flatMap { try? index.accountUUIDs(matching: $0) } ?? []
             var bestScore = -1
             for candidate in rows {
-                guard let mailbox = mailboxRef(forURL: candidate["mailbox_url"] as? String) else { continue }
+                guard let mailbox = mailboxRef(forRow: candidate) else { continue }
                 var score = 0
                 if let hint = mailboxHint, mailbox.name.caseInsensitiveCompare(hint) == .orderedSame { score += 2 }
                 if hintedAccountUUIDs.contains(mailbox.accountUUID) { score += 1 }
@@ -218,7 +229,7 @@ struct SQLiteEngine {
         guard let row = bestRow, let rowid = row["rowid"] as? Int64 else {
             throw EnvelopeIndexError.notFound("Message not found: \(id)")
         }
-        guard let mailbox = mailboxRef(forURL: row["mailbox_url"] as? String),
+        guard let mailbox = mailboxRef(forRow: row),
               let emlxURL = index.emlxPath(forMessageRowID: rowid, mailbox: mailbox) else {
             // Message metadata exists but the body isn't on disk (not yet
             // downloaded); the JXA engine can still fetch it from Mail.app.

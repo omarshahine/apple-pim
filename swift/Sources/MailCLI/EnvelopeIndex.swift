@@ -26,6 +26,7 @@ final class EnvelopeIndex {
     private var db: OpaquePointer?
     /// e.g. ~/Library/Mail/V10
     let versionDir: URL
+    private let accountsDatabasePath: URL
     /// nil = not yet probed or the probe itself failed; true/false = determined.
     private var labelsTablePresent: Bool?
 
@@ -56,11 +57,19 @@ final class EnvelopeIndex {
                 "Envelope Index not found or not readable under ~/Library/Mail/V*. "
                 + "The SQLite read path requires Full Disk Access.")
         }
-        return try EnvelopeIndex(databasePath: dbPath)
+        return try EnvelopeIndex(
+            databasePath: dbPath,
+            accountsDatabasePath: accountsStorePath(home: home))
     }
 
-    init(databasePath: URL) throws {
+    private static func accountsStorePath(home: URL) -> URL {
+        home.appendingPathComponent("Library/Accounts/Accounts4.sqlite")
+    }
+
+    init(databasePath: URL, accountsDatabasePath: URL? = nil) throws {
         versionDir = databasePath.deletingLastPathComponent().deletingLastPathComponent()
+        self.accountsDatabasePath = accountsDatabasePath
+            ?? Self.accountsStorePath(home: FileManager.default.homeDirectoryForCurrentUser)
         var handle: OpaquePointer?
         let rc = sqlite3_open_v2(databasePath.path, &handle, SQLITE_OPEN_READONLY, nil)
         guard rc == SQLITE_OK, let handle else {
@@ -152,19 +161,18 @@ final class EnvelopeIndex {
     func accountNames() -> [String: (name: String, userName: String?)] {
         if let cachedAccountNames { return cachedAccountNames }
         var map: [String: (name: String, userName: String?)] = [:]
-        let path = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent("Library/Accounts/Accounts4.sqlite").path
+        let path = accountsDatabasePath.path
         var handle: OpaquePointer?
         if sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle {
             defer { sqlite3_close_v2(handle) }
             var stmt: OpaquePointer?
             // Mail's mailbox URLs are hosted by the *child* (per-dataclass) account row,
-            // whose own description is NULL for IMAP providers (Google, Yahoo, iCloud);
-            // the human-facing name lives on the parent. Fall back to it.
+            // whose own description and username are NULL for IMAP providers (Google,
+            // Yahoo, iCloud); the human-facing values live on the parent. Fall back to it.
             let sql = """
                 SELECT c.ZIDENTIFIER,
                        COALESCE(c.ZACCOUNTDESCRIPTION, p.ZACCOUNTDESCRIPTION),
-                       c.ZUSERNAME
+                       COALESCE(c.ZUSERNAME, p.ZUSERNAME)
                 FROM ZACCOUNT c
                 LEFT JOIN ZACCOUNT p ON c.ZPARENTACCOUNT = p.Z_PK
                 WHERE c.ZIDENTIFIER IS NOT NULL
@@ -234,6 +242,8 @@ final class EnvelopeIndex {
 
     func messages(filter: MessageFilter, limit: Int) throws -> [[String: Any]] {
         var conditions = ["m.deleted = 0", "g.message_id_header IS NOT NULL"]
+        var selectedColumns = Self.messageColumns
+        var selectedColumnBinds: [Bind] = []
         var binds: [Bind] = []
 
         if let rowIDs = filter.mailboxRowIDs {
@@ -243,6 +253,9 @@ final class EnvelopeIndex {
             }
             conditions.append(scope.sql)
             binds.append(contentsOf: scope.rowIDBinds.map { Bind.int($0) })
+            selectedColumns += ", \(scope.logicalMailboxSQL) AS logical_mailbox_rowid"
+            selectedColumnBinds.append(
+                contentsOf: scope.logicalMailboxRowIDBinds.map { Bind.int($0) })
         }
         if filter.unreadOnly { conditions.append("m.read = 0") }
         if filter.flaggedOnly { conditions.append("m.flagged = 1") }
@@ -272,14 +285,14 @@ final class EnvelopeIndex {
         }
 
         let sql = """
-            SELECT \(Self.messageColumns)
+            SELECT \(selectedColumns)
             \(Self.messageJoins)
             WHERE \(conditions.joined(separator: " AND "))
             ORDER BY m.date_received \(filter.oldestFirst ? "ASC" : "DESC")
             LIMIT ?
             """
         binds.append(.int(Int64(limit)))
-        return try query(sql, binds)
+        return try query(sql, selectedColumnBinds + binds)
     }
 
     /// All non-deleted copies of a message by RFC 2822 Message-ID, newest first.

@@ -31,9 +31,11 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         // 101-104 sit in All Mail and reach INBOX only through `labels`; 106 is stored in
         // INBOX directly; 105 is in All Mail with no label and must stay out.
         XCTAssertEqual(rowIDs(rows), [101, 102, 103, 104, 106])
-        // 106 matches both arms. They are an OR over a single `messages` row rather than a
-        // UNION, so it comes back once.
+        // 106 matches both indexable branches. The outer IN membership still returns it once.
         XCTAssertEqual(rows.count, 5)
+        // Label-backed rows must report the mailbox the caller scoped to, not the
+        // physical [Gmail]/All Mail store that owns the message row.
+        XCTAssertEqual(Set(rows.compactMap { $0["logical_mailbox_rowid"] as? Int64 }), [inboxRowID])
     }
 
     func testWithoutTheLabelsArmTheGmailInboxLooksEmpty() throws {
@@ -61,7 +63,7 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
 
         let allMail = try index.messages(
             filter: EnvelopeIndex.MessageFilter(mailboxRowIDs: [allMailRowID]), limit: 50)
-        XCTAssertEqual(rowIDs(allMail), [101, 102, 103, 104, 105])
+        XCTAssertEqual(rowIDs(allMail), [101, 102, 103, 104, 105, 108])
     }
 
     func testMailboxWithNoLabelRowsKeepsTheDirectClause() throws {
@@ -90,6 +92,42 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         // 105 has no label, 106's subject has no match. A one-slot drift binds the cutoff
         // or the pattern to the wrong placeholder and this set changes.
         XCTAssertEqual(rowIDs(rows), [101])
+    }
+
+    func testLabelsArmUsesBothMailboxIndexes() throws {
+        let index = try openFixture(includeLabels: true)
+        let scope = try XCTUnwrap(
+            mailboxScopeClause(rowIDs: [inboxRowID], includeLabels: true))
+        let rows = try index.query(
+            """
+            EXPLAIN QUERY PLAN
+            SELECT m.ROWID FROM messages m
+            WHERE m.deleted = 0 AND \(scope.sql)
+            ORDER BY m.date_received DESC LIMIT 25
+            """,
+            scope.rowIDBinds.map { EnvelopeIndex.Bind.int($0) })
+        let plan = rows.compactMap { $0["detail"] as? String }.joined(separator: "\n")
+
+        XCTAssertTrue(plan.contains("messages_mailbox_date_received_index"), plan)
+        XCTAssertTrue(plan.contains("labels_mailbox_id_index"), plan)
+    }
+
+    func testSQLiteEngineUsesLogicalMailboxForLocationAndJunkStatus() throws {
+        let index = try openFixture(includeLabels: true)
+        let engine = SQLiteEngine(index: index, allMailboxes: try index.mailboxes())
+
+        let search = try engine.search(
+            query: "Needle", field: "subject", mailbox: "INBOX", account: nil,
+            limit: 50, since: nil)
+        let searchMessages = try XCTUnwrap(search["messages"] as? [[String: Any]])
+        XCTAssertFalse(searchMessages.isEmpty)
+        XCTAssertTrue(searchMessages.allSatisfy { $0["mailbox"] as? String == "INBOX" })
+
+        let spam = try engine.messages(
+            mailbox: "Spam", account: nil, limit: 50, filter: nil)
+        let spamMessages = try XCTUnwrap(spam["messages"] as? [[String: Any]])
+        XCTAssertEqual(spamMessages.count, 1)
+        XCTAssertEqual(spamMessages.first?["isJunk"] as? Bool, true)
     }
 
     // MARK: - Fixture
@@ -166,6 +204,9 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         automated_conversation INTEGER DEFAULT 0,
         root_status INTEGER DEFAULT -1);
 
+        CREATE INDEX messages_mailbox_date_received_index
+        ON messages(mailbox, date_received);
+
         CREATE TABLE mailboxes (ROWID INTEGER PRIMARY KEY AUTOINCREMENT,
         url TEXT COLLATE BINARY NOT NULL,
         total_count INTEGER NOT NULL DEFAULT 0,
@@ -227,7 +268,8 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         INSERT INTO mailboxes (ROWID, url) VALUES
         (1, 'imap://GMAIL-ACCOUNT/%5BGmail%5D/All%20Mail'),
         (2, 'imap://GMAIL-ACCOUNT/INBOX'),
-        (3, 'ews://OTHER-ACCOUNT/Inbox');
+        (3, 'ews://OTHER-ACCOUNT/Inbox'),
+        (4, 'imap://GMAIL-ACCOUNT/Spam');
 
         INSERT INTO addresses (ROWID, address, comment) VALUES
         (1, 'sender@example.com', 'Example Sender');
@@ -239,7 +281,8 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (4, 'Nothing here'),
         (5, 'Needle five'),
         (6, 'Direct mailbox message'),
-        (7, 'Exchange direct message');
+        (7, 'Exchange direct message'),
+        (8, 'Spam offer');
 
         INSERT INTO message_global_data (ROWID, message_id_header) VALUES
         (1, '<m1@example.com>'),
@@ -248,7 +291,8 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (4, '<m4@example.com>'),
         (5, '<m5@example.com>'),
         (6, '<m6@example.com>'),
-        (7, '<m7@example.com>');
+        (7, '<m7@example.com>'),
+        (8, '<m8@example.com>');
 
         -- 101-105 are the Gmail copies: physically in All Mail, reaching INBOX only
         -- through `labels`. A real Gmail INBOX owns no messages rows at all; 106 is put
@@ -263,13 +307,14 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (104, 4, 1, 4, 2000, 2000, 1, 0, 0),
         (105, 5, 1, 5, 2000, 2000, 1, 0, 0),
         (106, 6, 1, 6, 2000, 2000, 2, 0, 0),
-        (107, 7, 1, 7, 2000, 2000, 3, 0, 0);
+        (107, 7, 1, 7, 2000, 2000, 3, 0, 0),
+        (108, 8, 1, 8, 2000, 2000, 1, 0, 0);
 
         """
 
     private static let labelRows = """
         INSERT INTO labels (message_id, mailbox_id) VALUES
-        (101, 2), (102, 2), (103, 2), (104, 2), (106, 2);
+        (101, 2), (102, 2), (103, 2), (104, 2), (106, 2), (108, 4);
 
         """
 }

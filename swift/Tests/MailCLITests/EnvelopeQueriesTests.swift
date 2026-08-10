@@ -108,6 +108,8 @@ final class EnvelopeQueriesTests: XCTestCase {
         let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [297], includeLabels: false))
         XCTAssertEqual(scope.sql, "m.mailbox IN (?)")
         XCTAssertEqual(scope.rowIDBinds, [297])
+        XCTAssertEqual(scope.logicalMailboxSQL, "m.mailbox")
+        XCTAssertEqual(scope.logicalMailboxRowIDBinds, [])
     }
 
     func testMailboxScopeClauseWithLabelsAddsGmailArm() throws {
@@ -116,17 +118,25 @@ final class EnvelopeQueriesTests: XCTestCase {
         let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [297], includeLabels: true))
         XCTAssertEqual(
             scope.sql,
-            "(m.mailbox IN (?) OR m.ROWID IN "
-                + "(SELECT l.message_id FROM labels l WHERE l.mailbox_id IN (?)))")
-        // Direct arm bound first, label arm second: the clause consumes them in that order.
+            "m.ROWID IN (SELECT scoped.ROWID FROM messages scoped "
+                + "WHERE scoped.mailbox IN (?) UNION ALL "
+                + "SELECT l.message_id FROM labels l WHERE l.mailbox_id IN (?))")
         XCTAssertEqual(scope.rowIDBinds, [297, 297])
+        XCTAssertEqual(
+            scope.logicalMailboxSQL,
+            "CASE WHEN m.mailbox IN (?) THEN m.mailbox "
+                + "ELSE (SELECT l.mailbox_id FROM labels l "
+                + "WHERE l.message_id = m.ROWID AND l.mailbox_id IN (?) "
+                + "ORDER BY l.mailbox_id LIMIT 1) END")
+        XCTAssertEqual(scope.logicalMailboxRowIDBinds, [297, 297])
     }
 
     func testMailboxScopeClauseMultipleRowIDs() throws {
         let scope = try XCTUnwrap(mailboxScopeClause(rowIDs: [1, 2, 3], includeLabels: true))
-        XCTAssertTrue(scope.sql.contains("m.mailbox IN (?,?,?)"))
+        XCTAssertTrue(scope.sql.contains("scoped.mailbox IN (?,?,?)"))
         XCTAssertTrue(scope.sql.contains("l.mailbox_id IN (?,?,?)"))
         XCTAssertEqual(scope.rowIDBinds, [1, 2, 3, 1, 2, 3])
+        XCTAssertEqual(scope.logicalMailboxRowIDBinds, [1, 2, 3, 1, 2, 3])
     }
 
     func testMailboxScopeClauseBindCountInvariant() {
