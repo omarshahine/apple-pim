@@ -10,12 +10,14 @@ enum EnvelopeIndexError: Error, LocalizedError {
     case notAvailable(String)
     case queryFailed(String)
     case notFound(String)
+    case ambiguous(String)
 
     var errorDescription: String? {
         switch self {
         case .notAvailable(let msg): return msg
         case .queryFailed(let msg): return msg
         case .notFound(let msg): return msg
+        case .ambiguous(let msg): return msg
         }
     }
 }
@@ -156,11 +158,19 @@ final class EnvelopeIndex {
     /// Account UUID -> (displayName, userName) via the system Accounts store
     /// (same Full Disk Access umbrella as the mail directory). Best-effort:
     /// returns an empty map when unreadable, and callers fall back to UUIDs.
-    private var cachedAccountNames: [String: (name: String, userName: String?)]?
+    private var cachedAccountNames: [String: (
+        name: String,
+        userName: String?,
+        logicalAccountID: String
+    )]?
 
-    func accountNames() -> [String: (name: String, userName: String?)] {
+    func accountNames() -> [String: (
+        name: String,
+        userName: String?,
+        logicalAccountID: String
+    )] {
         if let cachedAccountNames { return cachedAccountNames }
-        var map: [String: (name: String, userName: String?)] = [:]
+        var map: [String: (name: String, userName: String?, logicalAccountID: String)] = [:]
         let path = accountsDatabasePath.path
         var handle: OpaquePointer?
         if sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle {
@@ -172,7 +182,8 @@ final class EnvelopeIndex {
             let sql = """
                 SELECT c.ZIDENTIFIER,
                        COALESCE(c.ZACCOUNTDESCRIPTION, p.ZACCOUNTDESCRIPTION),
-                       COALESCE(c.ZUSERNAME, p.ZUSERNAME)
+                       COALESCE(c.ZUSERNAME, p.ZUSERNAME),
+                       COALESCE(p.ZIDENTIFIER, c.ZIDENTIFIER)
                 FROM ZACCOUNT c
                 LEFT JOIN ZACCOUNT p ON c.ZPARENTACCOUNT = p.Z_PK
                 WHERE c.ZIDENTIFIER IS NOT NULL
@@ -184,7 +195,12 @@ final class EnvelopeIndex {
                     let uuid = String(cString: idText)
                     let name = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
                     let user = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
-                    map[uuid] = (name: name ?? uuid, userName: user)
+                    let logicalAccountID = sqlite3_column_text(stmt, 3)
+                        .map { String(cString: $0) } ?? uuid
+                    map[uuid] = (
+                        name: name ?? uuid,
+                        userName: user,
+                        logicalAccountID: logicalAccountID)
                 }
             }
         } else if let handle {
@@ -200,11 +216,37 @@ final class EnvelopeIndex {
         let target = name.lowercased()
         let names = accountNames()
         let allUUIDs = Set(try mailboxes().map { $0.accountUUID })
-        return allUUIDs.filter { uuid in
-            if uuid.lowercased() == target { return true }
-            guard let entry = names[uuid] else { return false }
-            return entry.name.lowercased() == target || entry.userName?.lowercased() == target
-        }.sorted()
+        if let exactUUID = allUUIDs.first(where: { $0.lowercased() == target }) {
+            return [exactUUID]
+        }
+
+        let displayNameMatches = allUUIDs.filter {
+            names[$0]?.name.lowercased() == target
+        }
+        if !displayNameMatches.isEmpty {
+            return try accountUUIDsWithinOneLogicalAccount(
+                displayNameMatches, metadata: names, requestedName: name)
+        }
+
+        let userNameMatches = allUUIDs.filter {
+            names[$0]?.userName?.lowercased() == target
+        }
+        return try accountUUIDsWithinOneLogicalAccount(
+            userNameMatches, metadata: names, requestedName: name)
+    }
+
+    private func accountUUIDsWithinOneLogicalAccount(
+        _ matches: Set<String>,
+        metadata: [String: (name: String, userName: String?, logicalAccountID: String)],
+        requestedName: String
+    ) throws -> [String] {
+        let logicalAccountIDs = Set(matches.compactMap { metadata[$0]?.logicalAccountID })
+        guard logicalAccountIDs.count <= 1 else {
+            throw EnvelopeIndexError.ambiguous(
+                "Account matches multiple logical accounts: \(requestedName). "
+                + "Use the display name or account UUID instead.")
+        }
+        return matches.sorted()
     }
 
     // MARK: - Messages

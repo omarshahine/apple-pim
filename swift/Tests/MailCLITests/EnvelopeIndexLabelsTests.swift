@@ -122,6 +122,7 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         let searchMessages = try XCTUnwrap(search["messages"] as? [[String: Any]])
         XCTAssertFalse(searchMessages.isEmpty)
         XCTAssertTrue(searchMessages.allSatisfy { $0["mailbox"] as? String == "INBOX" })
+        XCTAssertTrue(searchMessages.allSatisfy { $0["account"] as? String == "GMAIL-ACCOUNT" })
 
         let spam = try engine.messages(
             mailbox: "Spam", account: nil, limit: 50, filter: nil)
@@ -163,7 +164,12 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
             throw EnvelopeIndexError.queryFailed("Fixture setup failed: \(detail)")
         }
 
-        return try EnvelopeIndex(databasePath: dbPath)
+        // Keep this integration fixture hermetic. `SQLiteEngine.search` resolves account
+        // names, so point it at a deliberately absent fixture path rather than the user's
+        // real ~/Library/Accounts/Accounts4.sqlite.
+        return try EnvelopeIndex(
+            databasePath: dbPath,
+            accountsDatabasePath: tempDir.appendingPathComponent("Accounts4.sqlite"))
     }
 
     /// Mail's own CREATE TABLE statements, copied from a live Envelope Index. Its indexes

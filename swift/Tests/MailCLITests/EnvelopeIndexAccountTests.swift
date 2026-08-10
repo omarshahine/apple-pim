@@ -35,6 +35,28 @@ final class EnvelopeIndexAccountTests: XCTestCase {
         XCTAssertEqual(try index.accountUUIDs(matching: "child@example.com"), ["NAMED-CHILD"])
     }
 
+    func testSharedUsernameWithinOneLogicalAccountReturnsAllMailboxUUIDs() throws {
+        let index = try openFixture()
+
+        XCTAssertEqual(
+            try index.accountUUIDs(matching: "Shared A"),
+            ["SHARED-CHILD-A", "SHARED-CHILD-A2"])
+        XCTAssertEqual(
+            try index.accountUUIDs(matching: "SHARED-CHILD-A2"),
+            ["SHARED-CHILD-A2"])
+    }
+
+    func testSharedUsernameAcrossLogicalAccountsIsRejected() throws {
+        let index = try openFixture()
+
+        XCTAssertThrowsError(try index.accountUUIDs(matching: "shared@example.com")) { error in
+            guard case EnvelopeIndexError.ambiguous(let message) = error else {
+                return XCTFail("Expected ambiguous account error, got \(error)")
+            }
+            XCTAssertTrue(message.contains("multiple logical accounts"))
+        }
+    }
+
     private func openFixture() throws -> EnvelopeIndex {
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let envelopePath = tempDir.appendingPathComponent("Envelope Index")
@@ -50,7 +72,10 @@ final class EnvelopeIndexAccountTests: XCTestCase {
             INSERT INTO mailboxes (ROWID, url) VALUES
                 (1, 'imap://IMAP-CHILD/INBOX'),
                 (2, 'ews://EXCHANGE/Inbox'),
-                (3, 'imap://NAMED-CHILD/INBOX');
+                (3, 'imap://NAMED-CHILD/INBOX'),
+                (4, 'imap://SHARED-CHILD-A/INBOX'),
+                (5, 'imap://SHARED-CHILD-A2/Archive'),
+                (6, 'imap://SHARED-CHILD-B/INBOX');
             """)
 
         try createDatabase(at: accountsPath, sql: """
@@ -69,7 +94,12 @@ final class EnvelopeIndexAccountTests: XCTestCase {
                 (3, 'EXCHANGE', 'Work Exchange', 'person@example.com', NULL),
                 (4, 'NAMED-PARENT', 'Parent Name', 'parent@example.com', NULL),
                 (5, 'NAMED-CHILD', 'Child Override', 'child@example.com', 4),
-                (6, NULL, 'Ignored', 'ignored@example.com', NULL);
+                (6, NULL, 'Ignored', 'ignored@example.com', NULL),
+                (7, 'SHARED-PARENT-A', 'Shared A', 'shared@example.com', NULL),
+                (8, 'SHARED-CHILD-A', NULL, NULL, 7),
+                (9, 'SHARED-CHILD-A2', NULL, NULL, 7),
+                (10, 'SHARED-PARENT-B', 'Shared B', 'shared@example.com', NULL),
+                (11, 'SHARED-CHILD-B', NULL, NULL, 10);
             """)
 
         return try EnvelopeIndex(
