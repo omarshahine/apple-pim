@@ -768,6 +768,8 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
     // ANY mailbox of the account: `messages.byId` is keyed to the Envelope-Index ROWID and
     // resolves GLOBALLY, so the handle only has to belong to the right account — a rowid
     // addressed through a mailbox that does not hold the message still returns that message.
+    // That is a PROPERTY-access rule and it is what this handle is for: LOCATING. The accept
+    // block re-anchors before returning, because the act commands do not share it.
     // No mailbox NAME is compared, which is what makes the arm work on Gmail: Mail renames
     // those mailboxes ("All Mail", no "[Gmail]" container) while the Envelope Index stores the
     // server-side path, so any name compare skips every Gmail candidate — silently, and with
@@ -818,7 +820,17 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
                 // which carry no pre-op re-read, and what makes an arbitrary handle safe. A
                 // rowid Mail cannot resolve at all yields a specifier that throws on this
                 // first property read, which the catch below turns into the same fall-through.
+                //
+                // Then the re-anchor, first thing inside the accept: the handle that FOUND
+                // the message cannot ACT on it. byId resolves the ROWID globally for PROPERTY
+                // access — the compare above, the flag writes the callers do — but the delete
+                // and move commands re-resolve the specifier's container chain and refuse
+                // unless that mailbox holds the message, so the verified rowid is re-addressed
+                // through the message's own. Left unguarded: a throw belongs to the catch
+                // below, which drops the candidate to the scan and is counted there as a
+                // fallback, not a hit that never acted — which is why it precedes the counter.
                 if (normalizeMessageId(msg.messageId()) === normalized) {
+                    msg = msg.mailbox().messages.byId(cand.r);
                     _stats.byIdHits++;
                     lookup.method = 'byId';
                     lookup.acctId = cand.acctId || '';

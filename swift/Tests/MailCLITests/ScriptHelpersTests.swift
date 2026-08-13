@@ -71,10 +71,12 @@ final class ScriptHelpersTests: XCTestCase {
         // every `byId` result taken unverified, the guard decorative, and a pair of
         // `contains` checks still green. Spanning from the compare through the closing brace
         // and on to the mismatch counter is what forbids that: nothing may sit between the
-        // compare and the accept, and the return may not leave the block.
+        // compare and the accept, and the return may not leave the block. The span also fixes
+        // the re-anchor's position; the test below is where that line is explained.
         XCTAssertTrue(
             Self.collapsingWhitespace(unifiedScript()).contains(
                 "if (normalizeMessageId(msg.messageId()) === normalized) { "
+                + "msg = msg.mailbox().messages.byId(cand.r); "
                 + "_stats.byIdHits++; "
                 + "lookup.method = 'byId'; "
                 + "lookup.acctId = cand.acctId || ''; "
@@ -127,6 +129,29 @@ final class ScriptHelpersTests: XCTestCase {
                 + "var msg = mb.messages.byId(cand.r);"),
             "the byId arm must resolve the account, take any mailbox handle of it, and address "
             + "the rowid through that handle")
+    }
+
+    func testUnifiedFinderReAnchorsTheAcceptedSpecifierThroughTheMessagesOwnMailbox() {
+        // The handle that FINDS a message is not enough to ACT on it. `messages.byId` resolves
+        // a ROWID globally for property access — reads and writes alike — but the `delete` and
+        // `move` commands re-resolve the specifier's container chain and refuse with "Can't get
+        // object." when the mailbox it was addressed through does not hold the message. Flag
+        // writes are property access, so they never saw it; every delete and move the fast path
+        // located failed. The accepted specifier is therefore re-addressed through the
+        // message's OWN mailbox before it leaves the finder.
+        //
+        // One span, and the ORDER inside it is the assertion: the re-anchor must sit between
+        // the accept and `byIdHits++`. There, a re-anchor that throws leaves the counter
+        // untouched and falls out of the guarded block to the scan, which counts its own
+        // fallback. Below the counter, the same throw would leave a phantom hit behind and one
+        // message would report as both a hit and a fallback.
+        XCTAssertTrue(
+            Self.collapsingWhitespace(unifiedScript()).contains(
+                "if (normalizeMessageId(msg.messageId()) === normalized) { "
+                + "msg = msg.mailbox().messages.byId(cand.r); "
+                + "_stats.byIdHits++;"),
+            "the accepted specifier must be re-anchored through its own mailbox, before the hit "
+            + "is counted")
     }
 
     func testTheFastPathsMailLookupsDegradeToTheScanInsteadOfThrowing() {
