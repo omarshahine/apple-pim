@@ -117,6 +117,46 @@ func mailboxScopeClause(rowIDs: [Int64], includeLabels: Bool) -> (
     )
 }
 
+// MARK: - Mailbox lookup priority
+
+/// The order the JXA finder sweeps mailboxes in, and the tie-breaker the write-path locator
+/// ranks rowid candidates by. Compared against a mailbox's LEAF name (`MailboxRef.name`):
+/// Gmail stores "All Mail" nested under "[Gmail]", and ranking the joined path would miss
+/// every entry here and sort the Gmail copy last.
+let mailboxPriority: [String] = [
+    "INBOX",
+    "Sent Messages", "Sent Mail", "Sent Items",
+    "Archive", "All Mail", "Drafts",
+    "Deleted Messages", "Deleted Items", "Trash",
+    "Junk", "Junk Email", "Junk E-mail", "Bulk", "Spam",
+]
+
+/// Position in `mailboxPriority`; unlisted mailboxes sort last. EXACT compare — this is the
+/// proposer, used to order candidates.
+func priorityRank(forMailboxName name: String) -> Int {
+    mailboxPriority.firstIndex(of: name) ?? mailboxPriority.count
+}
+
+/// `priorityRank` under the other reading of `mailboxes.whose({name: …})`: that Mail folds
+/// case, which is AppleScript's default for string comparison and is not settled here (probing
+/// it needs `osascript` at Mail). Only the write-path guard uses it — a mailbox named `Inbox`
+/// is unranked to `priorityRank` but is what a case-folding `whose({name: 'INBOX'})` reaches at
+/// rank 0, so the two ranks disagree exactly where the certification must decline.
+/// See `headMatchesJXASweep`.
+func priorityRankFoldingCase(forMailboxName name: String) -> Int {
+    mailboxPriority.firstIndex { $0.caseInsensitiveCompare(name) == .orderedSame }
+        ?? mailboxPriority.count
+}
+
+/// `mailboxPriority` as a JS array literal for interpolation into a generated script.
+func mailboxPriorityJSON() -> String {
+    guard let data = try? JSONSerialization.data(withJSONObject: mailboxPriority),
+          let json = String(data: data, encoding: .utf8) else {
+        return "[" + mailboxPriority.map { "'\($0)'" }.joined(separator: ",") + "]"
+    }
+    return json
+}
+
 /// Mailbox names Mail.app treats as junk destinations.
 private let junkMailboxNames: Set<String> = ["Junk", "Junk Mail", "Junk E-mail", "Junk Email", "Spam", "Bulk Mail"]
 

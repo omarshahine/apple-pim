@@ -107,9 +107,14 @@ Optionally, configure the binary location if the CLIs are not on PATH:
 - Allow Terminal (or your IDE) to control **Mail.app**
 
 **Full Disk Access (optional, recommended)**: Mail *read* commands use a fast
-direct-SQLite path (see "Direct SQLite read path" below) that requires Full
-Disk Access for Terminal (or the MCP host). Without it, reads silently fall
-back to the slower Mail.app Automation path.
+direct-SQLite path (see "Direct SQLite read path" below) that requires Full Disk
+Access for Terminal (or the MCP host); without it, `--engine auto` silently
+falls back to the slower Mail.app Automation path and `--engine sqlite` reports
+the missing grant as an error. `update`, `move`, `delete`, `batch-update` and
+`batch-delete` consult that same index for the message's row-id before
+writing — the write itself always goes through Mail.app either way — so the
+grant governs their lookup on the same terms, with Mail.app's
+mailbox-by-mailbox scan as the `auto` fallback.
 
 ### Development Installation
 
@@ -428,7 +433,12 @@ the database isn't readable. Message bodies come straight from the on-disk
 `.emlx` files. This is ~10–200× faster than the JXA path (subject search across
 an 80k-message mailbox: **~80ms vs ~15s**) and works even when Mail.app is not
 running. Mutations (`update`, `move`, `delete`, `send`, `reply`) always go
-through Mail.app.
+through Mail.app — nothing here ever writes to Mail's database. `update`,
+`move`, `delete`, `batch-update` and `batch-delete` do take `--engine` as well:
+under `auto` they look the message up in the same read-only index first, so
+Mail.app can be handed its row-id directly instead of scanning mailbox by
+mailbox, and they fall back to that scan whenever the lookup cannot answer.
+`send` and `reply` are unaffected.
 
 - The database is only ever opened **read-only** (`SQLITE_OPEN_READONLY` +
   `PRAGMA query_only`); the fast path never writes to Mail's data.
@@ -437,7 +447,11 @@ through Mail.app.
   `mail-cli auth-status` (`envelopeIndex.readable`) to see which path you get.
 - `--field content` search is not indexed locally and always uses JXA.
 - Force a specific path with `--engine sqlite` or `--engine jxa`; responses
-  from the fast path include `"engine": "sqlite"`.
+  from the fast path include `"engine": "sqlite"`. The write-path lookup emits
+  no `engine` key: `batch-update` and `batch-delete` report the locator built
+  in `_lookup.backend` (`sqlite` once an index opens, `jxa-only` otherwise) and
+  the hit/fallback counts in `_lookup.stats`; `update`, `move` and `delete`
+  carry a per-message `_lookup` inside `result` only under `MAIL_CLI_DEBUG=1`.
 
 ### Direct SMTP path (`mail-cli smtp-send`)
 

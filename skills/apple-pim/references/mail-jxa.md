@@ -1,6 +1,6 @@
 # Mail.app JXA Reference
 
-## Two engines: SQLite (reads) and JXA (everything else)
+## Two engines: SQLite (lookup) and JXA (every mutation)
 
 Read commands (`accounts`, `mailboxes`, `messages`, `get`, `search`) default to
 `--engine auto`: they query Apple Mail's **Envelope Index** SQLite database
@@ -10,7 +10,13 @@ works with Mail.app closed, but requires Full Disk Access. When the database
 isn't readable — or for `--field content` search, or when a body's `.emlx`
 hasn't been downloaded — the command silently falls back to JXA. Check
 `auth-status` → `envelopeIndex.readable` to see which path is active.
-Mutations (`update`, `move`, `delete`, `send`, `reply`) are always JXA/AppleScript.
+Mutations (`update`, `move`, `delete`, `send`, `reply`) are always performed by
+JXA/AppleScript — nothing here ever writes to Mail's database. `update`, `move`,
+`delete`, `batch-update` and `batch-delete` do take `--engine` as well: under
+`auto` they query the same read-only index first for the message's mailbox and
+row-id, so JXA can address it directly instead of scanning mailbox by mailbox,
+and they fall back to that scan whenever the lookup cannot answer. `send` and
+`reply` are unaffected.
 
 ## Why JXA?
 

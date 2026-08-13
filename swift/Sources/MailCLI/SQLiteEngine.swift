@@ -36,8 +36,7 @@ struct SQLiteEngine {
     private let mailboxByRowID: [Int64: MailboxRef]
 
     init() throws {
-        let index = try EnvelopeIndex.open()
-        self.init(index: index, allMailboxes: try index.mailboxes())
+        try self.init(index: EnvelopeIndex.open())
     }
 
     init(index: EnvelopeIndex, allMailboxes: [MailboxRef]) {
@@ -45,6 +44,13 @@ struct SQLiteEngine {
         self.allMailboxes = allMailboxes
         mailboxByURL = Dictionary(uniqueKeysWithValues: allMailboxes.map { ($0.url, $0) })
         mailboxByRowID = Dictionary(uniqueKeysWithValues: allMailboxes.map { ($0.rowid, $0) })
+    }
+
+    /// Open against an already-discovered index, deriving the mailbox inventory from it.
+    /// Lets tests drive the engine from a throwaway fixture database instead of the caller's
+    /// real Envelope Index, without also having to hand-build the inventory.
+    init(index: EnvelopeIndex) throws {
+        self.init(index: index, allMailboxes: try index.mailboxes())
     }
 
     private func accountDisplayName(_ uuid: String) -> String {
@@ -75,6 +81,18 @@ struct SQLiteEngine {
             return logicalMailbox
         }
         return (row["mailbox_url"] as? String).flatMap { mailboxByURL[$0] }
+    }
+
+    /// URL-keyed lookup for the WRITE path, deliberately separate from `mailboxRef(forRow:)`
+    /// (which prefers the LOGICAL mailbox a Gmail label displays a message under). A write must
+    /// address the PHYSICAL mailbox — the one with an on-disk store, the only one
+    /// `mailbox.messages.byId(rowid)` can reach and the one `mail delete` destroys a copy in.
+    ///
+    /// Currently latent (no locator row source projects the logical rowid yet) but pins the
+    /// invariant for when one does. See
+    /// `MessageLocatorTests.testLocatorResolvesToThePHYSICALMailboxNotTheLogicalOne`.
+    private func mailboxRef(forURL url: String?) -> MailboxRef? {
+        url.flatMap { mailboxByURL[$0] }
     }
 
     // MARK: - Row mapping
@@ -268,4 +286,194 @@ struct SQLiteEngine {
         info["messageCount"] = (try? index.messageCount()) ?? 0
         return info
     }
+}
+
+// MARK: - Write-path message locator
+
+// Lives here rather than beside the protocol because everything it needs is already on the
+// engine and file-private: `mailboxByURL`, `accountDisplayName`, and the one open database
+// handle with its cached labels probe and account-name map. A standalone locator would open
+// a second handle against a file Mail.app writes continuously and duplicate both caches.
+extension SQLiteEngine: MessageLocator {
+    func isAvailable() -> Bool { true }
+
+    func resolve(messageIds: [String], mailbox: String?,
+                 account: String?) throws -> [String: [ResolvedRef]] {
+        guard !messageIds.isEmpty else { return [:] }
+
+        // The account filter matches JXA's `.whose({name: acctHint})`: unresolved yields no
+        // candidates, not an error, so `--engine auto`'s JXA scan can still complete the write.
+        // Wider than an exact match (display name / user name / raw UUID, case-insensitive),
+        // read through the parent-COALESCE join so IMAP child accounts resolve too.
+        //
+        // `try?` swallows `.ambiguous` on purpose — fail OPEN: an empty UUID set skips the byId
+        // path and lets JXA pick exactly as it would with no locator. Correct but slow, never
+        // wrong. Pinned by
+        // `MessageLocatorTests.testAnAMBIGUOUSAccountHintFailsOPENToEmptyCandidates`.
+        var accountUUIDs: Set<String>?
+        if let account {
+            accountUUIDs = Set((try? index.accountUUIDs(matching: account)) ?? [])
+        }
+
+        // Every requested id is a key, so the JXA side can tell "resolved to nothing" from
+        // "never asked for" without a second contract.
+        var candidateMap: [String: [ResolvedRef]] = [:]
+        for id in messageIds { candidateMap[normalizeMessageIDForLookup(id)] = [] }
+
+        var queried: Set<String> = []
+        for id in messageIds {
+            let normalized = normalizeMessageIDForLookup(id)
+            guard queried.insert(normalized).inserted else { continue }
+            if let accountUUIDs, accountUUIDs.isEmpty { continue }
+
+            // `findMessage` filters `m.deleted = 0` and matches both bracketed and bare stored
+            // forms via `messageIDCandidates`. UNION them rather than stop at the first that
+            // answers — two accounts can store the same id in different forms, and JXA (which
+            // matches Mail's normalized `messageId`) sees both; stopping early would hide a
+            // copy from the cross-account check below.
+            var rows: [[String: Any]] = []
+            var seenRowIDs: Set<Int64> = []
+            for candidate in messageIDCandidates(id) {
+                for row in try index.findMessage(messageIDHeader: candidate) {
+                    guard let rowid = row["rowid"] as? Int64,
+                          seenRowIDs.insert(rowid).inserted else { continue }
+                    rows.append(row)
+                }
+            }
+
+            var refs: [ResolvedRef] = []
+            for row in rows {
+                guard let rowid = row["rowid"] as? Int64,
+                      let url = row["mailbox_url"] as? String,
+                      let mailboxRef = mailboxRef(forURL: url) else { continue }
+                // "On My Mac" mailboxes (`local://`, and `file://` for a mailbox addressed by
+                // its on-disk location — `accounts()` above skips both for the same reason)
+                // hang off the APPLICATION, not an account: Mail's scripting dictionary
+                // declares `account` and its POP / IMAP / iCloud subclasses and no local one,
+                // while `application` carries its own `mailbox` element. A `file://` URL has no
+                // account authority at all, so its rows would also share one empty account
+                // UUID. Every JXA lookup here goes through `Mail.accounts()` — the
+                // byId arm resolves a candidate's account before touching it, and all three
+                // sweeps of the scan enumerate `accounts[a].mailboxes` — so a local candidate
+                // is unreachable by construction. Skipping it keeps the candidate set faithful
+                // to what JXA can see: a local-only id resolves to nothing (the same
+                // fall-through as today, minus a wasted round trip), and a copy filed to On My
+                // Mac no longer makes an otherwise single-account id look cross-account and
+                // lose acceleration below.
+                if mailboxRef.scheme == "local" || mailboxRef.scheme == "file" { continue }
+                if let accountUUIDs, !accountUUIDs.contains(mailboxRef.accountUUID) { continue }
+                let names = index.accountNames()[mailboxRef.accountUUID]
+                refs.append(ResolvedRef(
+                    normalizedMessageId: normalized,
+                    rowid: rowid,
+                    mailboxURL: url,
+                    mailboxName: mailboxRef.name,
+                    mailboxPathComponents: mailboxRef.pathComponents,
+                    accountUUID: mailboxRef.accountUUID,
+                    accountName: names?.name))
+            }
+
+            // A Message-ID spanning more than one ACCOUNT is not accelerated. Order decides
+            // WHICH PHYSICAL COPY a write acts on, and both drift guards are blind to a wrong
+            // pick — both copies carry the same Message-ID.
+            //
+            // v3.11 is account-OUTER (exhausts one account's priority list before the next);
+            // reproducing that needs Mail's account order, which the Envelope Index does not
+            // carry. So this declines to an empty list and lets the account-outer scan pick, as
+            // today. `--account` is a hard filter above, so a scoped write stays accelerated.
+            if Set(refs.map { $0.accountUUID ?? "" }).count > 1 {
+                candidateMap[normalized] = []
+                continue
+            }
+
+            // `findMessage` orders by date_received; re-rank into the sweep's own order.
+            let ranked = refs.sorted { a, b in
+                if let mailbox {
+                    let aHit = a.mailboxName.caseInsensitiveCompare(mailbox) == .orderedSame
+                    let bHit = b.mailboxName.caseInsensitiveCompare(mailbox) == .orderedSame
+                    if aHit != bHit { return aHit }
+                }
+                let aRank = priorityRank(forMailboxName: a.mailboxName)
+                let bRank = priorityRank(forMailboxName: b.mailboxName)
+                if aRank != bRank { return aRank < bRank }
+                return a.rowid < b.rowid
+            }
+
+            // The same rule one level down: inside the one surviving account the order is
+            // still selection, so a CONTESTED id is accelerated only when this list's head is
+            // the copy the scan itself reaches first. See `headMatchesJXASweep`.
+            guard headMatchesJXASweep(ranked, mailboxHint: mailbox) else {
+                candidateMap[normalized] = []
+                continue
+            }
+
+            // HEAD ONLY: the guard certifies `ranked[0]` alone. The JXA candidate loop falls
+            // through a candidate on three normal paths — the account will not resolve, it
+            // exposes no mailbox to address the rowid through, and Layer-1 messageId mismatch
+            // — so a tail entry could land the write on a copy no guard certified. Costs
+            // nothing real: the tail only ever bought speed on a stale head, and a head miss
+            // falls through to the JXA scan (v3.11).
+            candidateMap[normalized] = Array(ranked.prefix(1))
+        }
+
+        return candidateMap
+    }
+}
+
+/// True when `ranked`'s head is the copy v3.11's own within-account scan reaches first. Emits
+/// the head alone, so certifying it is exactly certifying the whole list.
+///
+/// Rests on three properties of Mail's own scan. Two were observed directly on macOS 26.5 /
+/// Mail 16.0: `account.mailboxes()` is FLAT on every account type to hand (Gmail's special
+/// mailboxes come back as renamed top-level leaves, with no "[Gmail]" container), and
+/// `whose({name: …})` FOLDS CASE (`{name: 'inbox'}` matches INBOX). The third — what order
+/// `account.mailboxes()` enumerates copies the priority list cannot separate — is open. The
+/// rule assumes none of the three, because an account whose server files mailboxes under a
+/// parent is reachable on another machine: the head is trusted only when it is a DIRECT CHILD
+/// (so nesting can neither help nor hurt it) and it wins against the whole tail under BOTH the
+/// exact and case-folding readings — a proof against those two readings, not against any
+/// conceivable semantics. Everything else declines to an empty list and the scan decides, as
+/// today.
+///
+/// The direct-child requirement therefore declines a class it need not: a copy the index
+/// records under "[Gmail]/All Mail" is a top-level leaf to Mail, so the scan does reach it.
+/// Narrowing that means deciding when the index's server-side path may be read as Mail's own
+/// naming — a separate change, and one worth making only for CONTESTED ids, which the Gmail
+/// hot path is not.
+///
+/// A single deep candidate is NOT declined (the carried-labels Gmail case, which is the
+/// everyday write this accelerates) — with one copy there is no selection to get wrong.
+private func headMatchesJXASweep(_ ranked: [ResolvedRef], mailboxHint: String?) -> Bool {
+    guard ranked.count > 1 else { return true }
+    let head = ranked[0]
+    let tail = ranked.dropFirst()
+
+    guard head.mailboxPathComponents.count == 1 else { return false }
+
+    if let hint = mailboxHint,
+       head.mailboxName.caseInsensitiveCompare(hint) == .orderedSame {
+        // The hint loop runs before the priority sweep, so a hinted head wins there — but only
+        // if Mail's specifier matches the same string this sort matched. The sort above
+        // compares the hint case-insensitively (`--mailbox inbox` behaves like `--mailbox
+        // INBOX`, as `resolveMailboxes` does on the read side) while Mail's own
+        // `whose({name:…})` is a separate implementation, so the hint is trusted only on an
+        // EXACT match — which holds whether or not that specifier folds case — and only when
+        // no other candidate answers to it either way.
+        return head.mailboxName == hint
+            && tail.allSatisfy { $0.mailboxName.caseInsensitiveCompare(hint) != .orderedSame }
+    }
+
+    // No hint: the priority sweep decides. The head (a direct child) is reached at
+    // `priorityRank`/`priorityRankFoldingCase`; a tail candidate's earliest possible reach is
+    // the same rank under the same reading (nesting only delays it). So certification needs a
+    // strict win against the MINIMUM of the whole tail under BOTH readings — not the runner-up,
+    // since folding can promote a later element ahead of it (example:
+    // `[Archive(4), Receipts(unranked), Inbox(folds to 0)]`).
+    let headExact = priorityRank(forMailboxName: head.mailboxName)
+    let headFolding = priorityRankFoldingCase(forMailboxName: head.mailboxName)
+    let tailExact = tail.map { priorityRank(forMailboxName: $0.mailboxName) }.min() ?? Int.max
+    let tailFolding = tail.map { priorityRankFoldingCase(forMailboxName: $0.mailboxName) }
+        .min() ?? Int.max
+
+    return headExact < tailExact && headFolding < tailFolding
 }

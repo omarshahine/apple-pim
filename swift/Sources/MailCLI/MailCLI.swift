@@ -641,6 +641,10 @@ func buildReplyAppleScript(bodyPath: String, accountName: String, appleMailId: I
 
 /// Generates the JXA `findMsg(targetId)` function for batch operations.
 /// Unlike `findMessageJXA`, the target ID is a parameter (not hardcoded).
+///
+/// NOTE: no production callers. Both batch commands now use `generateUnifiedFindMsgJXA`,
+/// whose fallback arm is this scan verbatim. Retained because `ScriptHelpersTests` covers it
+/// directly; deleting it means deleting that test too.
 func batchFindMessageJXA(mailbox: String?, account: String?) -> String {
     let mailboxFilter = mailbox.map { "'\(escapeForJXA($0))'" } ?? "null"
     let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
@@ -699,6 +703,196 @@ func batchFindMessageJXA(mailbox: String?, account: String?) -> String {
             }
         }
         return null;
+    }
+    """
+}
+
+/// The write path's `findMsg(targetId)`: Envelope-Index ROWID fast path first, then the same
+/// `whose` scan the legacy finders do, unchanged.
+///
+/// Returns `{msg, lookup}` rather than a bare message, so every call site can carry the
+/// per-message lookup telemetry into its result. The emitted script assumes the caller has
+/// already declared `const Mail = Application("Mail");`.
+func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
+                               mailbox: String?, account: String?,
+                               debug: Bool = ProcessInfo.processInfo
+                                   .environment["MAIL_CLI_DEBUG"] == "1") -> String {
+    let mailboxFilter = mailbox.map { "'\(escapeForJXA($0))'" } ?? "null"
+    let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
+    let debugMode = debug
+
+    return """
+    const rowidMap = \(rowidMapJS);
+    const mboxHint = \(mailboxFilter);
+    const acctHint = \(accountFilter);
+    const MAILBOX_PRIORITY = \(mailboxPriorityJSON());
+    const _locatorBackend = '\(backend)';
+    const _debug = \(debugMode ? "true" : "false");
+    var _stats = {byIdHits: 0, byIdMismatches: 0, jxaFallbacks: 0, notFound: 0};
+
+    function normalizeMessageId(raw) {
+        var s = (raw || '').replace(/^\\s+|\\s+$/g, '');
+        if (s.charAt(0) === '<') s = s.slice(1);
+        if (s.charAt(s.length - 1) === '>') s = s.slice(0, -1);
+        return s;
+    }
+
+    // Built ONCE, whole, on first use: an early return would leave the accounts after the
+    // match uncached, and a miss would re-enumerate every account on every later call —
+    // N account round-trips per message, on the batch path this port exists to speed up.
+    var _acctById = null;
+    function getAccountById(uuid) {
+        if (_acctById === null) {
+            _acctById = {};
+            var accts = [];
+            try { accts = Mail.accounts(); } catch(e) {}
+            for (var i = 0; i < accts.length; i++) {
+                try { _acctById[accts[i].id()] = accts[i]; } catch(e) {}
+            }
+        }
+        return _acctById[uuid] || null;
+    }
+
+    // Returns null rather than throwing, like every other Mail call on the byId arm: a
+    // candidate the fast path cannot resolve must fall through to the `whose` scan below,
+    // never fail a write the scan could still complete. This runs only when the account UUID
+    // did not resolve — the candidate's UUID comes from Mail's own accounts database while
+    // this arm matches against JXA's `account.id()`, and the account NAME is the fallback for
+    // any Mail version where those two do not agree.
+    function getAccountByName(name) {
+        var matches = [];
+        try { matches = Mail.accounts.whose({name: name})(); } catch(e) { return null; }
+        return matches.length > 0 ? matches[0] : null;
+    }
+
+    // ANY mailbox of the account: `messages.byId` is keyed to the Envelope-Index ROWID and
+    // resolves GLOBALLY, so the handle only has to belong to the right account — a rowid
+    // addressed through a mailbox that does not hold the message still returns that message.
+    // No mailbox NAME is compared, which is what makes the arm work on Gmail: Mail renames
+    // those mailboxes ("All Mail", no "[Gmail]" container) while the Envelope Index stores the
+    // server-side path, so any name compare skips every Gmail candidate — silently, and with
+    // the correct answer.
+    function anyMailboxOf(acct) {
+        var mbs = [];
+        try { mbs = acct.mailboxes(); } catch(e) { return null; }
+        return mbs.length > 0 ? mbs[0] : null;
+    }
+
+    function searchIn(mbox, targetId) {
+        try {
+            var found = mbox.messages.whose({messageId: targetId})();
+            if (found.length > 0) return found[0];
+        } catch(e) {}
+        return null;
+    }
+
+    function findMsg(targetId) {
+        var normalized = normalizeMessageId(targetId);
+        // Empty-id gate: '' also matches an unset messageId(), which Layer 1 could not then
+        // discriminate, so the byId path is skipped rather than given a compare that can't tell.
+        // Own-property check: a bare rowidMap[normalized] resolves an id that normalizes to an
+        // Object.prototype member (e.g. 'hasOwnProperty') to the inherited function and throws.
+        // Never a wrong copy, but a crafted id should not be able to fail a write.
+        var _own = normalized && Object.prototype.hasOwnProperty.call(rowidMap, normalized);
+        var candidates = _own ? rowidMap[normalized] : [];
+        // `candidates` is "how many copies the fast path may try", NOT a duplicate count: a
+        // contested id that Swift certified contributes its head alone, so 1 does not mean
+        // "one copy exists". 0 still cannot tell "declined" from "SQLite matched nothing".
+        var lookup = {method: 'none', candidates: candidates.length};
+        var _t0 = _debug ? Date.now() : 0;
+
+        for (var c = 0; c < candidates.length; c++) {
+            var cand = candidates[c];
+            var acct = null;
+            if (cand.acctId) acct = getAccountById(cand.acctId);
+            if (!acct && cand.acct) acct = getAccountByName(cand.acct);
+            if (!acct) continue;
+
+            var mb = anyMailboxOf(acct);
+            if (!mb) continue;
+
+            try {
+                var msg = mb.messages.byId(cand.r);
+                // Layer 1. A stale or reused ROWID can never be returned, only fallen through
+                // — which is what makes the fast path safe on its own for the flag writes,
+                // which carry no pre-op re-read, and what makes an arbitrary handle safe. A
+                // rowid Mail cannot resolve at all yields a specifier that throws on this
+                // first property read, which the catch below turns into the same fall-through.
+                if (normalizeMessageId(msg.messageId()) === normalized) {
+                    _stats.byIdHits++;
+                    lookup.method = 'byId';
+                    lookup.acctId = cand.acctId || '';
+                    lookup.mb = cand.mb || '';
+                    lookup.rowid = cand.r;
+                    if (_debug) {
+                        lookup._diag = {acctResolved: acct.name(), mbHandle: mb.name()};
+                        lookup._perfMs = Date.now() - _t0;
+                    }
+                    return {msg: msg, lookup: lookup};
+                }
+                _stats.byIdMismatches++;
+            } catch(e) {}
+        }
+
+        lookup.method = 'whose';
+        var accounts = acctHint ? Mail.accounts.whose({name: acctHint})() : Mail.accounts();
+        var searched = new Set();
+
+        if (mboxHint) {
+            for (var a = 0; a < accounts.length; a++) {
+                var mbs = accounts[a].mailboxes.whose({name: mboxHint})();
+                for (var m = 0; m < mbs.length; m++) {
+                    searched.add(accounts[a].name() + '/' + mbs[m].name());
+                    var r = searchIn(mbs[m], targetId);
+                    if (r) { _stats.jxaFallbacks++; if (_debug) lookup._perfMs = Date.now() - _t0; return {msg: r, lookup: lookup}; }
+                }
+            }
+        }
+
+        // Account-OUTER, exactly as `findMessageJXA` and `batchFindMessageJXA` sweep: one
+        // account's whole priority list is exhausted before the next account is considered.
+        // The nesting decides WHICH PHYSICAL COPY a delete or move acts on when the same
+        // Message-ID exists in two accounts, and neither drift guard can see the difference
+        // (both copies carry the same Message-ID, so both compares pass).
+        for (var a = 0; a < accounts.length; a++) {
+            for (var p = 0; p < MAILBOX_PRIORITY.length; p++) {
+                var mbs = accounts[a].mailboxes.whose({name: MAILBOX_PRIORITY[p]})();
+                for (var m = 0; m < mbs.length; m++) {
+                    var key = accounts[a].name() + '/' + mbs[m].name();
+                    if (searched.has(key)) continue;
+                    searched.add(key);
+                    var r = searchIn(mbs[m], targetId);
+                    if (r) { _stats.jxaFallbacks++; if (_debug) lookup._perfMs = Date.now() - _t0; return {msg: r, lookup: lookup}; }
+                }
+            }
+        }
+
+        for (var a = 0; a < accounts.length; a++) {
+            var mbs = accounts[a].mailboxes();
+            for (var m = 0; m < mbs.length; m++) {
+                var key = accounts[a].name() + '/' + mbs[m].name();
+                if (searched.has(key)) continue;
+                var r = searchIn(mbs[m], targetId);
+                if (r) { _stats.jxaFallbacks++; if (_debug) lookup._perfMs = Date.now() - _t0; return {msg: r, lookup: lookup}; }
+            }
+        }
+
+        _stats.notFound++;
+        return {msg: null, lookup: lookup};
+    }
+
+    // Per-message lookup detail is a DEBUG surface: it names an internal account UUID and an
+    // Envelope-Index ROWID, and it repeats on every entry of a batch. The process summary
+    // below is the opposite trade — four counters and a backend label, no identifiers, one
+    // object per run — and is emitted unconditionally, because it is the only way a caller can
+    // tell the fast path from the scan it falls back to.
+    function attachLookup(obj, lookup) {
+        if (_debug) obj._lookup = lookup;
+        return obj;
+    }
+
+    function getLookupSummary() {
+        return {backend: _locatorBackend, stats: _stats};
     }
     """
 }
@@ -1296,6 +1490,33 @@ struct UpdateMessage: AsyncParsableCommand {
     @Option(name: .long, help: "Account name hint (speeds up lookup)")
     var account: String?
 
+    @Option(name: .long, help: "Message-lookup engine: auto (SQLite rowid fast path with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
+    /// No pre-op re-read here: a flag flip is reversible, so the post-`byId` messageId
+    /// verify inside `findMsg` is the whole guard. See the destructive commands for Layer 2.
+    static func buildScript(id: String, updateCode: String, findHelper: String) -> String {
+        """
+        const Mail = Application("Mail");
+        \(findHelper)
+
+        const _r = findMsg('\(escapeForJXA(id))');
+        const msg = _r.msg;
+        if (!msg) {
+            JSON.stringify(attachLookup({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
+        } else {
+            \(updateCode)
+            JSON.stringify(attachLookup({
+                messageId: msg.messageId(),
+                subject: msg.subject(),
+                isRead: msg.readStatus(),
+                isFlagged: msg.flaggedStatus(),
+                isJunk: msg.junkMailStatus()
+            }, _r.lookup));
+        }
+        """
+    }
+
     func run() async throws {
         try ensureMailRunning()
         let config = pimOptions.loadConfig()
@@ -1317,27 +1538,10 @@ struct UpdateMessage: AsyncParsableCommand {
         }
 
         let updateCode = updates.joined(separator: "\n            ")
-        let findHelper = findMessageJXA(targetId: id, mailbox: mailbox, account: account)
+        let findHelper = try unifiedWriteFinderJXA(
+            for: [id], mailbox: mailbox, account: account, engine: engine)
 
-        let script = """
-        \(findHelper)
-
-        const msg = findMessage();
-        if (!msg) {
-            JSON.stringify({error: "Message not found: \(escapeForJXA(id))"});
-        } else {
-            \(updateCode)
-            JSON.stringify({
-                messageId: msg.messageId(),
-                subject: msg.subject(),
-                isRead: msg.readStatus(),
-                isFlagged: msg.flaggedStatus(),
-                isJunk: msg.junkMailStatus()
-            });
-        }
-        """
-
-        let raw = try runJXA(script)
+        let raw = try runJXA(Self.buildScript(id: id, updateCode: updateCode, findHelper: findHelper))
 
         if let dict = raw as? [String: Any], let error = dict["error"] as? String {
             throw CLIError.notFound(error)
@@ -1374,19 +1578,20 @@ struct MoveMessage: AsyncParsableCommand {
     @Option(name: .long, help: "Source account name hint (speeds up lookup)")
     var account: String?
 
-    func run() async throws {
-        try ensureMailRunning()
-        let config = pimOptions.loadConfig()
-        try checkMailEnabled(config: config)
+    @Option(name: .long, help: "Message-lookup engine: auto (SQLite rowid fast path with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
 
+    /// Layer 2: re-read the messageId immediately before the move and abort if it drifted.
+    /// A move is not reversible from here, so the post-`byId` verify is not the only guard.
+    static func buildScript(id: String, toMailbox: String, toAccount: String?,
+                            findHelper: String) -> String {
         let escapedMailbox = escapeForJXA(toMailbox)
         let toAccountFilter = toAccount.map { "'\(escapeForJXA($0))'" } ?? "null"
-        let findHelper = findMessageJXA(targetId: id, mailbox: mailbox, account: account)
 
-        let script = """
+        return """
+        const Mail = Application("Mail");
         \(findHelper)
 
-        const Mail = Application("Mail");
         const destMailboxName = '\(escapedMailbox)';
         const destAccountName = \(toAccountFilter);
 
@@ -1401,28 +1606,44 @@ struct MoveMessage: AsyncParsableCommand {
             return null;
         }
 
-        const msg = findMessage();
+        const _r = findMsg('\(escapeForJXA(id))');
+        const msg = _r.msg;
         if (!msg) {
-            JSON.stringify({error: "Message not found: \(escapeForJXA(id))"});
+            JSON.stringify(attachLookup({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
         } else {
             const sourceAccount = msg.mailbox().account();
             const destMbox = findDestMailbox(sourceAccount);
             if (!destMbox) {
-                JSON.stringify({error: "Destination mailbox not found: " + destMailboxName});
+                JSON.stringify(attachLookup({error: "Destination mailbox not found: " + destMailboxName}, _r.lookup));
             } else {
-                const fromMailbox = msg.mailbox().name();
-                Mail.move(msg, {to: destMbox});
-                JSON.stringify({
-                    messageId: '\(escapeForJXA(id))',
-                    from: fromMailbox,
-                    to: destMailboxName,
-                    moved: true
-                });
+                var preOpId = normalizeMessageId(msg.messageId());
+                if (preOpId !== normalizeMessageId('\(escapeForJXA(id))')) {
+                    JSON.stringify(attachLookup({error: 'messageId drift detected before move (expected \(escapeForJXA(id)), got ' + preOpId + ')'}, _r.lookup));
+                } else {
+                    const fromMailbox = msg.mailbox().name();
+                    Mail.move(msg, {to: destMbox});
+                    JSON.stringify(attachLookup({
+                        messageId: '\(escapeForJXA(id))',
+                        from: fromMailbox,
+                        to: destMailboxName,
+                        moved: true
+                    }, _r.lookup));
+                }
             }
         }
         """
+    }
 
-        let raw = try runJXA(script)
+    func run() async throws {
+        try ensureMailRunning()
+        let config = pimOptions.loadConfig()
+        try checkMailEnabled(config: config)
+
+        let findHelper = try unifiedWriteFinderJXA(
+            for: [id], mailbox: mailbox, account: account, engine: engine)
+
+        let raw = try runJXA(Self.buildScript(
+            id: id, toMailbox: toMailbox, toAccount: toAccount, findHelper: findHelper))
 
         if let dict = raw as? [String: Any], let error = dict["error"] as? String {
             throw CLIError.notFound(error)
@@ -1453,34 +1674,47 @@ struct DeleteMessage: AsyncParsableCommand {
     @Option(name: .long, help: "Account name hint (speeds up lookup)")
     var account: String?
 
+    @Option(name: .long, help: "Message-lookup engine: auto (SQLite rowid fast path with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
+    /// Layer 2: re-read the messageId immediately before the delete and abort if it drifted.
+    static func buildScript(id: String, findHelper: String) -> String {
+        """
+        const Mail = Application("Mail");
+        \(findHelper)
+
+        const _r = findMsg('\(escapeForJXA(id))');
+        const msg = _r.msg;
+        if (!msg) {
+            JSON.stringify(attachLookup({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
+        } else {
+            var preOpId = normalizeMessageId(msg.messageId());
+            if (preOpId !== normalizeMessageId('\(escapeForJXA(id))')) {
+                JSON.stringify(attachLookup({error: 'messageId drift detected before delete (expected \(escapeForJXA(id)), got ' + preOpId + ')'}, _r.lookup));
+            } else {
+                const subject = msg.subject();
+                const mboxName = msg.mailbox().name();
+                Mail.delete(msg);
+                JSON.stringify(attachLookup({
+                    messageId: '\(escapeForJXA(id))',
+                    subject: subject,
+                    fromMailbox: mboxName,
+                    deleted: true
+                }, _r.lookup));
+            }
+        }
+        """
+    }
+
     func run() async throws {
         try ensureMailRunning()
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
-        let findHelper = findMessageJXA(targetId: id, mailbox: mailbox, account: account)
+        let findHelper = try unifiedWriteFinderJXA(
+            for: [id], mailbox: mailbox, account: account, engine: engine)
 
-        let script = """
-        \(findHelper)
-
-        const Mail = Application("Mail");
-        const msg = findMessage();
-        if (!msg) {
-            JSON.stringify({error: "Message not found: \(escapeForJXA(id))"});
-        } else {
-            const subject = msg.subject();
-            const mboxName = msg.mailbox().name();
-            Mail.delete(msg);
-            JSON.stringify({
-                messageId: '\(escapeForJXA(id))',
-                subject: subject,
-                fromMailbox: mboxName,
-                deleted: true
-            });
-        }
-        """
-
-        let raw = try runJXA(script)
+        let raw = try runJXA(Self.buildScript(id: id, findHelper: findHelper))
 
         if let dict = raw as? [String: Any], let error = dict["error"] as? String {
             throw CLIError.notFound(error)
@@ -1520,6 +1754,52 @@ struct BatchUpdateMessages: AsyncParsableCommand {
     @Option(name: .long, help: "Account name hint (speeds up lookup)")
     var account: String?
 
+    @Option(name: .long, help: "Message-lookup engine: auto (SQLite rowid fast path with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
+    /// The measured hot path: one `findMsg` per message, previously a full mailbox scan
+    /// each, which put a ten-message batch against the 30s osascript cap. No pre-op re-read
+    /// (flag flips are reversible); the post-`byId` verify is the guard.
+    static func buildScript(jsUpdates: String, findHelper: String) -> String {
+        """
+        const Mail = Application("Mail");
+        const updates = [
+            \(jsUpdates)
+        ];
+        \(findHelper)
+
+        const results = [];
+        const errors = [];
+
+        for (const u of updates) {
+            try {
+                const _r = findMsg(u.id);
+                const msg = _r.msg;
+                if (!msg) {
+                    errors.push(attachLookup({id: u.id, error: 'Message not found'}, _r.lookup));
+                    continue;
+                }
+                if (u.read !== undefined) msg.readStatus = u.read;
+                if (u.flagged !== undefined) msg.flaggedStatus = u.flagged;
+                if (u.junk !== undefined) msg.junkMailStatus = u.junk;
+                results.push(attachLookup({
+                    id: u.id,
+                    subject: msg.subject(),
+                    isRead: msg.readStatus(),
+                    isFlagged: msg.flaggedStatus(),
+                    isJunk: msg.junkMailStatus()
+                }, _r.lookup));
+            } catch(e) {
+                errors.push({id: u.id, error: e.message || String(e)});
+            }
+        }
+
+        var output = {results: results, errors: errors};
+        output._lookup = getLookupSummary();
+        JSON.stringify(output);
+        """
+    }
+
     func run() async throws {
         try ensureMailRunning()
         let config = pimOptions.loadConfig()
@@ -1544,44 +1824,12 @@ struct BatchUpdateMessages: AsyncParsableCommand {
             return "{\(fields.joined(separator: ", "))}"
         }.joined(separator: ",\n            ")
 
-        let findMsgFunc = batchFindMessageJXA(mailbox: mailbox, account: account)
+        // Every id in one resolve: 10 prepared statements against a local SQLite file are
+        // free next to a single Apple Events round-trip.
+        let findHelper = try unifiedWriteFinderJXA(
+            for: updates.map { $0.id }, mailbox: mailbox, account: account, engine: engine)
 
-        let script = """
-        const Mail = Application("Mail");
-        const updates = [
-            \(jsUpdates)
-        ];
-        \(findMsgFunc)
-
-        const results = [];
-        const errors = [];
-
-        for (const u of updates) {
-            try {
-                const msg = findMsg(u.id);
-                if (!msg) {
-                    errors.push({id: u.id, error: 'Message not found'});
-                    continue;
-                }
-                if (u.read !== undefined) msg.readStatus = u.read;
-                if (u.flagged !== undefined) msg.flaggedStatus = u.flagged;
-                if (u.junk !== undefined) msg.junkMailStatus = u.junk;
-                results.push({
-                    id: u.id,
-                    subject: msg.subject(),
-                    isRead: msg.readStatus(),
-                    isFlagged: msg.flaggedStatus(),
-                    isJunk: msg.junkMailStatus()
-                });
-            } catch(e) {
-                errors.push({id: u.id, error: e.message || String(e)});
-            }
-        }
-
-        JSON.stringify({results: results, errors: errors});
-        """
-
-        let raw = try runJXA(script)
+        let raw = try runJXA(Self.buildScript(jsUpdates: jsUpdates, findHelper: findHelper))
 
         guard let dict = raw as? [String: Any] else {
             throw CLIError.jxaError("Unexpected output from batch update")
@@ -1590,14 +1838,16 @@ struct BatchUpdateMessages: AsyncParsableCommand {
         let results = dict["results"] as? [Any] ?? []
         let errors = dict["errors"] as? [Any] ?? []
 
-        outputJSON([
+        var output: [String: Any] = [
             "success": errors.isEmpty,
             "message": "Batch update completed",
             "updated": results,
             "updatedCount": results.count,
             "errors": errors,
-            "errorCount": errors.count
-        ])
+            "errorCount": errors.count,
+        ]
+        if let lookup = dict["_lookup"] { output["_lookup"] = lookup }
+        outputJSON(output)
     }
 }
 
@@ -1618,6 +1868,48 @@ struct BatchDeleteMessages: AsyncParsableCommand {
     @Option(name: .long, help: "Account name hint (speeds up lookup)")
     var account: String?
 
+    @Option(name: .long, help: "Message-lookup engine: auto (SQLite rowid fast path with JXA fallback), sqlite, or jxa")
+    var engine: EngineChoice = .auto
+
+    /// Layer 2 per entry: a drifted id is pushed to `errors` and skipped so the rest of the
+    /// batch still runs, rather than abandoning the whole call.
+    static func buildScript(jsIds: String, findHelper: String) -> String {
+        """
+        const Mail = Application("Mail");
+        const ids = [\(jsIds)];
+        \(findHelper)
+
+        const results = [];
+        const errors = [];
+
+        for (const targetId of ids) {
+            try {
+                const _r = findMsg(targetId);
+                const msg = _r.msg;
+                if (!msg) {
+                    errors.push(attachLookup({id: targetId, error: 'Message not found'}, _r.lookup));
+                    continue;
+                }
+                var preOpId = normalizeMessageId(msg.messageId());
+                if (preOpId !== normalizeMessageId(targetId)) {
+                    errors.push(attachLookup({id: targetId, error: 'messageId drift detected before delete (expected ' + targetId + ', got ' + preOpId + ')'}, _r.lookup));
+                    continue;
+                }
+                const subject = msg.subject();
+                const mboxName = msg.mailbox().name();
+                Mail.delete(msg);
+                results.push(attachLookup({id: targetId, subject: subject, fromMailbox: mboxName}, _r.lookup));
+            } catch(e) {
+                errors.push({id: targetId, error: e.message || String(e)});
+            }
+        }
+
+        var output = {results: results, errors: errors};
+        output._lookup = getLookupSummary();
+        JSON.stringify(output);
+        """
+    }
+
     func run() async throws {
         try ensureMailRunning()
         let config = pimOptions.loadConfig()
@@ -1633,36 +1925,10 @@ struct BatchDeleteMessages: AsyncParsableCommand {
         }
 
         let jsIds = ids.map { "'\(escapeForJXA($0))'" }.joined(separator: ", ")
-        let findMsgFunc = batchFindMessageJXA(mailbox: mailbox, account: account)
+        let findHelper = try unifiedWriteFinderJXA(
+            for: ids, mailbox: mailbox, account: account, engine: engine)
 
-        let script = """
-        const Mail = Application("Mail");
-        const ids = [\(jsIds)];
-        \(findMsgFunc)
-
-        const results = [];
-        const errors = [];
-
-        for (const targetId of ids) {
-            try {
-                const msg = findMsg(targetId);
-                if (!msg) {
-                    errors.push({id: targetId, error: 'Message not found'});
-                    continue;
-                }
-                const subject = msg.subject();
-                const mboxName = msg.mailbox().name();
-                Mail.delete(msg);
-                results.push({id: targetId, subject: subject, fromMailbox: mboxName});
-            } catch(e) {
-                errors.push({id: targetId, error: e.message || String(e)});
-            }
-        }
-
-        JSON.stringify({results: results, errors: errors});
-        """
-
-        let raw = try runJXA(script)
+        let raw = try runJXA(Self.buildScript(jsIds: jsIds, findHelper: findHelper))
 
         guard let dict = raw as? [String: Any] else {
             throw CLIError.jxaError("Unexpected output from batch delete")
@@ -1671,14 +1937,16 @@ struct BatchDeleteMessages: AsyncParsableCommand {
         let results = dict["results"] as? [Any] ?? []
         let errors = dict["errors"] as? [Any] ?? []
 
-        outputJSON([
+        var output: [String: Any] = [
             "success": errors.isEmpty,
             "message": "Batch delete completed",
             "deleted": results,
             "deletedCount": results.count,
             "errors": errors,
-            "errorCount": errors.count
-        ])
+            "errorCount": errors.count,
+        ]
+        if let lookup = dict["_lookup"] { output["_lookup"] = lookup }
+        outputJSON(output)
     }
 }
 
