@@ -188,31 +188,32 @@ final class ScriptHelpersTests: XCTestCase {
         XCTAssertEqual(emitted, mailboxPriority)
     }
 
-    func testTheThreeMailboxPriorityCopiesHaveNotDrifted() {
-        // `findMessageJXA` keeps five live callers and `batchFindMessageJXA` is retained for
-        // its own test, so their inline literals stay. This is what stops the new emitter
-        // becoming a third, divergent copy.
+    func testTheLegacyFindersMailboxPriorityCopyHasNotDrifted() {
+        // `findMessageJXA` keeps five live callers, so its inline literal stays. Together with
+        // the emitted list above — pinned against the same Swift constant — this is what stops
+        // the two shipped finders sweeping different mailboxes in a different order.
+        //
+        // `batchFindMessageJXA` carries a third copy of the literal and is deliberately NOT
+        // asserted here: nothing calls it, so drift in it ships nothing. See its own NOTE.
         let legacySingle = Self.jsStringArray(
             in: findMessageJXA(targetId: "<id>", mailbox: nil, account: nil),
             after: "const priority = [")
-        let legacyBatch = Self.jsStringArray(
-            in: batchFindMessageJXA(mailbox: nil, account: nil), after: "const priority = [")
 
         XCTAssertEqual(legacySingle, mailboxPriority)
-        XCTAssertEqual(legacyBatch, mailboxPriority)
     }
 
-    func testAllThreeFindersSweepAccountOuterNotPriorityOuter() {
+    func testBothShippedFindersSweepAccountOuterNotPriorityOuter() {
         // Traversal ORDER, which the array comparison above cannot see and which decides
         // WHICH PHYSICAL COPY a delete or a move acts on when the same Message-ID exists in
         // two accounts. Account-outer exhausts one account's whole priority list before
         // looking at the next, so a copy in A/Trash wins over a copy in B/INBOX.
         // Priority-outer inverts that and silently retargets the write at another account.
+        //
+        // The two finders with callers: the read/reply/attachment scan, and the write path's
+        // emitter. `batchFindMessageJXA` sweeps the same way and is not asserted — no caller,
+        // so its order decides nothing.
         let cases: [(String, String, String)] = [
             (findMessageJXA(targetId: "<id>", mailbox: nil, account: nil),
-             "for (let a = 0; a < accounts.length; a++) {",
-             "for (let p = 0; p < priority.length; p++) {"),
-            (batchFindMessageJXA(mailbox: nil, account: nil),
              "for (let a = 0; a < accounts.length; a++) {",
              "for (let p = 0; p < priority.length; p++) {"),
             (unifiedScript(),
