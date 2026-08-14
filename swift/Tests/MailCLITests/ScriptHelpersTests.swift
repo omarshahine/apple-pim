@@ -405,9 +405,12 @@ final class ScriptHelpersTests: XCTestCase {
                 + "fromMailbox: mboxName}, _r.lookup));",
         ]
         let notFoundAnchors = [
-            "JSON.stringify(attachLookup({error: \"Message not found: <m@x>\"}, _r.lookup));",
-            "JSON.stringify(attachLookup({error: \"Message not found: <m@x>\"}, _r.lookup));",
-            "JSON.stringify(attachLookup({error: \"Message not found: <m@x>\"}, _r.lookup));",
+            "JSON.stringify(attachLookupWithStats({error: \"Message not found: <m@x>\"}, "
+                + "_r.lookup));",
+            "JSON.stringify(attachLookupWithStats({error: \"Message not found: <m@x>\"}, "
+                + "_r.lookup));",
+            "JSON.stringify(attachLookupWithStats({error: \"Message not found: <m@x>\"}, "
+                + "_r.lookup));",
             "errors.push(attachLookup({id: u.id, error: 'Message not found'}, _r.lookup));",
             "errors.push(attachLookup({id: targetId, error: 'Message not found'}, _r.lookup));",
         ]
@@ -422,9 +425,46 @@ final class ScriptHelpersTests: XCTestCase {
         }
     }
 
+    func testSingleMessageCommandsCarryTheRunCountersInsideTheirLookup() {
+        // A single-message command runs exactly one `findMsg`, so the process counters ARE
+        // that lookup's own tally — `stats` means the same four numbers there as in the batch
+        // summary. Without them a single-op caller can read only `method`, and cannot tell a
+        // byId hit from a scan fallback the way a batch caller can. The counters ride the
+        // SAME debug gate: this helper delegates to `attachLookup`, so nothing new reaches
+        // the un-gated surface.
+        let withStats = "function attachLookupWithStats(obj, lookup) { "
+            + "if (_debug) lookup.stats = _stats; return attachLookup(obj, lookup); }"
+        let scripts = writeScriptsUnderTest()
+
+        for (name, script) in scripts.prefix(3) {
+            let collapsed = Self.collapsingWhitespace(script)
+            XCTAssertTrue(collapsed.contains(withStats),
+                          "\(name): the counter-carrying helper is missing or reshaped")
+            XCTAssertTrue(collapsed.contains("attachLookupWithStats({"),
+                          "\(name): the single-message attach sites must carry the counters")
+            // EVERY attach site, not merely one: a lone `contains` above stays green with the
+            // counters added at the success site and dropped from the error sites. Inside a
+            // single-message script the bare helper is only ever called by the one above,
+            // which passes `obj` — never an object literal.
+            XCTAssertFalse(collapsed.contains("attachLookup({"),
+                           "\(name): an attach site still emits a lookup without the counters")
+        }
+
+        for (name, script) in scripts.suffix(2) {
+            // A batch entry attaches mid-loop, where the counters are a running total rather
+            // than that entry's own; its caller reads the whole-run summary at the end.
+            XCTAssertFalse(script.contains("attachLookupWithStats({"),
+                           "\(name): batch entries must keep the bare per-message lookup")
+            XCTAssertTrue(script.contains("attachLookup({"),
+                          "\(name): the per-entry lookup must still be attached")
+        }
+    }
+
     func testOnlyTheBatchCommandsEmitTheProcessLevelSummary() {
         // The shared helper defines `getLookupSummary()` in all five scripts; only the two
-        // batch commands call it. Asserted so the absence stays a choice.
+        // batch commands call it, and only they put the counters on the UN-gated surface. The
+        // single-message commands carry the same counters behind `MAIL_CLI_DEBUG=1`, inside
+        // their `_lookup` (above). Asserted so the absence stays a choice.
         let scripts = writeScriptsUnderTest()
         for (name, script) in scripts.prefix(3) {
             XCTAssertFalse(script.contains("output._lookup = getLookupSummary();"),
@@ -439,7 +479,8 @@ final class ScriptHelpersTests: XCTestCase {
     func testPerMessageLookupDetailIsEmittedOnlyBehindTheDebugGate() {
         // The per-message lookup names an internal account UUID and an Envelope-Index ROWID,
         // and repeats on every entry of a batch, so it belongs on the debug surface. One
-        // shared helper carries the gate, which is what makes its absence elsewhere provable:
+        // shared helper is the only writer of `_lookup` — `attachLookupWithStats` delegates to
+        // it rather than assigning its own — which is what makes the gate's presence provable:
         // strike the gated helper and the process summary — a different contract, four
         // counters and a label — and no `_lookup` may remain anywhere in any of the five.
         let gatedHelper = "function attachLookup(obj, lookup) { if (_debug) obj._lookup = lookup;"

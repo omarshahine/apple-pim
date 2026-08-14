@@ -903,6 +903,17 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
         return obj;
     }
 
+    // What the single-message commands attach instead. They run exactly one findMsg per
+    // process, so the counters below ARE that lookup's own tally, and its `stats` key carries
+    // the same four numbers the batch summary carries for a whole run. A batch ENTRY keeps
+    // the bare lookup: attached mid-loop, these counters are a running total and not that
+    // entry's. Delegating leaves `attachLookup` the only place the gated key is written, so
+    // the debug gate stays in one spot and the un-gated surface is untouched.
+    function attachLookupWithStats(obj, lookup) {
+        if (_debug) lookup.stats = _stats;
+        return attachLookup(obj, lookup);
+    }
+
     function getLookupSummary() {
         return {backend: _locatorBackend, stats: _stats};
     }
@@ -1515,10 +1526,10 @@ struct UpdateMessage: AsyncParsableCommand {
         const _r = findMsg('\(escapeForJXA(id))');
         const msg = _r.msg;
         if (!msg) {
-            JSON.stringify(attachLookup({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
+            JSON.stringify(attachLookupWithStats({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
         } else {
             \(updateCode)
-            JSON.stringify(attachLookup({
+            JSON.stringify(attachLookupWithStats({
                 messageId: msg.messageId(),
                 subject: msg.subject(),
                 isRead: msg.readStatus(),
@@ -1621,20 +1632,20 @@ struct MoveMessage: AsyncParsableCommand {
         const _r = findMsg('\(escapeForJXA(id))');
         const msg = _r.msg;
         if (!msg) {
-            JSON.stringify(attachLookup({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
+            JSON.stringify(attachLookupWithStats({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
         } else {
             const sourceAccount = msg.mailbox().account();
             const destMbox = findDestMailbox(sourceAccount);
             if (!destMbox) {
-                JSON.stringify(attachLookup({error: "Destination mailbox not found: " + destMailboxName}, _r.lookup));
+                JSON.stringify(attachLookupWithStats({error: "Destination mailbox not found: " + destMailboxName}, _r.lookup));
             } else {
                 var preOpId = normalizeMessageId(msg.messageId());
                 if (preOpId !== normalizeMessageId('\(escapeForJXA(id))')) {
-                    JSON.stringify(attachLookup({error: 'messageId drift detected before move (expected \(escapeForJXA(id)), got ' + preOpId + ')'}, _r.lookup));
+                    JSON.stringify(attachLookupWithStats({error: 'messageId drift detected before move (expected \(escapeForJXA(id)), got ' + preOpId + ')'}, _r.lookup));
                 } else {
                     const fromMailbox = msg.mailbox().name();
                     Mail.move(msg, {to: destMbox});
-                    JSON.stringify(attachLookup({
+                    JSON.stringify(attachLookupWithStats({
                         messageId: '\(escapeForJXA(id))',
                         from: fromMailbox,
                         to: destMailboxName,
@@ -1698,16 +1709,16 @@ struct DeleteMessage: AsyncParsableCommand {
         const _r = findMsg('\(escapeForJXA(id))');
         const msg = _r.msg;
         if (!msg) {
-            JSON.stringify(attachLookup({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
+            JSON.stringify(attachLookupWithStats({error: "Message not found: \(escapeForJXA(id))"}, _r.lookup));
         } else {
             var preOpId = normalizeMessageId(msg.messageId());
             if (preOpId !== normalizeMessageId('\(escapeForJXA(id))')) {
-                JSON.stringify(attachLookup({error: 'messageId drift detected before delete (expected \(escapeForJXA(id)), got ' + preOpId + ')'}, _r.lookup));
+                JSON.stringify(attachLookupWithStats({error: 'messageId drift detected before delete (expected \(escapeForJXA(id)), got ' + preOpId + ')'}, _r.lookup));
             } else {
                 const subject = msg.subject();
                 const mboxName = msg.mailbox().name();
                 Mail.delete(msg);
-                JSON.stringify(attachLookup({
+                JSON.stringify(attachLookupWithStats({
                     messageId: '\(escapeForJXA(id))',
                     subject: subject,
                     fromMailbox: mboxName,

@@ -451,7 +451,9 @@ mailbox, and they fall back to that scan whenever the lookup cannot answer.
   no `engine` key: `batch-update` and `batch-delete` report the locator built
   in `_lookup.backend` (`sqlite` once an index opens, `jxa-only` otherwise) and
   the hit/fallback counts in `_lookup.stats`; `update`, `move` and `delete`
-  carry a per-message `_lookup` inside `result` only under `MAIL_CLI_DEBUG=1`.
+  carry a per-message `_lookup` inside `result` only under `MAIL_CLI_DEBUG=1`,
+  with the same four counts in its `_lookup.stats` — one message per run, so
+  they are that lookup's own.
 
 ### Direct SMTP path (`mail-cli smtp-send`)
 
