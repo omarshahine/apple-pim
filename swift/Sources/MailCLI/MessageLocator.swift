@@ -39,8 +39,18 @@ protocol MessageLocator {
     func isAvailable() -> Bool
 }
 
-/// Trim, then drop angle brackets. Must agree with the `normalizeMessageId` twin emitted
-/// into the generated JXA, or the script looks candidates up under a key that is not there.
+/// Trim, then drop angle brackets. This keys the rowid map the emitted JXA reads, so it has to
+/// agree with the `normalizeMessageId` twin emitted into that script, or the script looks
+/// candidates up under a key that is not there.
+///
+/// On one input class it does not agree, knowingly: `.whitespaces` excludes newlines, while
+/// the twin trims `/^\s+|\s+$/`, which includes them. A Message-ID carrying a leading or
+/// trailing newline is therefore keyed here with the newline still attached — and with its
+/// brackets, since the strip runs after the trim and no longer sees them — while the script
+/// looks it up with both gone. The cost is acceleration, never a wrong write: a missing key
+/// yields zero candidates, the same as an id the index declined, and the scan the command
+/// falls back to is handed the raw id, exactly as the legacy finders hand it over.
+///
 /// Deliberately separate from `stripAngleBrackets`, which sits on the read output path.
 func normalizeMessageIDForLookup(_ raw: String) -> String {
     stripAngleBrackets(raw.trimmingCharacters(in: .whitespaces))
