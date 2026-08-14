@@ -301,10 +301,16 @@ extension SQLiteEngine: MessageLocator {
                  account: String?) throws -> [String: [ResolvedRef]] {
         guard !messageIds.isEmpty else { return [:] }
 
-        // The account filter matches JXA's `.whose({name: acctHint})`: unresolved yields no
-        // candidates, not an error, so `--engine auto`'s JXA scan can still complete the write.
-        // Wider than an exact match (display name / user name / raw UUID, case-insensitive),
-        // read through the parent-COALESCE join so IMAP child accounts resolve too.
+        // A hard filter, and an unresolved hint yields no candidates rather than an error, so
+        // `--engine auto`'s JXA scan can still complete the write.
+        //
+        // Its NAMESPACE is wider than the scan's, which is not a difference of degree: this
+        // resolves a raw account UUID first, then the display name, then the user name
+        // (case-insensitive, read through the parent-COALESCE join so IMAP child accounts
+        // resolve too), while the scan it falls back to matches `account.name()` alone
+        // (`Mail.accounts.whose({name: acctHint})`). A UUID or user-name hint therefore
+        // accelerates here and matches no account there — the same command completes under
+        // `--engine auto` and reports "Message not found" under `--engine jxa`.
         //
         // `try?` swallows `.ambiguous` on purpose — fail OPEN: an empty UUID set skips the byId
         // path and lets JXA pick exactly as it would with no locator. Correct but slow, never
