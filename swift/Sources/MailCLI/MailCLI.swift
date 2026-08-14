@@ -642,9 +642,14 @@ func buildReplyAppleScript(bodyPath: String, accountName: String, appleMailId: I
 /// Generates the JXA `findMsg(targetId)` function for batch operations.
 /// Unlike `findMessageJXA`, the target ID is a parameter (not hardcoded).
 ///
-/// NOTE: no production callers. Both batch commands now use `generateUnifiedFindMsgJXA`,
-/// whose fallback arm is this scan verbatim. Retained because `ScriptHelpersTests` covers it
-/// directly; deleting it means deleting that test too.
+/// NOTE: no production callers — both batch commands now use `generateUnifiedFindMsgJXA`.
+/// Retained as the reference this port was DERIVED from, not reproduced from: the port
+/// declares with `var`, hoists `priority` out of the function as `MAILBOX_PRIORITY`, counts
+/// `_stats.jxaFallbacks` and stamps `_perfMs` at each of the three return sites, and hands
+/// back `{msg, lookup}` instead of a bare message. What the two do share is the SWEEP —
+/// mailbox hint, then account-outer priority list, then the remaining mailboxes.
+/// `testBatchFindMessageJXAUsesNullHintsWhenNotProvided` still covers it directly; its sweep
+/// is deliberately no longer pinned, because nothing calls it.
 func batchFindMessageJXA(mailbox: String?, account: String?) -> String {
     let mailboxFilter = mailbox.map { "'\(escapeForJXA($0))'" } ?? "null"
     let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
@@ -707,8 +712,10 @@ func batchFindMessageJXA(mailbox: String?, account: String?) -> String {
     """
 }
 
-/// The write path's `findMsg(targetId)`: Envelope-Index ROWID fast path first, then the same
-/// `whose` scan the legacy finders do, unchanged.
+/// The write path's `findMsg(targetId)`: Envelope-Index ROWID fast path first, then a `whose`
+/// scan that sweeps in the same ORDER the legacy finders do — a port of their three arms, not
+/// a copy of them. The counters, the `_perfMs` gate and the `{msg, lookup}` return are new;
+/// `testBothShippedFindersSweepAccountOuterNotPriorityOuter` is what pins the shared order.
 ///
 /// Returns `{msg, lookup}` rather than a bare message, so every call site can carry the
 /// per-message lookup telemetry into its result. The emitted script assumes the caller has
