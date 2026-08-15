@@ -17,10 +17,12 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   mailAuthToIdentifierStrengths,
+  type IdentifierAuthentication,
   type MailAuthCheckResult,
   type MailIdentifierStrengths,
 } from "../mail-auth/strength.ts";
-import { decideIngress, type Admission } from "./policy.ts";
+import { resolveMailIngress } from "./inbound.ts";
+import type { Admission } from "./policy.ts";
 
 const OPERATOR = "operator@example.com";
 
@@ -239,27 +241,44 @@ const ROWS: Row[] = [
   },
 ];
 
+/**
+ * Runs one scenario row through the real ingress kernel via the channel's single
+ * admission path, so this table proves `resolveChannelMessageIngress` end to end
+ * rather than a local reimplementation of its gate.
+ */
+async function admissionFor(
+  row: Pick<Row, "auth" | "allowlisted" | "selfAddressed" | "threadPermitted">,
+  minimum: IdentifierAuthentication,
+): Promise<Admission> {
+  const strengths = mailAuthToIdentifierStrengths(row.auth);
+  const address = row.auth.sender ?? "sender@example.test";
+  const resolved = await resolveMailIngress({
+    address,
+    strengths,
+    allowFrom: row.allowlisted ? [address] : [],
+    allowlisted: row.allowlisted ?? false,
+    selfAddressed: row.selfAddressed ?? false,
+    threadPermitted: row.threadPermitted ?? false,
+    minIdentifierAuthentication: minimum,
+    conversationId: "scenario-thread",
+  });
+  return resolved.decision.admission;
+}
+
 describe("scenario doc: ingress table", () => {
   for (const row of ROWS) {
-    it(`${row.id}: ${row.what}`, () => {
+    it(`${row.id}: ${row.what}`, async () => {
       const strengths = mailAuthToIdentifierStrengths(row.auth);
       assert.equal(strengths.address, row.strengths.address, "address strength");
       assert.equal(strengths.domain, row.strengths.domain, "domain strength");
 
-      const input = {
-        strengths,
-        senderAddress: row.auth.sender ?? "",
-        allowlisted: row.allowlisted ?? false,
-        selfAddressed: row.selfAddressed ?? false,
-        threadPermitted: row.threadPermitted ?? false,
-      };
       assert.equal(
-        decideIngress({ ...input, minIdentifierAuthentication: "asserted" }).admission,
+        await admissionFor(row, "asserted"),
         row.atDefault,
         "at the default `asserted` minimum",
       );
       assert.equal(
-        decideIngress({ ...input, minIdentifierAuthentication: "verified" }).admission,
+        await admissionFor(row, "verified"),
         row.atStrict,
         "at the strict `verified` minimum",
       );
@@ -274,22 +293,14 @@ describe("scenario doc: invariants across the table", () => {
   // allowlisted-but-unenrolled sender dropped, while the identical message from a sender
   // *not* on the allowlist was admitted to `observe`. Enrolling someone must never reduce
   // what the channel does with their mail.
-  it("adding a sender to allowFrom never lowers their admission", () => {
+  it("adding a sender to allowFrom never lowers their admission", async () => {
     for (const row of ROWS) {
       if (row.selfAddressed) {
         continue;
       }
-      const strengths = mailAuthToIdentifierStrengths(row.auth);
       for (const minimum of ["asserted", "verified"] as const) {
-        const base = {
-          strengths,
-          senderAddress: row.auth.sender ?? "",
-          selfAddressed: false,
-          threadPermitted: row.threadPermitted ?? false,
-          minIdentifierAuthentication: minimum,
-        };
-        const off = decideIngress({ ...base, allowlisted: false }).admission;
-        const on = decideIngress({ ...base, allowlisted: true }).admission;
+        const off = await admissionFor({ ...row, allowlisted: false }, minimum);
+        const on = await admissionFor({ ...row, allowlisted: true }, minimum);
         assert.ok(
           RANK[on] >= RANK[off],
           `${row.id} at ${minimum}: allowlisted=${on} is weaker than allowlisted=false=${off}`,
@@ -300,22 +311,14 @@ describe("scenario doc: invariants across the table", () => {
 
   // Same argument for the other grant. Thread permission is a grant, and a grant that
   // cannot be exercised must leave the sender exactly where an ungranted one lands.
-  it("thread permission never lowers admission", () => {
+  it("thread permission never lowers admission", async () => {
     for (const row of ROWS) {
       if (row.selfAddressed) {
         continue;
       }
-      const strengths = mailAuthToIdentifierStrengths(row.auth);
       for (const minimum of ["asserted", "verified"] as const) {
-        const base = {
-          strengths,
-          senderAddress: row.auth.sender ?? "",
-          selfAddressed: false,
-          allowlisted: row.allowlisted ?? false,
-          minIdentifierAuthentication: minimum,
-        };
-        const off = decideIngress({ ...base, threadPermitted: false }).admission;
-        const on = decideIngress({ ...base, threadPermitted: true }).admission;
+        const off = await admissionFor({ ...row, threadPermitted: false }, minimum);
+        const on = await admissionFor({ ...row, threadPermitted: true }, minimum);
         assert.ok(
           RANK[on] >= RANK[off],
           `${row.id} at ${minimum}: threadPermitted=${on} is weaker than ungranted=${off}`,
@@ -352,22 +355,14 @@ describe("scenario doc: invariants across the table", () => {
   // channel never scores an address or domain `mutable`, so the two weakest minimums admit
   // the same mail. If a future mapping emits `mutable` for an address, that stops being true
   // and this fails, which is the point.
-  it("treats `unverified` and `mutable` as the same minimum, which is why only one is configurable", () => {
+  it("treats `unverified` and `mutable` as the same minimum, which is why only one is configurable", async () => {
     for (const row of ROWS) {
       if (row.selfAddressed) {
         continue;
       }
-      const strengths = mailAuthToIdentifierStrengths(row.auth);
-      const base = {
-        strengths,
-        senderAddress: row.auth.sender ?? "",
-        allowlisted: row.allowlisted ?? false,
-        selfAddressed: false,
-        threadPermitted: row.threadPermitted ?? false,
-      };
       assert.equal(
-        decideIngress({ ...base, minIdentifierAuthentication: "unverified" }).admission,
-        decideIngress({ ...base, minIdentifierAuthentication: "mutable" }).admission,
+        await admissionFor(row, "unverified"),
+        await admissionFor(row, "mutable"),
         row.id,
       );
     }
@@ -375,17 +370,10 @@ describe("scenario doc: invariants across the table", () => {
 
   // And the break-glass value is genuinely break-glass: it admits what the real postures
   // reject, so nobody reads the equivalence above as "the weak setting is safe".
-  it("the break-glass minimum does admit what the supported ones drop", () => {
+  it("the break-glass minimum does admit what the supported ones drop", async () => {
     const spoofed = ROWS.find((r) => r.id === "I7");
     assert.ok(spoofed, "I7 is the spoofed-operator row");
-    const decision = decideIngress({
-      strengths: mailAuthToIdentifierStrengths(spoofed.auth),
-      senderAddress: spoofed.auth.sender ?? "",
-      allowlisted: true,
-      selfAddressed: false,
-      threadPermitted: false,
-      minIdentifierAuthentication: "mutable",
-    });
-    assert.equal(decision.admission, "dispatch", "break-glass means exactly that");
+    const admission = await admissionFor({ auth: spoofed.auth, allowlisted: true }, "mutable");
+    assert.equal(admission, "dispatch", "break-glass means exactly that");
   });
 });
