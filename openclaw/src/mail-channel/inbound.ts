@@ -9,9 +9,32 @@
  * belongs instead of upstream where it would decide what the agent is allowed to see.
  */
 
-import { mailAuthToIdentifierStrengths, type MailAuthCheckResult } from "../mail-auth/strength.ts";
-import { decideIngress, type IngressDecision, type IngressInput } from "./policy.ts";
+import {
+  defineStableChannelIngressIdentity,
+  resolveChannelMessageIngress,
+} from "openclaw/plugin-sdk/channel-ingress-runtime";
+import {
+  mailAuthToIdentifierStrengths,
+  type IdentifierAuthentication,
+  type MailAuthCheckResult,
+  type MailIdentifierStrengths,
+} from "../mail-auth/strength.ts";
+import { decideIngress, type IngressDecision } from "./policy.ts";
 import { decideThreadReply, type AgentThreadRecord } from "./thread.ts";
+
+/**
+ * Identity contract this channel presents to the ingress kernel.
+ *
+ * Entry-side `verified` states that an email address exactly names its holder; what any
+ * *message* proved arrives per message on the subject side, so the kernel's
+ * min(entry, subject) resolves to exactly the strength `mail-cli auth-check` established.
+ */
+const MAIL_INGRESS_IDENTITY = defineStableChannelIngressIdentity({
+  key: "email",
+  normalize: (value: string) => value.trim().toLowerCase(),
+  sensitivity: "pii",
+  authentication: "verified",
+});
 
 /** One row as listed by `mail-cli messages`. */
 export type MailboxMessage = {
@@ -151,6 +174,11 @@ export type ClassifiedMessage = {
   address: string;
   decision: IngressDecision;
   /**
+   * The kernel's own reason code for the ingress outcome, carried for receipts and
+   * diagnostics. The channel-level `decision.reason` stays the product vocabulary.
+   */
+  kernelReasonCode: string;
+  /**
    * Which conversation this message belongs to, for session scoping.
    *
    * The anchor the agent already recorded for the thread when the claim resolves to one,
@@ -161,7 +189,9 @@ export type ClassifiedMessage = {
   threadKey: string;
 };
 
-export type ClassifyOptions = Pick<IngressInput, "minIdentifierAuthentication"> & {
+export type ClassifyOptions = {
+  /** Minimum strength an identifier needs before it may authorize. */
+  minIdentifierAuthentication: IdentifierAuthentication;
   /**
    * Configured inbound allowlist. Membership is derived per message rather than passed
    * as a boolean: the caller does not know the sender address until this function has
@@ -215,17 +245,75 @@ export async function classifyMessage(
     }
   }
 
-  return {
-    message,
+  const resolved = await resolveMailIngress({
     address,
-    threadKey,
+    strengths,
+    allowFrom: options.allowFrom ?? [],
+    allowlisted,
+    selfAddressed,
+    threadPermitted,
+    minIdentifierAuthentication: options.minIdentifierAuthentication,
+    conversationId: threadKey,
+  });
+
+  return { message, address, threadKey, ...resolved };
+}
+
+export type MailIngressParams = {
+  /** Sender address, already normalized. */
+  address: string;
+  strengths: MailIdentifierStrengths;
+  allowFrom: readonly string[];
+  allowlisted: boolean;
+  selfAddressed: boolean;
+  threadPermitted: boolean;
+  minIdentifierAuthentication: IdentifierAuthentication;
+  /** Conversation the kernel scopes this resolution to; the thread key in practice. */
+  conversationId: string;
+};
+
+/**
+ * The channel's single admission path: the ingress kernel decides allowlist plus
+ * authentication, then channel policy layers the loop guard and observe escalation.
+ *
+ * Exported so the scenario suite proves the same wiring `classifyMessage` runs, rather
+ * than a parallel reimplementation that could drift.
+ */
+export async function resolveMailIngress(
+  params: MailIngressParams,
+): Promise<{ decision: IngressDecision; kernelReasonCode: string }> {
+  // Thread permission enters the kernel as an injected allowlist entry: the agent already
+  // chose to contact this person when it started the thread, so the *allowlist* is waived,
+  // while the injected entry's subject-side strength is still gated like any other. The
+  // authentication half of the thread rule therefore runs in the kernel, not here.
+  const effectiveAllowFrom =
+    params.threadPermitted && !params.allowlisted
+      ? [...params.allowFrom, params.address]
+      : [...params.allowFrom];
+
+  const kernel = await resolveChannelMessageIngress({
+    channelId: "apple-mail",
+    accountId: "default",
+    identity: MAIL_INGRESS_IDENTITY,
+    subject: { stableId: params.address, authentication: { email: params.strengths.address } },
+    conversation: { kind: "direct", id: params.conversationId },
+    event: { kind: "message", authMode: "inbound", mayPair: false },
+    policy: {
+      dmPolicy: "allowlist",
+      groupPolicy: "disabled",
+      minIdentifierAuthentication: params.minIdentifierAuthentication,
+    },
+    allowFrom: effectiveAllowFrom,
+  });
+
+  return {
+    kernelReasonCode: kernel.ingress.reasonCode,
     decision: decideIngress({
-      strengths,
-      senderAddress: address,
-      allowlisted,
-      minIdentifierAuthentication: options.minIdentifierAuthentication,
-      selfAddressed,
-      threadPermitted,
+      kernelAdmitted: kernel.ingress.admission === "dispatch",
+      domainVerified: params.strengths.domain === "verified",
+      allowlisted: params.allowlisted,
+      selfAddressed: params.selfAddressed,
+      threadPermitted: params.threadPermitted,
     }),
   };
 }
