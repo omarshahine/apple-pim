@@ -231,16 +231,41 @@ func dateComponentsToString(_ components: DateComponents) -> String {
 /// ends up with a start date but no due date renders as *dateless* in
 /// Reminders.app while still occupying a date slot in EventKit. Always go
 /// through this instead of assigning `dueDateComponents` directly.
-func setReminderDate(_ reminder: EKReminder, to components: DateComponents?) {
-    reminder.dueDateComponents = components
-    reminder.startDateComponents = components
-}
-
-/// Sets only the due date, mirroring start to match. Preserves the incoming
-/// time zone on both fields.
+/// Sets a reminder's due date and mirrors `startDateComponents` to match.
+///
+/// Reminders.app writes both fields together and offers no separate "start
+/// date" control, but EventKit does not mirror them for you. Writing due
+/// alone leaves whatever start date was there before, and a reminder that
+/// ends up with a start date but no due date renders as *dateless* in
+/// Reminders.app. Always go through this instead of assigning
+/// `dueDateComponents` directly.
 func setReminderDueDate(_ reminder: EKReminder, to due: DateComponents?) {
     reminder.dueDateComponents = due
     reminder.startDateComponents = due.map { mirroredStart(from: $0) }
+}
+
+/// Whether a due-date string names a day with no time of day.
+///
+/// Matched with an anchored regex rather than `DateFormatter`, which happily
+/// parses a *prefix*: "2026-09-01 07:00" satisfies a "yyyy-MM-dd" formatter
+/// and would otherwise be misread as all-day.
+func isDateOnlyString(_ string: String) -> Bool {
+    let trimmed = string.trimmingCharacters(in: .whitespaces)
+    let patterns = [#"^\d{4}-\d{1,2}-\d{1,2}$"#, #"^\d{1,2}/\d{1,2}/\d{4}$"#]
+    return patterns.contains { trimmed.range(of: $0, options: .regularExpression) != nil }
+}
+
+/// Builds due-date components, keeping the all-day shape when the caller
+/// named a day without a time.
+///
+/// Reminders.app stores an all-day reminder as a due date carrying no hour or
+/// minute. Someone passing "2027-06-01" means the whole day, not midnight.
+func reminderDueComponents(from string: String) -> DateComponents? {
+    guard let date = parseDate(string) else { return nil }
+    let fields: Set<Calendar.Component> = isDateOnlyString(string)
+        ? [.year, .month, .day]
+        : [.year, .month, .day, .hour, .minute]
+    return Calendar.current.dateComponents(fields, from: date)
 }
 
 func ruleToDict(_ rule: EKRecurrenceRule) -> [String: Any] {
@@ -755,8 +780,8 @@ struct CreateReminder: AsyncParsableCommand {
         reminder.title = title
         reminder.calendar = try resolveTargetList(explicit: list, config: config)
 
-        if let dueStr = due, let dueDate = parseDate(dueStr) {
-            setReminderDate(reminder, to: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate))
+        if let dueStr = due, let components = reminderDueComponents(from: dueStr) {
+            setReminderDueDate(reminder, to: components)
         }
 
         if let n = notes {
@@ -883,8 +908,8 @@ struct UpdateReminder: AsyncParsableCommand {
             reminder.title = newTitle
         }
         if let newDue = due {
-            if let dueDate = parseDate(newDue) {
-                setReminderDate(reminder, to: Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate))
+            if let components = reminderDueComponents(from: newDue) {
+                setReminderDueDate(reminder, to: components)
             }
         }
         if let newNotes = notes {
@@ -1002,10 +1027,8 @@ func decodeBatchReminders(_ json: String) throws -> [BatchReminderInput] {
 }
 
 func batchReminderDueDateComponents(_ due: String?) -> DateComponents? {
-    guard let due, let dueDate = parseDate(due) else {
-        return nil
-    }
-    return Calendar.current.dateComponents([.year, .month, .day, .hour, .minute], from: dueDate)
+    guard let due else { return nil }
+    return reminderDueComponents(from: due)
 }
 
 struct BatchCreateReminder: AsyncParsableCommand {
@@ -1034,7 +1057,7 @@ struct BatchCreateReminder: AsyncParsableCommand {
                 reminder.title = reminderInput.title
                 reminder.calendar = try resolveTargetList(explicit: reminderInput.list, config: config)
 
-                setReminderDate(reminder, to: batchReminderDueDateComponents(reminderInput.due))
+                setReminderDueDate(reminder, to: batchReminderDueDateComponents(reminderInput.due))
 
                 if let n = reminderInput.notes {
                     reminder.notes = n

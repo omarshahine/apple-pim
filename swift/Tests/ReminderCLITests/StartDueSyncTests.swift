@@ -99,3 +99,66 @@ final class StartDueSyncTests: XCTestCase {
         XCTAssertTrue(sameInstant(once, once))
     }
 }
+
+final class AllDayDueDateTests: XCTestCase {
+
+    // MARK: - isDateOnlyString
+
+    func testRecognizesISODateOnly() {
+        XCTAssertTrue(isDateOnlyString("2027-06-01"))
+        XCTAssertTrue(isDateOnlyString("2027-6-1"))
+        XCTAssertTrue(isDateOnlyString("  2027-06-01  "))
+    }
+
+    func testRecognizesSlashDateOnly() {
+        XCTAssertTrue(isDateOnlyString("06/01/2027"))
+        XCTAssertTrue(isDateOnlyString("6/1/2027"))
+    }
+
+    /// Regression: DateFormatter parses a *prefix*, so "2026-09-01 07:00"
+    /// satisfies a "yyyy-MM-dd" formatter. An anchored regex must not.
+    func testRejectsTimedStrings() {
+        XCTAssertFalse(isDateOnlyString("2026-09-01 07:00"))
+        XCTAssertFalse(isDateOnlyString("2026-09-01T07:00:00"))
+        XCTAssertFalse(isDateOnlyString("2026-09-01 9:30 AM"))
+        XCTAssertFalse(isDateOnlyString("09/01/2026 07:00"))
+    }
+
+    func testRejectsNonDates() {
+        XCTAssertFalse(isDateOnlyString(""))
+        XCTAssertFalse(isDateOnlyString("tomorrow"))
+        XCTAssertFalse(isDateOnlyString("next week"))
+    }
+
+    // MARK: - reminderDueComponents
+
+    func testDateOnlyStringOmitsTimeOfDay() throws {
+        let c = try XCTUnwrap(reminderDueComponents(from: "2027-06-01"))
+        XCTAssertEqual(c.year, 2027)
+        XCTAssertEqual(c.month, 6)
+        XCTAssertEqual(c.day, 1)
+        XCTAssertNil(c.hour, "an all-day reminder must carry no hour")
+        XCTAssertNil(c.minute, "an all-day reminder must carry no minute")
+    }
+
+    func testTimedStringKeepsTimeOfDay() throws {
+        let c = try XCTUnwrap(reminderDueComponents(from: "2026-09-03 09:30"))
+        XCTAssertEqual(c.hour, 9)
+        XCTAssertEqual(c.minute, 30)
+    }
+
+    func testUnparseableStringReturnsNil() {
+        XCTAssertNil(reminderDueComponents(from: "not a date at all"))
+    }
+
+    /// The all-day pair: due carries no time, start sits at midnight. This is
+    /// the shape Reminders.app itself writes.
+    func testAllDayPairMatchesRemindersAppShape() throws {
+        let due = try XCTUnwrap(reminderDueComponents(from: "2027-06-01"))
+        let start = mirroredStart(from: due)
+        XCTAssertNil(due.hour)
+        XCTAssertEqual(start.hour, 0)
+        XCTAssertEqual(start.minute, 0)
+        XCTAssertTrue(sameInstant(due, start))
+    }
+}
