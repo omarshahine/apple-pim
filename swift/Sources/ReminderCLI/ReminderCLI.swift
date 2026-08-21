@@ -1307,10 +1307,17 @@ func mirroredStart(from due: DateComponents) -> DateComponents {
     return start
 }
 
-func sameInstant(_ a: DateComponents?, _ b: DateComponents?) -> Bool {
+/// Whether two date components would be stored identically by EventKit.
+///
+/// The time zone is part of the comparison. Matching wall-clock fields with
+/// differing zones is exactly the state that makes EventKit renormalize both
+/// the start and due dates on the next save, so `repair-dates` must treat it
+/// as drift rather than skipping it.
+func sameStoredDate(_ a: DateComponents?, _ b: DateComponents?) -> Bool {
     guard let a, let b else { return a == nil && b == nil }
     return a.year == b.year && a.month == b.month && a.day == b.day
         && (a.hour ?? 0) == (b.hour ?? 0) && (a.minute ?? 0) == (b.minute ?? 0)
+        && a.timeZone == b.timeZone
 }
 
 /// Repairs reminders whose start date drifted away from their due date.
@@ -1371,7 +1378,7 @@ struct RepairDates: AsyncParsableCommand {
             }
 
             let desired = mirroredStart(from: due)
-            if sameInstant(reminder.startDateComponents, desired) { continue }
+            if sameStoredDate(reminder.startDateComponents, desired) { continue }
 
             var change: [String: Any] = [
                 "id": reminder.calendarItemIdentifier,
@@ -1380,6 +1387,8 @@ struct RepairDates: AsyncParsableCommand {
                 "dueDate": dateComponentsToString(due),
                 "oldStartDate": reminder.startDateComponents.map { dateComponentsToString($0) } ?? "none",
                 "newStartDate": dateComponentsToString(desired),
+                "dueTimeZone": due.timeZone?.identifier ?? "none",
+                "oldStartTimeZone": reminder.startDateComponents?.timeZone?.identifier ?? "none",
                 "recurring": reminder.hasRecurrenceRules
             ]
 

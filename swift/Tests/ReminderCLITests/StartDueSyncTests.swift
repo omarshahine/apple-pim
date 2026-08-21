@@ -49,9 +49,9 @@ final class StartDueSyncTests: XCTestCase {
         XCTAssertNil(mirroredStart(from: due).timeZone)
     }
 
-    // MARK: - sameInstant
+    // MARK: - sameStoredDate
 
-    func testSameInstantTreatsMissingTimeAsMidnight() {
+    func testSameStoredDateTreatsMissingTimeAsMidnight() {
         var dateOnly = DateComponents()
         dateOnly.year = 2026; dateOnly.month = 12; dateOnly.day = 1
 
@@ -59,32 +59,69 @@ final class StartDueSyncTests: XCTestCase {
         midnight.hour = 0
         midnight.minute = 0
 
-        XCTAssertTrue(sameInstant(dateOnly, midnight))
+        XCTAssertTrue(sameStoredDate(dateOnly, midnight))
     }
 
-    func testSameInstantDetectsDifferentDay() {
+    func testSameStoredDateDetectsDifferentDay() {
         var a = DateComponents()
         a.year = 2026; a.month = 8; a.day = 18
         var b = a
         b.day = 1
-        XCTAssertFalse(sameInstant(a, b))
+        XCTAssertFalse(sameStoredDate(a, b))
     }
 
-    func testSameInstantDetectsDifferentTime() {
+    func testSameStoredDateDetectsDifferentTime() {
         var a = DateComponents()
         a.year = 2026; a.month = 9; a.day = 1
         a.hour = 7; a.minute = 0
         var b = a
         b.hour = 6
-        XCTAssertFalse(sameInstant(a, b))
+        XCTAssertFalse(sameStoredDate(a, b))
     }
 
-    func testSameInstantNilHandling() {
+    /// Regression (Greptile P1 on #111): matching wall-clock fields with
+    /// differing time zones is NOT the same stored date. Treating it as equal
+    /// made repair-dates skip exactly the drift that causes EventKit to
+    /// rewrite the due date on the next save.
+    func testSameStoredDateDetectsTimeZoneMismatch() {
+        var withZone = DateComponents()
+        withZone.year = 2026; withZone.month = 9; withZone.day = 3
+        withZone.hour = 9; withZone.minute = 30
+        withZone.timeZone = TimeZone(identifier: "America/New_York")
+
+        var withoutZone = withZone
+        withoutZone.timeZone = nil
+
+        var otherZone = withZone
+        otherZone.timeZone = TimeZone(identifier: "America/Los_Angeles")
+
+        XCTAssertFalse(sameStoredDate(withZone, withoutZone))
+        XCTAssertFalse(sameStoredDate(withZone, otherZone))
+        XCTAssertTrue(sameStoredDate(withZone, withZone))
+    }
+
+    /// A reminder whose start zone drifted from its due zone must be repaired
+    /// into a fixed point.
+    func testRepairingTimeZoneMismatchConverges() {
+        var due = DateComponents()
+        due.year = 2026; due.month = 9; due.day = 3
+        due.hour = 9; due.minute = 30
+        due.timeZone = TimeZone(identifier: "America/New_York")
+
+        var driftedStart = due
+        driftedStart.timeZone = nil
+        XCTAssertFalse(sameStoredDate(driftedStart, mirroredStart(from: due)))
+
+        let repaired = mirroredStart(from: due)
+        XCTAssertTrue(sameStoredDate(repaired, mirroredStart(from: due)))
+    }
+
+    func testSameStoredDateNilHandling() {
         var a = DateComponents()
         a.year = 2026; a.month = 9; a.day = 1
-        XCTAssertTrue(sameInstant(nil, nil))
-        XCTAssertFalse(sameInstant(a, nil))
-        XCTAssertFalse(sameInstant(nil, a))
+        XCTAssertTrue(sameStoredDate(nil, nil))
+        XCTAssertFalse(sameStoredDate(a, nil))
+        XCTAssertFalse(sameStoredDate(nil, a))
     }
 
     /// A repaired reminder must be a fixed point: repairing twice changes
@@ -95,8 +132,8 @@ final class StartDueSyncTests: XCTestCase {
         due.timeZone = TimeZone(identifier: "America/Los_Angeles")
 
         let once = mirroredStart(from: due)
-        XCTAssertTrue(sameInstant(once, mirroredStart(from: due)))
-        XCTAssertTrue(sameInstant(once, once))
+        XCTAssertTrue(sameStoredDate(once, mirroredStart(from: due)))
+        XCTAssertTrue(sameStoredDate(once, once))
     }
 }
 
@@ -159,6 +196,6 @@ final class AllDayDueDateTests: XCTestCase {
         XCTAssertNil(due.hour)
         XCTAssertEqual(start.hour, 0)
         XCTAssertEqual(start.minute, 0)
-        XCTAssertTrue(sameInstant(due, start))
+        XCTAssertTrue(sameStoredDate(due, start))
     }
 }
