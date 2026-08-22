@@ -25,13 +25,6 @@ final class ScriptHelpersTests: XCTestCase {
         XCTAssertTrue(script.contains("const acctHint = 'Personal \\\"Account\\\"';"))
     }
 
-    func testBatchFindMessageJXAUsesNullHintsWhenNotProvided() {
-        let script = batchFindMessageJXA(mailbox: nil, account: nil)
-        XCTAssertTrue(script.contains("const mboxHint = null;"))
-        XCTAssertTrue(script.contains("const acctHint = null;"))
-        XCTAssertTrue(script.contains("function findMsg(targetId)"))
-    }
-
     // MARK: - Unified finder (SQLite rowid fast path + JXA fallback)
     //
     // Nothing here executes the generated JXA: running `osascript` against Mail.app is off
@@ -176,7 +169,7 @@ final class ScriptHelpersTests: XCTestCase {
         let script = unifiedScript()
         XCTAssertTrue(script.contains("mbox.messages.whose({messageId: targetId})"))
         XCTAssertTrue(script.contains("_stats.jxaFallbacks++"))
-        // Visited-mailbox bookkeeping is a Set, as in `batchFindMessageJXA`: a plain object
+        // Visited-mailbox bookkeeping is a Set, as in the legacy finder: a plain object
         // keyed by account/mailbox names is a prototype lookup wearing a map's clothes, the
         // same hazard the rowid map is read with `hasOwnProperty.call` to avoid.
         XCTAssertTrue(script.contains("var searched = new Set();"))
@@ -192,9 +185,6 @@ final class ScriptHelpersTests: XCTestCase {
         // `findMessageJXA` keeps five live callers, so its inline literal stays. Together with
         // the emitted list above — pinned against the same Swift constant — this is what stops
         // the two shipped finders sweeping different mailboxes in a different order.
-        //
-        // `batchFindMessageJXA` carries a third copy of the literal and is deliberately NOT
-        // asserted here: nothing calls it, so drift in it ships nothing. See its own NOTE.
         let legacySingle = Self.jsStringArray(
             in: findMessageJXA(targetId: "<id>", mailbox: nil, account: nil),
             after: "const priority = [")
@@ -209,9 +199,8 @@ final class ScriptHelpersTests: XCTestCase {
         // looking at the next, so a copy in A/Trash wins over a copy in B/INBOX.
         // Priority-outer inverts that and silently retargets the write at another account.
         //
-        // The two finders with callers: the read/reply/attachment scan, and the write path's
-        // emitter. `batchFindMessageJXA` sweeps the same way and is not asserted — no caller,
-        // so its order decides nothing.
+        // The two shipped finders: the read/reply/attachment scan, and the write path's
+        // emitter.
         let cases: [(String, String, String)] = [
             (findMessageJXA(targetId: "<id>", mailbox: nil, account: nil),
              "for (let a = 0; a < accounts.length; a++) {",

@@ -639,79 +639,6 @@ func buildReplyAppleScript(bodyPath: String, accountName: String, appleMailId: I
     """
 }
 
-/// Generates the JXA `findMsg(targetId)` function for batch operations.
-/// Unlike `findMessageJXA`, the target ID is a parameter (not hardcoded).
-///
-/// NOTE: no production callers — both batch commands now use `generateUnifiedFindMsgJXA`.
-/// Retained as the reference this port was DERIVED from, not reproduced from: the port
-/// declares with `var`, hoists `priority` out of the function as `MAILBOX_PRIORITY`, counts
-/// `_stats.jxaFallbacks` and stamps `_perfMs` at each of the three return sites, and hands
-/// back `{msg, lookup}` instead of a bare message. What the two do share is the SWEEP —
-/// mailbox hint, then account-outer priority list, then the remaining mailboxes.
-/// `testBatchFindMessageJXAUsesNullHintsWhenNotProvided` still covers it directly; its sweep
-/// is deliberately no longer pinned, because nothing calls it.
-func batchFindMessageJXA(mailbox: String?, account: String?) -> String {
-    let mailboxFilter = mailbox.map { "'\(escapeForJXA($0))'" } ?? "null"
-    let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
-
-    return """
-    const mboxHint = \(mailboxFilter);
-    const acctHint = \(accountFilter);
-
-    function findMsg(targetId) {
-        // Search priority mailboxes first, then remaining mailboxes
-        const priority = ['INBOX',
-            'Sent Messages', 'Sent Mail', 'Sent Items',
-            'Archive', 'All Mail', 'Drafts',
-            'Deleted Messages', 'Deleted Items', 'Trash',
-            'Junk', 'Junk Email', 'Junk E-mail', 'Bulk', 'Spam'];
-        const accounts = acctHint ? Mail.accounts.whose({name: acctHint})() : Mail.accounts();
-        const searched = new Set();
-
-        function searchIn(mbox) {
-            try {
-                const found = mbox.messages.whose({messageId: targetId})();
-                if (found.length > 0) return found[0];
-            } catch(e) {}
-            return null;
-        }
-
-        if (mboxHint) {
-            for (let a = 0; a < accounts.length; a++) {
-                const mbs = accounts[a].mailboxes.whose({name: mboxHint})();
-                for (let m = 0; m < mbs.length; m++) {
-                    searched.add(accounts[a].name() + '/' + mbs[m].name());
-                    const r = searchIn(mbs[m]);
-                    if (r) return r;
-                }
-            }
-        }
-        for (let a = 0; a < accounts.length; a++) {
-            for (let p = 0; p < priority.length; p++) {
-                const mbs = accounts[a].mailboxes.whose({name: priority[p]})();
-                for (let m = 0; m < mbs.length; m++) {
-                    const key = accounts[a].name() + '/' + mbs[m].name();
-                    if (searched.has(key)) continue;
-                    searched.add(key);
-                    const r = searchIn(mbs[m]);
-                    if (r) return r;
-                }
-            }
-        }
-        for (let a = 0; a < accounts.length; a++) {
-            const mbs = accounts[a].mailboxes();
-            for (let m = 0; m < mbs.length; m++) {
-                const key = accounts[a].name() + '/' + mbs[m].name();
-                if (searched.has(key)) continue;
-                const r = searchIn(mbs[m]);
-                if (r) return r;
-            }
-        }
-        return null;
-    }
-    """
-}
-
 /// The write path's `findMsg(targetId)`: Envelope-Index ROWID fast path first, then a `whose`
 /// scan that sweeps in the same ORDER the legacy finders do — a port of their three arms, not
 /// a copy of them. The counters, the `_perfMs` gate and the `{msg, lookup}` return are new;
@@ -868,7 +795,7 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
             }
         }
 
-        // Account-OUTER, exactly as `findMessageJXA` and `batchFindMessageJXA` sweep: one
+        // Account-OUTER, exactly as `findMessageJXA` sweeps: one
         // account's whole priority list is exhausted before the next account is considered.
         // The nesting decides WHICH PHYSICAL COPY a delete or move acts on when the same
         // Message-ID exists in two accounts, and neither drift guard can see the difference
