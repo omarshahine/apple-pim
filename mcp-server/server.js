@@ -7,6 +7,10 @@ import {
   ListToolsRequestSchema,
 } from "@modelcontextprotocol/sdk/types.js";
 import { dirname, join } from "path";
+// Bundled: esbuild inlines this at build time, and `scripts/bump-version.sh`
+// rewrites package.json then rebuilds dist, so the reported version cannot drift
+// from the manifest the way a hardcoded literal did.
+import pkg from "./package.json" with { type: "json" };
 import { fileURLToPath } from "url";
 import {
   markToolResult,
@@ -52,7 +56,7 @@ async function handleTool(name, args) {
 const server = new Server(
   {
     name: "apple-pim",
-    version: "3.0.0",
+    version: pkg.version,
   },
   {
     capabilities: {
