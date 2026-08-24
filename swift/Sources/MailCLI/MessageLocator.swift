@@ -80,7 +80,7 @@ func makeMessageLocator(engine: EngineChoice) throws -> MessageLocator {
     do {
         return try SQLiteEngine()
     } catch {
-        try rethrowIfForcedSQLite(engine, error)
+        try rethrowFatalFastPathError(engine, error)
         return NoopLocator()
     }
 }
@@ -97,7 +97,7 @@ func resolveRowidMap(for messageIds: [String], mailbox: String?, account: String
         let refs = try locator.resolve(messageIds: messageIds, mailbox: mailbox, account: account)
         return (buildRowidMapJS(refs), backend)
     } catch {
-        try rethrowIfForcedSQLite(engine, error)
+        try rethrowFatalFastPathError(engine, error)
         return (buildRowidMapJS([:]), "jxa-only")
     }
 }
