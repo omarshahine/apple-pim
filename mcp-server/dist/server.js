@@ -70219,7 +70219,9 @@ var UNTRUSTED_FIELDS = {
   // Contact fields
   contact: ["notes", "organization", "jobTitle"],
   // Mail fields - highest risk since email is externally authored
-  mail: ["subject", "sender", "body", "content", "snippet"]
+  // `senderName` and `replyToName` are the display-name halves the CLI now returns
+  // separately; they are as attacker-authored as the joined string they came from.
+  mail: ["subject", "sender", "senderName", "replyTo", "replyToName", "body", "content", "snippet"]
 };
 var FIELD_KEY_TO_DOMAIN = {
   event: "calendar",
@@ -70826,7 +70828,13 @@ var tools = [
         due: { type: "string", description: "Due date/time (create/update)" },
         notes: { type: "string", description: "Notes (create/update)" },
         priority: { type: "number", description: "Priority: 0=none, 1=high, 5=medium, 9=low" },
-        url: { type: "string", description: "URL (create/update, empty string to remove)" },
+        // EKReminder.url is invisible in Apple Reminders on both iOS and macOS, so a link
+        // written only there reaches EventKit clients and nobody else. The CLI mirrors it
+        // into the notes, which Reminders does render and data-detect.
+        url: {
+          type: "string",
+          description: "URL to attach (create/update, empty string to remove). Stored on EKReminder.url, which Apple Reminders does not display, so it is also mirrored into the notes as a visible link. Clearing the URL removes that mirrored line; unrelated updates leave both untouched."
+        },
         alarm: { type: "array", items: { type: "number" }, description: "Alarm minutes before due" },
         // No `required` here — empty object {} means "remove location" (batch_create has required since it doesn't support removal)
         location: {
@@ -70855,7 +70863,10 @@ var tools = [
               due: { type: "string" },
               notes: { type: "string" },
               priority: { type: "number" },
-              url: { type: "string" },
+              url: {
+                type: "string",
+                description: "URL to attach. Stored on EKReminder.url (not displayed by Apple Reminders) and mirrored into the notes as a visible link."
+              },
               alarm: { type: "array", items: { type: "number" } },
               location: {
                 type: "object",
@@ -71020,7 +71031,7 @@ var tools = [
   },
   {
     name: "mail",
-    description: "Manage Mail.app messages. Requires Mail.app to be running. Actions: accounts, mailboxes, messages (list with attachmentCount), get (full message by ID with attachment metadata), search, update (flags), move, delete, batch_update, batch_delete, send (with optional attachments), reply (with optional attachments), save_attachment (save message attachments to disk), auth_check, schema (show input schema).",
+    description: "Manage Mail.app messages. Requires Mail.app to be running. Actions: accounts, mailboxes, messages (list with attachmentCount), get (full message by ID with attachment metadata), search, update (flags), move, delete, batch_update, batch_delete, send (with optional attachments), reply (with optional attachments), save_attachment (save message attachments to disk), auth_check, schema (show input schema). messages/search/get return senderAddress and senderName (and replyToAddress/replyToName on get) alongside the joined sender string \u2014 use senderAddress for any routing, filtering, or trust decision, since a display name is sender-chosen and may itself look like an address. auth_check returns evaluated: false when the DKIM/SPF checks never ran, which is not the same as running them and being unsure.",
     inputSchema: {
       type: "object",
       properties: {

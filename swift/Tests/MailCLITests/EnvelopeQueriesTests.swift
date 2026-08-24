@@ -178,4 +178,63 @@ final class EnvelopeQueriesTests: XCTestCase {
         XCTAssertEqual(stripAngleBrackets("<abc@x>"), "abc@x")
         XCTAssertEqual(stripAngleBrackets("abc@x"), "abc@x")
     }
+    // MARK: - Address parsing
+
+    func testParseAddressPrefersTheBracketedAddressOverAnAtInTheDisplayName() {
+        // The reported phishing shape: a forged display name that is itself an address.
+        // Splitting on the first token reports "service@paypal.com" and treats the message
+        // as PayPal's; RFC 5322 parsers give up and report nothing at all.
+        let parsed = parseAddress("service@paypal.com <store+abc@g.shopifyemail.com>")
+        XCTAssertEqual(parsed.address, "store+abc@g.shopifyemail.com")
+        XCTAssertEqual(parsed.name, "service@paypal.com")
+    }
+
+    func testParseAddressHandlesQuotesBracketsAndBareAddresses() {
+        XCTAssertEqual(parseAddress("\"Doe, John\" <john@example.com>").name, "Doe, John")
+        XCTAssertEqual(parseAddress("\"Doe, John\" <john@example.com>").address, "john@example.com")
+        // A display name containing its own angle brackets must not displace the address.
+        XCTAssertEqual(parseAddress("<weird> name <real@example.com>").address, "real@example.com")
+        XCTAssertEqual(parseAddress("<weird> name <real@example.com>").name, "<weird> name")
+
+        XCTAssertEqual(parseAddress("bare@example.com").address, "bare@example.com")
+        XCTAssertEqual(parseAddress("bare@example.com").name, "")
+        XCTAssertEqual(parseAddress("  spaced@example.com  ").address, "spaced@example.com")
+
+        // Neither brackets nor an "@": a display name with no address, not an address.
+        XCTAssertEqual(parseAddress("Mailer Daemon").name, "Mailer Daemon")
+        XCTAssertEqual(parseAddress("Mailer Daemon").address, "")
+        XCTAssertEqual(parseAddress("").address, "")
+    }
+
+    func testParseAddressRoundTripsWhatFormatAddressProduced() {
+        for (name, address) in [
+            ("Example Sender", "sender@example.com"),
+            ("", "bare@example.com"),
+            ("service@paypal.com", "store@g.shopifyemail.com"),
+        ] {
+            let parsed = parseAddress(formatAddress(address: address, comment: name))
+            XCTAssertEqual(parsed.address, address)
+            XCTAssertEqual(parsed.name, name)
+        }
+    }
+
+    func testWithParsedAddressesAddsBothPairsAndLeavesOtherFieldsAlone() {
+        let enriched = withParsedAddresses([
+            "sender": "Example Sender <sender@example.com>",
+            "replyTo": "noreply@example.com",
+            "subject": "Hello",
+        ])
+        XCTAssertEqual(enriched["senderAddress"] as? String, "sender@example.com")
+        XCTAssertEqual(enriched["senderName"] as? String, "Example Sender")
+        XCTAssertEqual(enriched["replyToAddress"] as? String, "noreply@example.com")
+        XCTAssertEqual(enriched["replyToName"] as? String, "")
+        XCTAssertEqual(enriched["subject"] as? String, "Hello")
+        // The flattened strings stay put: existing consumers are not broken.
+        XCTAssertEqual(enriched["sender"] as? String, "Example Sender <sender@example.com>")
+
+        // A message with no replyTo gets no reply-to keys invented for it.
+        let senderOnly = withParsedAddresses(["sender": "a@example.com"])
+        XCTAssertNil(senderOnly["replyToAddress"])
+    }
+
 }

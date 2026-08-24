@@ -14,7 +14,7 @@ Events are represented by `EKEvent` with these key properties:
 | `location` | String? | Location text |
 | `notes` | String? | Notes/description |
 | `calendar` | EKCalendar | Parent calendar |
-| `url` | URL? | Associated URL |
+| `url` | URL? | Associated URL. **Apple Reminders does not display this** on iOS or macOS — it is visible only to EventKit clients. `reminder-cli` mirrors the value into `notes` as a `🔗 <url>` line so the link is actually reachable by the user |
 | `recurrenceRules` | [EKRecurrenceRule]? | Repeat rules |
 | `alarms` | [EKAlarm]? | Reminders/alerts |
 | `attendees` | [EKParticipant]? | Invitees (read-only) |

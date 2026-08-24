@@ -126,7 +126,16 @@ func checkMailEnabled(config: PIMConfiguration) throws {
 
 /// In `--engine sqlite` mode a fast-path failure is fatal; in auto mode the
 /// caller falls through to JXA.
-func rethrowIfForcedSQLite(_ engine: EngineChoice, _ error: Error) throws {
+///
+/// Ambiguity is the exception: it describes the caller's *input*, not the engine, and the
+/// JXA path resolves accounts by first match. Letting it fall through would answer an
+/// ambiguous scope with whichever account happens to enumerate first — the silent
+/// wrong-account read the ambiguity check exists to prevent — so it is fatal under every
+/// engine, and stays a caller error rather than an access-denied.
+func rethrowFatalFastPathError(_ engine: EngineChoice, _ error: Error) throws {
+    if case EnvelopeIndexError.ambiguous(let message) = error {
+        throw CLIError.invalidInput(message)
+    }
     guard engine == .sqlite else { return }
     let detail = (error as? LocalizedError)?.errorDescription ?? String(describing: error)
     throw CLIError.accessDenied(
@@ -880,7 +889,7 @@ struct ListAccounts: AsyncParsableCommand {
                 outputJSON(try SQLiteEngine().accounts())
                 return
             } catch {
-                try rethrowIfForcedSQLite(engine, error)
+                try rethrowFatalFastPathError(engine, error)
             }
         }
 
@@ -938,7 +947,7 @@ struct ListMailboxes: AsyncParsableCommand {
                 outputJSON(try SQLiteEngine().mailboxes(account: account))
                 return
             } catch {
-                try rethrowIfForcedSQLite(engine, error)
+                try rethrowFatalFastPathError(engine, error)
             }
         }
 
@@ -1049,7 +1058,7 @@ struct ListMessages: AsyncParsableCommand {
                     oldestFirst: sinceEpoch != nil))
                 return
             } catch {
-                try rethrowIfForcedSQLite(engine, error)
+                try rethrowFatalFastPathError(engine, error)
             }
         }
 
@@ -1135,7 +1144,11 @@ struct ListMessages: AsyncParsableCommand {
             return
         }
 
-        let messages = dict["messages"] as? [Any] ?? []
+        // JXA hands back only Mail's flattened "Name <addr>" string, so unlike the SQLite
+        // path the structured pair has to be recovered here. Both engines report the
+        // same fields either way.
+        let messages = (dict["messages"] as? [Any] ?? [])
+            .map { ($0 as? [String: Any]).map(withParsedAddresses) ?? $0 }
         outputJSON([
             "success": true,
             "mailbox": dict["mailbox"] ?? mailbox,
@@ -1180,7 +1193,7 @@ struct GetMessage: AsyncParsableCommand {
                     mailboxHint: mailbox, accountHint: account))
                 return
             } catch {
-                try rethrowIfForcedSQLite(engine, error)
+                try rethrowFatalFastPathError(engine, error)
             }
         }
 
@@ -1266,7 +1279,7 @@ struct GetMessage: AsyncParsableCommand {
 
         outputJSON([
             "success": true,
-            "message": raw
+            "message": (raw as? [String: Any]).map(withParsedAddresses) ?? raw
         ])
     }
 }
@@ -1311,7 +1324,7 @@ struct SearchMessages: AsyncParsableCommand {
                     limit: limit, since: since))
                 return
             } catch {
-                try rethrowIfForcedSQLite(engine, error)
+                try rethrowFatalFastPathError(engine, error)
             }
         }
 
@@ -1409,7 +1422,8 @@ struct SearchMessages: AsyncParsableCommand {
         """
 
         let raw = try runJXA(script)
-        let messages = raw as? [Any] ?? []
+        let messages = (raw as? [Any] ?? [])
+            .map { ($0 as? [String: Any]).map(withParsedAddresses) ?? $0 }
 
         outputJSON([
             "success": true,
@@ -2387,7 +2401,7 @@ struct SaveAttachment: AsyncParsableCommand {
 // MARK: - Auth Check
 
 /// Trusted sender entry from trusted-senders.json
-private struct TrustedSender: Decodable {
+struct TrustedSender: Decodable {
     let name: String
     let emails: [String]
     let expectedDkimDomains: [String]?
@@ -2399,7 +2413,7 @@ private struct TrustedSender: Decodable {
     let requireSpf: Bool?
 }
 
-private struct TrustedSendersFile: Decodable {
+struct TrustedSendersFile: Decodable {
     let version: Int?
     let trustedSenders: [TrustedSender]
     /// authserv-id values our own trust boundary stamps, keyed by Mail.app account name.
@@ -2430,6 +2444,67 @@ private struct AuthResult {
     let spf: SPFResult?
 }
 
+/// What loading the trusted-senders policy file produced.
+enum TrustedSendersPolicy {
+    case loaded(TrustedSendersFile)
+    /// No file at all: nobody is enrolled, and evaluation continues on that basis.
+    case absent(String)
+    /// Present but unusable: a misconfiguration that must fail loudly.
+    case unreadable(String)
+}
+
+/// Load the trusted-senders policy, separating "no policy" from "broken policy".
+///
+/// An absent file is the all-senders-unenrolled case, which authentication is designed to
+/// answer anyway: enrollment says whether a mailbox may speak for a known person, the
+/// transport headers say whether the domain proved itself, and the second needs no
+/// enrollment data. Treating absence as fatal turned the out-of-the-box path of a new
+/// install into a silent no-op that reported `unknown` — indistinguishable from having
+/// looked and been unsure.
+///
+/// A file that exists but will not load is the opposite: the operator wrote a policy and it
+/// is not being applied. Continuing there would evaluate against an empty policy and report
+/// the result as though none had been configured, so it fails loudly instead.
+func loadTrustedSendersPolicy(
+    at path: String,
+    fileExists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }
+) -> TrustedSendersPolicy {
+    do {
+        let data = try Data(contentsOf: URL(fileURLWithPath: path))
+        return .loaded(try JSONDecoder().decode(TrustedSendersFile.self, from: data))
+    } catch {
+        guard !fileExists(path) else {
+            let detail = error.localizedDescription
+                .trimmingCharacters(in: CharacterSet(charactersIn: " ."))
+            return .unreadable(
+                "Cannot read trusted-senders.json at \(path): \(detail). "
+                + "Fix or remove the file; refusing to evaluate against a policy "
+                + "that failed to load.")
+        }
+        return .absent(
+            "No trusted-senders.json at \(path); no sender is enrolled, so none can reach "
+            + "'verified'. Authentication is still evaluated where the message carries "
+            + "results from a trusted authserv-id.")
+    }
+}
+
+/// Payload for a path that never computed the DKIM/SPF checks. `evaluated` is the field
+/// callers need: an empty `checks` with `verdict: "unknown"` cannot otherwise distinguish
+/// "the headers were read and were genuinely inconclusive" from "nothing ran", and anything
+/// treating the second as the first silently gets no check at all.
+func unevaluatedAuthPayload(
+    verdict: String, sender: String, matchedContact: String, warnings: [String]
+) -> [String: Any] {
+    [
+        "verdict": verdict,
+        "sender": sender,
+        "matchedContact": matchedContact,
+        "checks": [String: Any](),
+        "evaluated": false,
+        "warnings": warnings,
+    ]
+}
+
 struct AuthCheck: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "auth-check",
@@ -2457,21 +2532,27 @@ struct AuthCheck: AsyncParsableCommand {
         let config = pimOptions.loadConfig()
         try checkMailEnabled(config: config)
 
-        // Load trusted senders
+        // Load trusted senders. An *absent* file is the all-senders-unenrolled case, which
+        // `evaluate` already handles deliberately: enrollment answers "may this mailbox
+        // speak for a known person", authentication answers "did the transport prove the
+        // domain", and the second is answerable from headers alone. Bailing out here
+        // instead turned the default path of a fresh install into a silent no-op.
+        //
+        // A file that exists but will not load is the opposite case: a real
+        // misconfiguration, where continuing would ignore the policy the operator wrote
+        // and report the result as if no policy existed. That fails loudly.
         let trustedPath = trustedSenders ?? NSString("~/.config/apple-pim/trusted-senders.json").expandingTildeInPath
         let trustedFile: TrustedSendersFile
-        do {
-            let data = try Data(contentsOf: URL(fileURLWithPath: trustedPath))
-            trustedFile = try JSONDecoder().decode(TrustedSendersFile.self, from: data)
-        } catch {
-            outputJSON([
-                "verdict": "unknown",
-                "sender": "",
-                "matchedContact": "",
-                "checks": [String: Any](),
-                "warnings": ["Failed to load trusted-senders.json: \(error.localizedDescription)"]
-            ])
-            return
+        var loadWarnings: [String] = []
+        switch loadTrustedSendersPolicy(at: trustedPath) {
+        case .loaded(let file):
+            trustedFile = file
+        case .absent(let warning):
+            trustedFile = TrustedSendersFile(
+                version: nil, trustedSenders: [], trustedAuthservIds: nil)
+            loadWarnings.append(warning)
+        case .unreadable(let message):
+            throw CLIError.invalidInput(message)
         }
 
         // Prefer the SQLite/emlx path: it reads headers off disk, so a channel that
@@ -2487,7 +2568,7 @@ struct AuthCheck: AsyncParsableCommand {
                     msgDict = sqliteResult
                 }
             } catch {
-                try rethrowIfForcedSQLite(engine, error)
+                try rethrowFatalFastPathError(engine, error)
             }
         }
 
@@ -2499,7 +2580,8 @@ struct AuthCheck: AsyncParsableCommand {
             throw CLIError.jxaError("Unexpected result from message lookup")
         }
 
-        try await evaluate(msgDict: msgDict, trustedFile: trustedFile)
+        try await evaluate(
+            msgDict: msgDict, trustedFile: trustedFile, loadWarnings: loadWarnings)
     }
 
     /// JXA fallback for header access when the SQLite/emlx path cannot serve the message.
@@ -2540,19 +2622,37 @@ struct AuthCheck: AsyncParsableCommand {
         return msgDict
     }
 
-    private func evaluate(msgDict: [String: Any], trustedFile: TrustedSendersFile) async throws {
-        // Extract sender email
-        let senderRaw = msgDict["sender"] as? String ?? ""
-        let senderEmail = extractEmailAddress(from: senderRaw)
+    /// Emit a result for a path that never computed the DKIM/SPF checks.
+    ///
+    /// `evaluated` is the field callers need: `unknown` alone cannot distinguish "the
+    /// headers were read and were genuinely inconclusive" from "nothing ran", and anything
+    /// treating the second as the first silently gets no check at all. It reports whether
+    /// `checks` was populated, so an empty `checks` is never ambiguous.
+    private func outputUnevaluated(
+        verdict: String, sender: String, matchedContact: String, warnings: [String]
+    ) {
+        outputJSON(unevaluatedAuthPayload(
+            verdict: verdict, sender: sender,
+            matchedContact: matchedContact, warnings: warnings))
+    }
+
+    private func evaluate(
+        msgDict: [String: Any], trustedFile: TrustedSendersFile, loadWarnings: [String] = []
+    ) async throws {
+        // Extract sender email. Prefer the structured address when the engine supplied one:
+        // the SQLite path reads it straight out of the Envelope Index, so no attacker-chosen
+        // display name has been folded into it. Re-parsing the flattened string is the
+        // fallback, not the default.
+        let structuredSender = (msgDict["senderAddress"] as? String)?
+            .trimmingCharacters(in: .whitespaces) ?? ""
+        let senderEmail = structuredSender.isEmpty
+            ? extractEmailAddress(from: msgDict["sender"] as? String ?? "")
+            : structuredSender.lowercased()
 
         guard !senderEmail.isEmpty else {
-            outputJSON([
-                "verdict": "unknown",
-                "sender": "",
-                "matchedContact": "",
-                "checks": [String: Any](),
-                "warnings": ["Could not extract sender email from message"]
-            ])
+            outputUnevaluated(
+                verdict: "unknown", sender: "", matchedContact: "",
+                warnings: loadWarnings + ["Could not extract sender email from message"])
             return
         }
 
@@ -2573,13 +2673,11 @@ struct AuthCheck: AsyncParsableCommand {
         let headerText = normalizeHeaders(msgDict["allHeaders"])
 
         guard !headerText.isEmpty else {
-            outputJSON([
-                "verdict": "unknown",
-                "sender": senderEmail,
-                "matchedContact": senderConfig?.name ?? "",
-                "checks": [String: Any](),
-                "warnings": ["allHeaders field is empty — JXA may not have returned headers"]
-            ])
+            outputUnevaluated(
+                verdict: "unknown", sender: senderEmail,
+                matchedContact: senderConfig?.name ?? "",
+                warnings: loadWarnings
+                    + ["allHeaders field is empty — JXA may not have returned headers"])
             return
         }
 
@@ -2587,13 +2685,10 @@ struct AuthCheck: AsyncParsableCommand {
         let allAuthResults = parseAuthenticationResults(headerText)
 
         guard !allAuthResults.isEmpty else {
-            outputJSON([
-                "verdict": "unknown",
-                "sender": senderEmail,
-                "matchedContact": senderConfig?.name ?? "",
-                "checks": [String: Any](),
-                "warnings": ["No Authentication-Results headers found"]
-            ])
+            outputUnevaluated(
+                verdict: "unknown", sender: senderEmail,
+                matchedContact: senderConfig?.name ?? "",
+                warnings: loadWarnings + ["No Authentication-Results headers found"])
             return
         }
 
@@ -2605,37 +2700,31 @@ struct AuthCheck: AsyncParsableCommand {
         let observedIds = allAuthResults.map { normalizeAuthservId($0.authservId) }.filter { !$0.isEmpty }
 
         guard !trustedIds.isEmpty else {
-            outputJSON([
-                "verdict": "unknown",
-                "sender": senderEmail,
-                "matchedContact": senderConfig?.name ?? "",
-                "checks": [String: Any](),
-                "warnings": [
+            outputUnevaluated(
+                verdict: "unknown", sender: senderEmail,
+                matchedContact: senderConfig?.name ?? "",
+                warnings: loadWarnings + [
                     // The engines identify accounts differently: JXA yields the display name,
                     // SQLite yields the account UUID. Echo the exact key so config is a copy step.
                     "No trustedAuthservIds configured\(accountName.map { " for account key '\($0)'" } ?? "") — "
                         + "refusing to trust Authentication-Results headers, which senders can forge. "
                         + "Observed authserv-ids on this message: \(Set(observedIds).sorted().joined(separator: ", ")). "
-                        + "Add the ones your own boundary stamps to trustedAuthservIds in trusted-senders.json."
-                ]
-            ])
+                        + "Add the ones your own boundary stamps to trustedAuthservIds in trusted-senders.json.",
+                ])
             return
         }
 
         let authResults = allAuthResults.filter { authservIdMatches($0.authservId, trusted: trustedIds) }
 
         guard !authResults.isEmpty else {
-            outputJSON([
-                "verdict": "suspicious",
-                "sender": senderEmail,
-                "matchedContact": senderConfig?.name ?? "",
-                "checks": [String: Any](),
-                "warnings": [
+            outputUnevaluated(
+                verdict: "suspicious", sender: senderEmail,
+                matchedContact: senderConfig?.name ?? "",
+                warnings: loadWarnings + [
                     "No Authentication-Results header from a trusted authserv-id "
                         + "(trusted: \(trustedIds.joined(separator: ", ")); "
-                        + "observed: \(Set(observedIds).sorted().joined(separator: ", ")))"
-                ]
-            ])
+                        + "observed: \(Set(observedIds).sorted().joined(separator: ", ")))",
+                ])
             return
         }
 
@@ -2646,7 +2735,7 @@ struct AuthCheck: AsyncParsableCommand {
         let enrolled = senderConfig != nil
         let expectedDkim = senderConfig?.expectedDkimDomains ?? []
         let requireSpf = senderConfig?.requireSpf ?? true
-        var warnings = [String]()
+        var warnings = loadWarnings
 
         // Aggregate DKIM results from all AR headers
         let allDkim = authResults.flatMap { $0.dkim }
@@ -2758,6 +2847,7 @@ struct AuthCheck: AsyncParsableCommand {
                 "dkim": dkimCheck,
                 "spf": spfCheck
             ],
+            "evaluated": true,
             "warnings": warnings
         ])
     }
@@ -2766,16 +2856,7 @@ struct AuthCheck: AsyncParsableCommand {
 
     /// Extract email address from a "Name <email>" or bare email string.
     private func extractEmailAddress(from raw: String) -> String {
-        // Try "Name <email>" format
-        if let range = raw.range(of: #"<([^>]+)>"#, options: .regularExpression) {
-            let match = raw[range]
-            return String(match.dropFirst().dropLast()).lowercased().trimmingCharacters(in: .whitespaces)
-        }
-        // Bare email
-        if raw.contains("@") {
-            return raw.lowercased().trimmingCharacters(in: .whitespaces)
-        }
-        return ""
+        parseAddress(raw).address.lowercased()
     }
 
     /// Normalize allHeaders from JXA (could be dict or string) into a single string.

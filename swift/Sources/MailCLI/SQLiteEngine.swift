@@ -101,10 +101,19 @@ struct SQLiteEngine {
     private func summaryDict(_ row: [String: Any], includeJunkAndAttachments: Bool,
                              includeLocation: Bool) -> [String: Any] {
         let mailbox = mailboxRef(forRow: row)
+        let senderAddress = row["sender_address"] as? String ?? ""
+        let senderName = (row["sender_comment"] as? String ?? "")
+            .trimmingCharacters(in: .whitespaces)
         var dict: [String: Any] = [
             "messageId": stripAngleBrackets(row["message_id"] as? String ?? ""),
-            "sender": formatAddress(address: row["sender_address"] as? String ?? "",
-                                    comment: row["sender_comment"] as? String ?? ""),
+            "sender": formatAddress(address: senderAddress, comment: senderName),
+            // The Envelope Index stores these separately and Mail's own recipient lists are
+            // already structured, so flattening the sender was both lossy and inconsistent.
+            // Hand back the isolated address: a display name may contain an `@`, and every
+            // consumer re-parsing the joined string is a spoofing check waiting to be got
+            // wrong. See `parseAddress` for what goes wrong when it is.
+            "senderAddress": senderAddress,
+            "senderName": senderName,
             "subject": fullSubject(prefix: row["subject_prefix"] as? String,
                                    subject: row["subject"] as? String),
             "dateReceived": epochValue(row["date_received"]).map { isoStringFromEpoch($0) } ?? NSNull(),
@@ -221,9 +230,32 @@ struct SQLiteEngine {
 
     func get(id: String, includeSource: Bool,
              mailboxHint: String? = nil, accountHint: String? = nil) throws -> [String: Any] {
+        // Resolve the hints before the lookup rather than inside it. Message-IDs are
+        // sender-generated, so one message delivered to two local accounts is stored as two
+        // distinct copies sharing an ID, and the hints are exactly what select the copy the
+        // caller meant. Swallowing an ambiguous or unknown hint here returned the other
+        // account's copy with `success: true`, which is worse than refusing to guess.
+        var hintedAccountUUIDs: [String] = []
+        if let accountHint {
+            hintedAccountUUIDs = try index.accountUUIDs(matching: accountHint)
+            guard !hintedAccountUUIDs.isEmpty else {
+                throw EnvelopeIndexError.notFound("Account not found: \(accountHint)")
+            }
+        }
+        let hintedMailboxRowIDs: [Int64] = mailboxHint.map { hint in
+            allMailboxes
+                .filter {
+                    $0.name.caseInsensitiveCompare(hint) == .orderedSame
+                        && (hintedAccountUUIDs.isEmpty
+                            || hintedAccountUUIDs.contains($0.accountUUID))
+                }
+                .map { $0.rowid }
+        } ?? []
+
         var rows: [[String: Any]] = []
         for candidate in messageIDCandidates(id) {
-            rows = try index.findMessage(messageIDHeader: candidate)
+            rows = try index.findMessage(
+                messageIDHeader: candidate, logicalMailboxRowIDs: hintedMailboxRowIDs)
             if !rows.isEmpty { break }
         }
         // A Message-ID can have copies in several mailboxes; prefer the copy
@@ -231,7 +263,6 @@ struct SQLiteEngine {
         // keeping newest-first order among equally-good matches.
         var bestRow = rows.first
         if mailboxHint != nil || accountHint != nil {
-            let hintedAccountUUIDs = accountHint.flatMap { try? index.accountUUIDs(matching: $0) } ?? []
             var bestScore = -1
             for candidate in rows {
                 guard let mailbox = mailboxRef(forRow: candidate) else { continue }
@@ -257,7 +288,18 @@ struct SQLiteEngine {
         let emlx = try readEmlx(at: emlxURL)
         var message = summaryDict(row, includeJunkAndAttachments: true, includeLocation: true)
         message["dateSent"] = epochValue(row["date_sent"]).flatMap { $0 > 0 ? isoStringFromEpoch($0) : nil } ?? NSNull()
-        message["replyTo"] = emlx.header("Reply-To") ?? message["sender"] ?? ""
+        if let replyToHeader = emlx.header("Reply-To") {
+            let parsed = parseAddress(replyToHeader)
+            message["replyTo"] = replyToHeader
+            message["replyToAddress"] = parsed.address
+            message["replyToName"] = parsed.name
+        } else {
+            // No Reply-To: the sender stands in. Copy the clean columns rather than
+            // re-parsing the string they were just flattened into.
+            message["replyTo"] = message["sender"] ?? ""
+            message["replyToAddress"] = message["senderAddress"] ?? ""
+            message["replyToName"] = message["senderName"] ?? ""
+        }
         message["content"] = emlx.content
         message["allHeaders"] = emlx.rawHeaders
 

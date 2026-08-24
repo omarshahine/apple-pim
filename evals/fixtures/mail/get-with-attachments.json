@@ -13,7 +13,12 @@
     "mailbox": "INBOX",
     "account": "Google",
     "content": "Hi, please find the Q1 report and supporting data attached.",
-    "to": [{ "name": "Joe", "address": "joe@example.com" }],
+    "to": [
+      {
+        "name": "Joe",
+        "address": "joe@example.com"
+      }
+    ],
     "cc": [],
     "attachments": [
       {
@@ -38,6 +43,10 @@
         "mimeType": "text/markdown"
       }
     ],
-    "attachmentCount": 3
+    "attachmentCount": 3,
+    "senderAddress": "colleague@example.com",
+    "senderName": "",
+    "replyToAddress": "",
+    "replyToName": ""
   }
 }

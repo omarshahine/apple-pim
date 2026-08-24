@@ -195,6 +195,8 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
         dict["notes"] = notes
     }
     if let url = reminder.url {
+        // `EKReminder.url`. Apple Reminders does not display this; a link the user is meant
+        // to see is mirrored into `notes` at write time (see `notesWithVisibleURL`).
         dict["url"] = url.absoluteString
     }
     if reminder.hasRecurrenceRules, let rules = reminder.recurrenceRules {
@@ -205,6 +207,46 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
     }
 
     return dict
+}
+
+/// Marker line that carries a reminder's URL where Apple Reminders will actually show it.
+///
+/// `EKReminder.url` round-trips through EventKit and syncs, but Reminders on iOS and macOS
+/// renders it nowhere — a link written only there is invisible to the person the reminder
+/// is for. Notes are rendered and data-detected, so mirroring the URL into a line of its own
+/// is what makes a link real. The line is matched exactly on removal, so clearing the URL
+/// takes the mirror with it and leaves the rest of the notes untouched.
+func urlNotesLine(_ url: String) -> String { "🔗 \(url)" }
+
+/// Notes with `url` present as its own line, appended if it is not already there.
+/// Returns `nil` when there is nothing to write (no URL, empty notes).
+func notesWithVisibleURL(_ notes: String?, url: String) -> String? {
+    let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedURL.isEmpty else { return notes }
+    let existing = notes ?? ""
+    // Already visible — as our marker line or as bare text the caller wrote themselves.
+    // Adding a second copy would be noise, and would survive the first one's removal.
+    let lines = existing.components(separatedBy: .newlines).map {
+        $0.trimmingCharacters(in: .whitespaces)
+    }
+    if lines.contains(urlNotesLine(trimmedURL)) || lines.contains(trimmedURL) { return existing }
+    return existing.isEmpty
+        ? urlNotesLine(trimmedURL)
+        : "\(existing)\n\(urlNotesLine(trimmedURL))"
+}
+
+/// Notes with the mirrored line for `url` removed. Only our own marker line is removed:
+/// a URL the caller typed into their notes is their text, not our bookkeeping.
+func notesWithoutVisibleURL(_ notes: String?, url: String) -> String? {
+    guard let notes, !notes.isEmpty else { return notes }
+    let trimmedURL = url.trimmingCharacters(in: .whitespacesAndNewlines)
+    guard !trimmedURL.isEmpty else { return notes }
+    let marker = urlNotesLine(trimmedURL)
+    let kept = notes.components(separatedBy: .newlines).filter {
+        $0.trimmingCharacters(in: .whitespaces) != marker
+    }
+    let result = kept.joined(separator: "\n").trimmingCharacters(in: .newlines)
+    return result.isEmpty ? nil : result
 }
 
 func dateComponentsToString(_ components: DateComponents) -> String {
@@ -759,8 +801,12 @@ struct CreateReminder: AsyncParsableCommand {
     @Option(name: .long, help: "Priority (0=none, 1=high, 5=medium, 9=low)")
     var priority: Int = 0
 
-    @Option(name: .long, help: "URL associated with the reminder")
+    @Option(name: .long, help: ArgumentHelp("URL to attach. Written to EKReminder.url, which Apple Reminders does not display, so it is also mirrored into the notes as a visible link (disable with --no-url-in-notes)"))
     var url: String?
+
+    @Flag(inversion: .prefixedNo,
+          help: "Mirror --url into the notes so Apple Reminders shows a tappable link")
+    var urlInNotes: Bool = true
 
     @Option(name: .long, help: "Alarm minutes before due (can specify multiple)")
     var alarm: [Int] = []
@@ -792,6 +838,11 @@ struct CreateReminder: AsyncParsableCommand {
 
         if let urlStr = url, let reminderUrl = URL(string: urlStr) {
             reminder.url = reminderUrl
+            // EventKit keeps the URL; Reminders shows the notes. Write both, or the caller
+            // has attached a link nobody can see.
+            if urlInNotes {
+                reminder.notes = notesWithVisibleURL(reminder.notes, url: urlStr)
+            }
         }
 
         for minutes in alarm {
@@ -887,8 +938,12 @@ struct UpdateReminder: AsyncParsableCommand {
     @Option(name: .long, help: "Recurrence rule as JSON (e.g., '{\"frequency\":\"monthly\",\"interval\":1}')")
     var recurrence: String?
 
-    @Option(name: .long, help: "New URL")
+    @Option(name: .long, help: ArgumentHelp("URL to attach. Written to EKReminder.url, which Apple Reminders does not display, so it is also mirrored into the notes as a visible link (disable with --no-url-in-notes)" + ". Pass an empty string to clear it"))
     var url: String?
+
+    @Flag(inversion: .prefixedNo,
+          help: "Mirror --url into the notes so Apple Reminders shows a tappable link")
+    var urlInNotes: Bool = true
 
     @Option(name: .long, help: "Location-based alarm as JSON (e.g., '{\"name\":\"Home\",\"latitude\":37.33,\"longitude\":-122.03,\"radius\":100,\"proximity\":\"arrive\"}')")
     var location: String?
@@ -918,10 +973,24 @@ struct UpdateReminder: AsyncParsableCommand {
         if let newPriority = priority {
             reminder.priority = newPriority
         }
+        // Only touched when --url is passed: an unrelated update must leave an existing
+        // URL (and any mirrored line) exactly where it was.
         if let newUrl = url {
             if newUrl.isEmpty {
+                // Clearing takes the mirrored line with it, so the visible link and the
+                // stored one cannot drift apart.
+                if let previous = reminder.url?.absoluteString, urlInNotes {
+                    reminder.notes = notesWithoutVisibleURL(reminder.notes, url: previous)
+                }
                 reminder.url = nil
             } else if let reminderUrl = URL(string: newUrl) {
+                if urlInNotes {
+                    // Replacing: drop the old mirror before adding the new one.
+                    if let previous = reminder.url?.absoluteString, previous != newUrl {
+                        reminder.notes = notesWithoutVisibleURL(reminder.notes, url: previous)
+                    }
+                    reminder.notes = notesWithVisibleURL(reminder.notes, url: newUrl)
+                }
                 reminder.url = reminderUrl
             }
         }
@@ -1069,6 +1138,7 @@ struct BatchCreateReminder: AsyncParsableCommand {
 
                 if let urlStr = reminderInput.url, let reminderUrl = URL(string: urlStr) {
                     reminder.url = reminderUrl
+                    reminder.notes = notesWithVisibleURL(reminder.notes, url: urlStr)
                 }
 
                 if let alarms = reminderInput.alarm {

@@ -194,6 +194,11 @@ When reading events/reminders, the `recurrence` array includes:
 4. **Respect priority levels** (1=high is flagged in UI)
 5. **Use dueDateComponents** not absolute dates for better handling
 6. **Use batch operations** (`reminder` with action `batch_complete`, `batch_delete`) when acting on multiple items
+7. **`url` is an EventKit field Apple Reminders never renders** — a link written only to
+   `EKReminder.url` is invisible to the user. The CLI therefore mirrors it into the notes as
+   a `🔗 <url>` line, which Reminders does display and data-detect. Clearing the URL removes
+   that line; updating other fields preserves both. Pass `--no-url-in-notes` to the CLI when
+   you want the value stored for machine use only
 
 ### Contact Management
 1. **Use unified contacts** for consistent view across accounts
@@ -209,7 +214,9 @@ When reading events/reminders, the `recurrence` array includes:
 5. **Use mailbox/account hints** when available for faster lookups
 6. **Send** (`mail` with action `send`) uses AppleScript — supports `to`, `cc`, `bcc`, `from` (account selection), `subject`, `body`
 7. **Reply** (`mail` with action `reply`) preserves threading — looks up message by RFC 2822 ID, then uses Mail.app's `reply` verb
-8. **Auth check** (`mail` with action `auth_check`) verifies DKIM/SPF against `~/.config/apple-pim/trusted-senders.json` — returns `verified`, `suspicious`, `untrusted`, or `unknown`
+8. **Auth check** (`mail` with action `auth_check`) verifies DKIM/SPF against `~/.config/apple-pim/trusted-senders.json` — returns `verified`, `suspicious`, `untrusted`, or `unknown`, plus `evaluated`. A missing config file no longer stops the check: authentication is still evaluated, nobody is enrolled, and the result says so. A config file that exists but will not parse is a hard error
+9. **Read `evaluated` before trusting a verdict** — `unknown` with `evaluated: false` means the DKIM/SPF checks never ran (no headers, no trusted `authserv-id`), which is a different situation from running them and being unsure. Treating the first as the second means acting on a check that did not happen
+10. **Use `senderAddress` for decisions, `sender` for display** — `sender` joins the display name and the address into one string, and the display name is chosen by the sender. `messages`, `search`, and `get` all return `senderAddress`/`senderName` separately (`get` adds `replyToAddress`/`replyToName`); route, filter, and match on the address
 
 ### Error Handling
 1. **Check authorization first** with `apple-pim` action `status` when encountering errors

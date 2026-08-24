@@ -63,6 +63,17 @@ because DMARC alignment authenticates a **domain**, never a mailbox.
 | Sender domain | An aligned DKIM signature, or an aligned SPF pass, from a trusted boundary |
 | Full address | The above, **and** the signing domain is one the operator listed for that specific sender |
 
+Reading the address off the display string is itself a step that can be got wrong, which is
+why the CLI does not make callers take it. `messages`, `search`, and `get` return
+`senderAddress` and `senderName` as separate fields (the SQLite engine reads them from two
+separate columns; nothing is parsed). The joined `sender` string is for display only: a
+display name may contain an `@`, and a real phishing message used `service@paypal.com` as
+the display name in front of an unrelated address. Splitting that string on the first token
+reports the forged half and reads as PayPal; RFC 5322 parsers give up and report nothing.
+Neither failure is catchable by authentication — SPF, DKIM and DMARC all pass on such a
+message, because it genuinely was sent through the From domain's infrastructure and DMARC
+does not cover the display name.
+
 That last row is the only thing that carries a claim from "this domain sent it" to "this
 person sent it", and it requires an explicit operator assertion. Nothing infers it. In
 particular an aligned SPF pass alone never gets there: SPF authenticates an envelope
@@ -102,6 +113,20 @@ The channel therefore accepts authentication results only from an `authserv-id` 
 operator configured for that account, and fails closed when none is configured. This is
 per account, not per channel, because a single mailbox aggregates accounts sitting behind
 different boundaries.
+
+Failing closed has to be *legible*, though, or it is indistinguishable from having checked.
+`auth_check` returns an `evaluated` flag beside the verdict: `false` means the DKIM/SPF
+checks never ran — no headers, no trusted `authserv-id`, no sender address — and `checks` is
+empty for that reason rather than because the evidence was inconclusive. A caller that reads
+`unknown` as "checked, could not tell" and skips `evaluated` is acting on a check that did
+not happen. The warnings alongside it name what is missing, including the `authserv-id`
+values observed on the message, so configuring the boundary is a copy step.
+
+A missing `trusted-senders.json` does not stop the check. Nobody is enrolled, so nothing can
+reach `verified`, but that is the same state as every sender being unenrolled — which is
+already handled, because enrollment and authentication answer different questions. A file
+that exists and will not parse is the opposite case: the operator wrote a policy that is not
+being applied, and the command exits non-zero rather than evaluating against an empty one.
 
 ---
 

@@ -155,63 +155,125 @@ final class EnvelopeIndex {
         }
     }
 
-    /// Account UUID -> (displayName, userName) via the system Accounts store
-    /// (same Full Disk Access umbrella as the mail directory). Best-effort:
-    /// returns an empty map when unreadable, and callers fall back to UUIDs.
-    private var cachedAccountNames: [String: (
-        name: String,
-        userName: String?,
-        logicalAccountID: String
-    )]?
+    /// One account row as it exists in the Accounts store, before inheritance is resolved.
+    private struct RawAccountRow {
+        let primaryKey: Int64
+        let identifier: String?
+        let accountDescription: String?
+        let userName: String?
+        let parentPrimaryKey: Int64?
+    }
 
-    func accountNames() -> [String: (
-        name: String,
-        userName: String?,
-        logicalAccountID: String
-    )] {
+    /// Resolved, human-facing identity for one Mail account UUID.
+    struct AccountMetadata {
+        let name: String
+        /// Display/sign-in identifier, inherited from an ancestor when this row has none.
+        let userName: String?
+        /// True when `userName` came from this account's own row. Inherited usernames are a
+        /// *sign-in* identity (an Apple ID may be any third-party address) and are not
+        /// interchangeable with mail-account identity, so resolution consults them only
+        /// after no account owns the string outright.
+        let ownsUserName: Bool
+        /// Root ancestor identifier: the durable grouping key for one logical account.
+        /// Account trees nest deeper than one level, so grouping by the immediate parent
+        /// lets two rows of the *same* account self-report as different logical accounts.
+        let logicalAccountID: String
+    }
+
+    /// Account UUID -> resolved identity via the system Accounts store (same Full Disk
+    /// Access umbrella as the mail directory). Best-effort: returns an empty map when
+    /// unreadable, and callers fall back to UUIDs.
+    private var cachedAccountNames: [String: AccountMetadata]?
+
+    func accountNames() -> [String: AccountMetadata] {
         if let cachedAccountNames { return cachedAccountNames }
-        var map: [String: (name: String, userName: String?, logicalAccountID: String)] = [:]
-        let path = accountsDatabasePath.path
-        var handle: OpaquePointer?
-        if sqlite3_open_v2(path, &handle, SQLITE_OPEN_READONLY, nil) == SQLITE_OK, let handle {
-            defer { sqlite3_close_v2(handle) }
-            var stmt: OpaquePointer?
+        let rows = readAccountRows()
+        let byPrimaryKey = Dictionary(uniqueKeysWithValues: rows.map { ($0.primaryKey, $0) })
+
+        /// Self, then each ancestor, stopping on a cycle.
+        func ancestry(of row: RawAccountRow) -> [RawAccountRow] {
+            var chain = [row]
+            var visited: Set<Int64> = [row.primaryKey]
+            var current = row
+            while let parentKey = current.parentPrimaryKey,
+                  let parent = byPrimaryKey[parentKey],
+                  visited.insert(parentKey).inserted {
+                chain.append(parent)
+                current = parent
+            }
+            return chain
+        }
+
+        var map: [String: AccountMetadata] = [:]
+        for row in rows {
+            guard let uuid = row.identifier else { continue }
+            let chain = ancestry(of: row)
             // Mail's mailbox URLs are hosted by the *child* (per-dataclass) account row,
             // whose own description and username are NULL for IMAP providers (Google,
-            // Yahoo, iCloud); the human-facing values live on the parent. Fall back to it.
-            let sql = """
-                SELECT c.ZIDENTIFIER,
-                       COALESCE(c.ZACCOUNTDESCRIPTION, p.ZACCOUNTDESCRIPTION),
-                       COALESCE(c.ZUSERNAME, p.ZUSERNAME),
-                       COALESCE(p.ZIDENTIFIER, c.ZIDENTIFIER)
-                FROM ZACCOUNT c
-                LEFT JOIN ZACCOUNT p ON c.ZPARENTACCOUNT = p.Z_PK
-                WHERE c.ZIDENTIFIER IS NOT NULL
-                """
-            if sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK, let stmt {
-                defer { sqlite3_finalize(stmt) }
-                while sqlite3_step(stmt) == SQLITE_ROW {
-                    guard let idText = sqlite3_column_text(stmt, 0) else { continue }
-                    let uuid = String(cString: idText)
-                    let name = sqlite3_column_text(stmt, 1).map { String(cString: $0) }
-                    let user = sqlite3_column_text(stmt, 2).map { String(cString: $0) }
-                    let logicalAccountID = sqlite3_column_text(stmt, 3)
-                        .map { String(cString: $0) } ?? uuid
-                    map[uuid] = (
-                        name: name ?? uuid,
-                        userName: user,
-                        logicalAccountID: logicalAccountID)
-                }
-            }
-        } else if let handle {
-            sqlite3_close_v2(handle)
+            // Yahoo, iCloud); the human-facing values live on an ancestor.
+            let name = chain.compactMap { $0.accountDescription }.first ?? uuid
+            let userName = chain.compactMap { $0.userName }.first
+            // Closest-to-root identifier, so every row of one account tree agrees.
+            let logicalAccountID = chain.reversed().compactMap { $0.identifier }.first ?? uuid
+            map[uuid] = AccountMetadata(
+                name: name,
+                userName: userName,
+                ownsUserName: row.userName != nil,
+                logicalAccountID: logicalAccountID)
         }
         cachedAccountNames = map
         return map
     }
 
+    private func readAccountRows() -> [RawAccountRow] {
+        var rows: [RawAccountRow] = []
+        var handle: OpaquePointer?
+        guard sqlite3_open_v2(accountsDatabasePath.path, &handle, SQLITE_OPEN_READONLY, nil)
+                == SQLITE_OK, let handle else {
+            if let handle { sqlite3_close_v2(handle) }
+            return rows
+        }
+        defer { sqlite3_close_v2(handle) }
+
+        var stmt: OpaquePointer?
+        let sql = """
+            SELECT Z_PK, ZIDENTIFIER, ZACCOUNTDESCRIPTION, ZUSERNAME, ZPARENTACCOUNT
+            FROM ZACCOUNT
+            """
+        guard sqlite3_prepare_v2(handle, sql, -1, &stmt, nil) == SQLITE_OK, let stmt else {
+            return rows
+        }
+        defer { sqlite3_finalize(stmt) }
+
+        /// Empty and whitespace-only columns carry no identity; treat them as absent so
+        /// they neither shadow an ancestor's value nor match a caller's search string.
+        func text(_ column: Int32) -> String? {
+            guard let raw = sqlite3_column_text(stmt, column) else { return nil }
+            let value = String(cString: raw).trimmingCharacters(in: .whitespaces)
+            return value.isEmpty ? nil : value
+        }
+
+        while sqlite3_step(stmt) == SQLITE_ROW {
+            let parentKey = sqlite3_column_type(stmt, 4) == SQLITE_NULL
+                ? nil : sqlite3_column_int64(stmt, 4)
+            rows.append(RawAccountRow(
+                primaryKey: sqlite3_column_int64(stmt, 0),
+                identifier: text(1),
+                accountDescription: text(2),
+                userName: text(3),
+                parentPrimaryKey: parentKey))
+        }
+        return rows
+    }
+
     /// Resolve a user-supplied account name (display name, user name, or UUID)
     /// to the account UUIDs it matches.
+    ///
+    /// Tiers are consulted in descending order of how specifically the string names a
+    /// *mail* account: UUID, display name, a username the account owns, and only last a
+    /// username inherited from an ancestor. Without the last tier being last, an Apple ID
+    /// registered with a third-party address collides with the Mail account that genuinely
+    /// owns that address, and neither resolves.
     func accountUUIDs(matching name: String) throws -> [String] {
         let target = name.lowercased()
         let names = accountNames()
@@ -220,24 +282,21 @@ final class EnvelopeIndex {
             return [exactUUID]
         }
 
-        let displayNameMatches = allUUIDs.filter {
-            names[$0]?.name.lowercased() == target
-        }
-        if !displayNameMatches.isEmpty {
+        let tiers: [(String) -> Bool] = [
+            { names[$0]?.name.lowercased() == target },
+            { names[$0]?.ownsUserName == true && names[$0]?.userName?.lowercased() == target },
+            { names[$0]?.ownsUserName == false && names[$0]?.userName?.lowercased() == target },
+        ]
+        for matches in tiers.lazy.map({ allUUIDs.filter($0) }) where !matches.isEmpty {
             return try accountUUIDsWithinOneLogicalAccount(
-                displayNameMatches, metadata: names, requestedName: name)
+                matches, metadata: names, requestedName: name)
         }
-
-        let userNameMatches = allUUIDs.filter {
-            names[$0]?.userName?.lowercased() == target
-        }
-        return try accountUUIDsWithinOneLogicalAccount(
-            userNameMatches, metadata: names, requestedName: name)
+        return []
     }
 
     private func accountUUIDsWithinOneLogicalAccount(
         _ matches: Set<String>,
-        metadata: [String: (name: String, userName: String?, logicalAccountID: String)],
+        metadata: [String: AccountMetadata],
         requestedName: String
     ) throws -> [String] {
         let logicalAccountIDs = Set(matches.compactMap { metadata[$0]?.logicalAccountID })
@@ -338,14 +397,30 @@ final class EnvelopeIndex {
     }
 
     /// All non-deleted copies of a message by RFC 2822 Message-ID, newest first.
-    func findMessage(messageIDHeader: String) throws -> [[String: Any]] {
+    ///
+    /// `logicalMailboxRowIDs` scopes only the *projection*, never the result set: it adds
+    /// `logical_mailbox_rowid` so a caller matching on a mailbox name sees the mailbox a
+    /// copy is labeled into. Gmail keeps the physical copy under [Gmail]/All Mail, so
+    /// without this a mailbox `search` reported (INBOX) can never match here.
+    func findMessage(
+        messageIDHeader: String,
+        logicalMailboxRowIDs: [Int64] = []
+    ) throws -> [[String: Any]] {
+        var selectedColumns = Self.messageColumns
+        var selectedColumnBinds: [Bind] = []
+        if !logicalMailboxRowIDs.isEmpty,
+           anyLabelRows(mailboxRowIDs: logicalMailboxRowIDs),
+           let scope = mailboxScopeClause(rowIDs: logicalMailboxRowIDs, includeLabels: true) {
+            selectedColumns += ", \(scope.logicalMailboxSQL) AS logical_mailbox_rowid"
+            selectedColumnBinds = scope.logicalMailboxRowIDBinds.map { Bind.int($0) }
+        }
         let sql = """
-            SELECT \(Self.messageColumns)
+            SELECT \(selectedColumns)
             \(Self.messageJoins)
             WHERE g.message_id_header = ? AND m.deleted = 0
             ORDER BY m.date_received DESC
             """
-        return try query(sql, [.text(messageIDHeader)])
+        return try query(sql, selectedColumnBinds + [.text(messageIDHeader)])
     }
 
     /// (to, cc) recipients for a message ROWID. type 0 = to, 1 = cc.

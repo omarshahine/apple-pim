@@ -51,6 +51,48 @@ func formatAddress(address: String, comment: String) -> String {
     return trimmed.isEmpty ? address : "\(trimmed) <\(address)>"
 }
 
+/// Split a flattened `"Name <addr>"` (or bare address) back into its two parts.
+///
+/// The display name is attacker-controlled and may itself contain an `@`, which makes the
+/// flattened form a security boundary rather than a formatting detail: a real phishing
+/// message carried the display name `service@paypal.com` in front of an unrelated address,
+/// and the two obvious ways to re-read that string fail in opposite directions — RFC 5322
+/// parsers (Python's `parseaddr`) return *nothing*, while splitting on the first token
+/// returns the forged half and reports the message as PayPal's. Anchor on the last `<`, so
+/// a name containing brackets or an `@` cannot displace the real address.
+func parseAddress(_ raw: String) -> (name: String, address: String) {
+    let trimmed = raw.trimmingCharacters(in: .whitespaces)
+    guard let open = trimmed.lastIndex(of: "<"),
+          let close = trimmed[open...].lastIndex(of: ">") else {
+        // No brackets: an address only if it looks like one, otherwise a bare display name.
+        return trimmed.contains("@") ? (name: "", address: trimmed) : (name: trimmed, address: "")
+    }
+    let address = String(trimmed[trimmed.index(after: open)..<close])
+        .trimmingCharacters(in: .whitespaces)
+    var name = String(trimmed[trimmed.startIndex..<open]).trimmingCharacters(in: .whitespaces)
+    if name.count >= 2, name.hasPrefix("\""), name.hasSuffix("\"") {
+        name = String(name.dropFirst().dropLast())
+    }
+    return (name: name, address: address)
+}
+
+/// Add structured `senderAddress`/`senderName` (plus the reply-to pair when present)
+/// beside the flattened strings a JXA-shaped message dict already carries. The SQLite
+/// engine has the columns already and never routes through here.
+func withParsedAddresses(_ message: [String: Any]) -> [String: Any] {
+    var enriched = message
+    for (flatKey, addressKey, nameKey) in [
+        ("sender", "senderAddress", "senderName"),
+        ("replyTo", "replyToAddress", "replyToName"),
+    ] {
+        guard let raw = message[flatKey] as? String else { continue }
+        let parsed = parseAddress(raw)
+        enriched[addressKey] = parsed.address
+        enriched[nameKey] = parsed.name
+    }
+    return enriched
+}
+
 /// Epoch seconds -> ISO 8601 with milliseconds, matching JXA's Date.toISOString().
 func isoStringFromEpoch(_ epoch: Double) -> String {
     let formatter = ISO8601DateFormatter()

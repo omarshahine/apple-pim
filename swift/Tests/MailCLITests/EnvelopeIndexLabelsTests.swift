@@ -131,6 +131,69 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         XCTAssertEqual(spamMessages.first?["isJunk"] as? Bool, true)
     }
 
+    func testFindMessageReportsTheLabeledMailboxWhenScopedToIt() throws {
+        let index = try openFixture(includeLabels: true)
+
+        // 101 lives physically in [Gmail]/All Mail and reaches INBOX only via `labels`.
+        // `search` reports it as INBOX, so `get --mailbox INBOX` has to see INBOX here too;
+        // without the projection it scored against All Mail and the hint never matched.
+        let scoped = try index.findMessage(
+            messageIDHeader: "<m1@example.com>", logicalMailboxRowIDs: [inboxRowID])
+        XCTAssertEqual(scoped.count, 1)
+        XCTAssertEqual(scoped.first?["logical_mailbox_rowid"] as? Int64, inboxRowID)
+
+        // Unscoped lookups keep the physical mailbox and add no column.
+        let unscoped = try index.findMessage(messageIDHeader: "<m1@example.com>")
+        XCTAssertEqual(unscoped.count, 1)
+        XCTAssertNil(unscoped.first?["logical_mailbox_rowid"])
+    }
+
+    func testFindMessageScopeNarrowsTheProjectionButNotTheResults() throws {
+        let index = try openFixture(includeLabels: true)
+
+        // 105 is in All Mail with no label at all. Scoping to INBOX must still return it
+        // (the scope is a projection, not a filter) with no logical mailbox claimed.
+        let rows = try index.findMessage(
+            messageIDHeader: "<m5@example.com>", logicalMailboxRowIDs: [inboxRowID])
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNil(rows.first?["logical_mailbox_rowid"] as? Int64)
+    }
+
+    func testGetRefusesAnAccountHintItCannotResolve() throws {
+        let index = try openFixture(includeLabels: true)
+        let engine = SQLiteEngine(index: index, allMailboxes: try index.mailboxes())
+
+        // Message-IDs are sender-generated, so one message can exist as two local copies
+        // under different accounts. Dropping an unresolvable hint returned whichever copy
+        // sorted first with `success: true`; refusing to guess is the only safe answer.
+        XCTAssertThrowsError(
+            try engine.get(id: "m1@example.com", includeSource: false, accountHint: "Nope")
+        ) { error in
+            guard case EnvelopeIndexError.notFound(let message) = error else {
+                return XCTFail("Expected notFound, got \(error)")
+            }
+            XCTAssertTrue(message.contains("Account not found: Nope"), message)
+        }
+    }
+
+    func testSQLiteEngineReportsTheSenderAddressSeparatelyFromTheDisplayName() throws {
+        let index = try openFixture(includeLabels: true)
+        let engine = SQLiteEngine(index: index, allMailboxes: try index.mailboxes())
+
+        let result = try engine.messages(
+            mailbox: "Phish", account: nil, limit: 10, filter: nil)
+        let message = try XCTUnwrap((result["messages"] as? [[String: Any]])?.first)
+
+        // The two columns come through intact. Re-deriving these from `sender` is where
+        // consumers go wrong: the naive read reports the message as PayPal's.
+        XCTAssertEqual(message["senderAddress"] as? String, "store+abc@g.shopifyemail.com")
+        XCTAssertEqual(message["senderName"] as? String, "service@paypal.com")
+        // ...and the flattened field is unchanged, so existing callers keep working.
+        XCTAssertEqual(
+            message["sender"] as? String,
+            "service@paypal.com <store+abc@g.shopifyemail.com>")
+    }
+
     // MARK: - Fixture
 
     private func rowIDs(_ rows: [[String: Any]]) -> Set<Int64> {
@@ -275,10 +338,14 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (1, 'imap://GMAIL-ACCOUNT/%5BGmail%5D/All%20Mail'),
         (2, 'imap://GMAIL-ACCOUNT/INBOX'),
         (3, 'ews://OTHER-ACCOUNT/Inbox'),
-        (4, 'imap://GMAIL-ACCOUNT/Spam');
+        (4, 'imap://GMAIL-ACCOUNT/Spam'),
+        (5, 'ews://OTHER-ACCOUNT/Phish');
 
         INSERT INTO addresses (ROWID, address, comment) VALUES
-        (1, 'sender@example.com', 'Example Sender');
+        (1, 'sender@example.com', 'Example Sender'),
+        -- A forged display name that is itself an address. The Envelope Index holds the
+        -- two values apart; only the joined string conflates them.
+        (2, 'store+abc@g.shopifyemail.com', 'service@paypal.com');
 
         INSERT INTO subjects (ROWID, subject) VALUES
         (1, 'Needle in a haystack'),
@@ -288,7 +355,8 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (5, 'Needle five'),
         (6, 'Direct mailbox message'),
         (7, 'Exchange direct message'),
-        (8, 'Spam offer');
+        (8, 'Spam offer'),
+        (9, 'Your account is on hold');
 
         INSERT INTO message_global_data (ROWID, message_id_header) VALUES
         (1, '<m1@example.com>'),
@@ -298,7 +366,8 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (5, '<m5@example.com>'),
         (6, '<m6@example.com>'),
         (7, '<m7@example.com>'),
-        (8, '<m8@example.com>');
+        (8, '<m8@example.com>'),
+        (9, '<m9@example.com>');
 
         -- 101-105 are the Gmail copies: physically in All Mail, reaching INBOX only
         -- through `labels`. A real Gmail INBOX owns no messages rows at all; 106 is put
@@ -314,7 +383,8 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
         (105, 5, 1, 5, 2000, 2000, 1, 0, 0),
         (106, 6, 1, 6, 2000, 2000, 2, 0, 0),
         (107, 7, 1, 7, 2000, 2000, 3, 0, 0),
-        (108, 8, 1, 8, 2000, 2000, 1, 0, 0);
+        (108, 8, 1, 8, 2000, 2000, 1, 0, 0),
+        (109, 9, 2, 9, 2000, 2000, 5, 0, 0);
 
         """
 

@@ -7,7 +7,9 @@
       "date": "2026-03-15T08:30:00-07:00",
       "read": false,
       "flagged": false,
-      "mailbox": "INBOX"
+      "mailbox": "INBOX",
+      "senderAddress": "boss@example.com",
+      "senderName": ""
     },
     {
       "id": "msg-002@example.com",
@@ -16,7 +18,9 @@
       "date": "2026-03-15T10:00:00-07:00",
       "read": true,
       "flagged": false,
-      "mailbox": "INBOX"
+      "mailbox": "INBOX",
+      "senderAddress": "friend@example.com",
+      "senderName": ""
     }
   ]
 }

@@ -233,7 +233,10 @@ When creating reminders:
 - Suggest a list if the user has organized lists
 - Ask about priority for urgent items
 - For location-based reminders, use the `location` field with latitude/longitude coordinates and proximity ("arrive" or "depart")
-- A URL can be attached to any reminder using the `url` field
+- A URL can be attached to any reminder using the `url` field. Apple Reminders does **not**
+  display `EKReminder.url`, so the CLI also mirrors the link into the notes as a `🔗 <url>`
+  line — that mirrored line is the part the user actually sees and taps. Clearing the URL
+  removes it; updating unrelated fields leaves both alone.
 - Use `reminder` with action `batch_create` when creating multiple reminders at once
 
 ### Completing Reminders
@@ -245,6 +248,10 @@ When creating reminders:
 When working with Mail.app:
 - **Mail.app must be running** -- if you get an "app not running" error, tell the user to open Mail.app
 - **Message IDs are RFC 2822** -- stable across mailbox moves, used for get/update/move/delete
+- **Use `senderAddress`, not `sender`, for any decision** -- `sender` is the joined
+  `"Name <addr>"` display string and the name half is chosen by whoever sent the message. A
+  forged display name that is itself an address (`service@paypal.com <...@elsewhere>`) reads
+  as legitimate if you split the joined string. `senderAddress` is the isolated address
 - **Use filters for efficiency** -- use `filter: "unread"` instead of fetching all and filtering client-side
 - **Use batch operations for triage** -- `mail` with action `batch_update` for marking multiple as read, `mail` with action `batch_delete` for cleanup
 - **Scope**: This accesses local Mail.app state. For sending email, composing drafts, or server-side folder management, direct the user to Fastmail MCP tools
