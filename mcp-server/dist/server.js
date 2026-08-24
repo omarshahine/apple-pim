@@ -77843,6 +77843,10 @@ var tools = [
           type: "string",
           description: "URL to attach (create/update, empty string to remove). Stored on EKReminder.url, which Apple Reminders does not display, so it is also mirrored into the notes as a visible link. Clearing the URL removes that mirrored line; unrelated updates leave both untouched."
         },
+        urlInNotes: {
+          type: "boolean",
+          description: "Whether to mirror `url` into the notes as a visible link (default true). Set false to store the URL for machine use only, accepting that nothing about it is visible in Apple Reminders. Ignored when no url is supplied."
+        },
         alarm: { type: "array", items: { type: "number" }, description: "Alarm minutes before due" },
         // No `required` here — empty object {} means "remove location" (batch_create has required since it doesn't support removal)
         location: {
@@ -77874,6 +77878,10 @@ var tools = [
               url: {
                 type: "string",
                 description: "URL to attach. Stored on EKReminder.url (not displayed by Apple Reminders) and mirrored into the notes as a visible link."
+              },
+              urlInNotes: {
+                type: "boolean",
+                description: "Mirror url into the notes as a visible link (default true)."
               },
               alarm: { type: "array", items: { type: "number" } },
               location: {
@@ -78439,6 +78447,8 @@ function buildReminderCreateArgs(args, targetList) {
     cliArgs.push("--priority", String(args.priority));
   if (args.url)
     cliArgs.push("--url", args.url);
+  if (args.url && args.urlInNotes === false)
+    cliArgs.push("--no-url-in-notes");
   if (args.alarm) {
     for (const minutes of args.alarm) {
       const val = Math.abs(Number(minutes));
@@ -78464,6 +78474,8 @@ function buildReminderUpdateArgs(args) {
     cliArgs.push("--priority", String(args.priority));
   if (args.url !== void 0)
     cliArgs.push("--url", args.url);
+  if (args.url !== void 0 && args.urlInNotes === false)
+    cliArgs.push("--no-url-in-notes");
   if (args.location)
     cliArgs.push("--location", JSON.stringify(args.location));
   if (args.recurrence)

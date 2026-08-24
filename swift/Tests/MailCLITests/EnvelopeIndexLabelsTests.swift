@@ -194,6 +194,23 @@ final class EnvelopeIndexLabelsTests: XCTestCase {
             "service@paypal.com <store+abc@g.shopifyemail.com>")
     }
 
+    func testLabeledRowKeepsItsPhysicalMailboxForOnDiskLookup() throws {
+        let index = try openFixture(includeLabels: true)
+        let engine = SQLiteEngine(index: index, allMailboxes: try index.mailboxes())
+
+        let row = try XCTUnwrap(try index.findMessage(
+            messageIDHeader: "<m1@example.com>", logicalMailboxRowIDs: [inboxRowID]).first)
+
+        // Reported as INBOX, because that is the mailbox the caller scoped to...
+        XCTAssertEqual(engine.mailboxRef(forRow: row)?.name, "INBOX")
+        // ...but the .emlx lives under the store that owns the row. Building the on-disk path
+        // from the logical mailbox searches a directory the file is not in, which turns a
+        // forced SQLite read into a failure and an auto read into a needless JXA fallback.
+        XCTAssertEqual(engine.physicalMailboxRef(forRow: row)?.name, "All Mail")
+        XCTAssertEqual(
+            engine.physicalMailboxRef(forRow: row)?.pathComponents, ["[Gmail]", "All Mail"])
+    }
+
     // MARK: - Fixture
 
     private func rowIDs(_ rows: [[String: Any]]) -> Set<Int64> {

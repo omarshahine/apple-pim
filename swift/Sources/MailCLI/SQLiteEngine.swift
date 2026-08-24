@@ -75,12 +75,21 @@ struct SQLiteEngine {
         return candidates
     }
 
-    private func mailboxRef(forRow row: [String: Any]) -> MailboxRef? {
+    /// The mailbox a row should be *reported* as living in: the one the caller scoped to when
+    /// a label put it there, otherwise the store that owns the row.
+    func mailboxRef(forRow row: [String: Any]) -> MailboxRef? {
         if let logicalRowID = row["logical_mailbox_rowid"] as? Int64,
            let logicalMailbox = mailboxByRowID[logicalRowID] {
             return logicalMailbox
         }
-        return (row["mailbox_url"] as? String).flatMap { mailboxByURL[$0] }
+        return physicalMailboxRef(forRow: row)
+    }
+
+    /// The mailbox that physically owns the row, ignoring any label. Anything touching the
+    /// on-disk store must use this: a Gmail INBOX message lives under [Gmail]/All Mail, so
+    /// building an .emlx path from the logical mailbox searches a directory the file is not in.
+    func physicalMailboxRef(forRow row: [String: Any]) -> MailboxRef? {
+        (row["mailbox_url"] as? String).flatMap { mailboxByURL[$0] }
     }
 
     /// URL-keyed lookup for the WRITE path, deliberately separate from `mailboxRef(forRow:)`
@@ -278,8 +287,11 @@ struct SQLiteEngine {
         guard let row = bestRow, let rowid = row["rowid"] as? Int64 else {
             throw EnvelopeIndexError.notFound("Message not found: \(id)")
         }
-        guard let mailbox = mailboxRef(forRow: row),
-              let emlxURL = index.emlxPath(forMessageRowID: rowid, mailbox: mailbox) else {
+        // Physical, not logical: the payload reports the mailbox the message is labeled into,
+        // but the .emlx sits under the store that owns the row.
+        guard let physicalMailbox = physicalMailboxRef(forRow: row),
+              let emlxURL = index.emlxPath(
+                forMessageRowID: rowid, mailbox: physicalMailbox) else {
             // Message metadata exists but the body isn't on disk (not yet
             // downloaded); the JXA engine can still fetch it from Mail.app.
             throw EnvelopeIndexError.notAvailable("Local .emlx not found for message; body requires the JXA engine")

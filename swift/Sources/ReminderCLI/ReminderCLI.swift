@@ -1077,6 +1077,9 @@ struct BatchReminderInput: Codable {
     let notes: String?
     let priority: Int?
     let url: String?
+    /// Mirror `url` into the notes so Apple Reminders shows a tappable link. Absent means
+    /// true, matching the single-item `create` default.
+    let urlInNotes: Bool?
     let alarm: [Int]?
     let recurrence: RecurrenceJSON?
     let location: LocationJSON?
@@ -1138,7 +1141,9 @@ struct BatchCreateReminder: AsyncParsableCommand {
 
                 if let urlStr = reminderInput.url, let reminderUrl = URL(string: urlStr) {
                     reminder.url = reminderUrl
-                    reminder.notes = notesWithVisibleURL(reminder.notes, url: urlStr)
+                    if reminderInput.urlInNotes ?? true {
+                        reminder.notes = notesWithVisibleURL(reminder.notes, url: urlStr)
+                    }
                 }
 
                 if let alarms = reminderInput.alarm {

@@ -197,8 +197,8 @@ When reading events/reminders, the `recurrence` array includes:
 7. **`url` is an EventKit field Apple Reminders never renders** — a link written only to
    `EKReminder.url` is invisible to the user. The CLI therefore mirrors it into the notes as
    a `🔗 <url>` line, which Reminders does display and data-detect. Clearing the URL removes
-   that line; updating other fields preserves both. Pass `--no-url-in-notes` to the CLI when
-   you want the value stored for machine use only
+   that line; updating other fields preserves both. Pass `urlInNotes: false` (or
+   `--no-url-in-notes` on the CLI) when you want the value stored for machine use only
 
 ### Contact Management
 1. **Use unified contacts** for consistent view across accounts

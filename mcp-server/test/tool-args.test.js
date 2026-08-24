@@ -216,3 +216,36 @@ describe("buildContactUpdateArgs", () => {
     expect(args).toEqual(["update", "--id", "contact_1", "--first-name", "Grace"]);
   });
 });
+
+describe("reminder url mirroring opt-out", () => {
+  // EKReminder.url is invisible in Apple Reminders, so the CLI mirrors it into the notes.
+  // A caller storing a machine-only link has to be able to reach the opt-out.
+  it("mirrors by default on create", () => {
+    const args = buildReminderCreateArgs({ title: "t", url: "https://example.com/x" });
+    expect(args).toContain("--url");
+    expect(args).not.toContain("--no-url-in-notes");
+  });
+
+  it("passes the opt-out on create when urlInNotes is false", () => {
+    const args = buildReminderCreateArgs({
+      title: "t", url: "https://example.com/x", urlInNotes: false,
+    });
+    expect(args).toContain("--no-url-in-notes");
+  });
+
+  it("passes the opt-out on update, including when clearing the url", () => {
+    expect(
+      buildReminderUpdateArgs({ id: "1", url: "https://example.com/x", urlInNotes: false })
+    ).toContain("--no-url-in-notes");
+    expect(
+      buildReminderUpdateArgs({ id: "1", url: "", urlInNotes: false })
+    ).toContain("--no-url-in-notes");
+  });
+
+  it("does not pass the opt-out when no url is supplied", () => {
+    expect(buildReminderCreateArgs({ title: "t", urlInNotes: false }))
+      .not.toContain("--no-url-in-notes");
+    expect(buildReminderUpdateArgs({ id: "1", urlInNotes: false }))
+      .not.toContain("--no-url-in-notes");
+  });
+});
