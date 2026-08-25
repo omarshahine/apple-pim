@@ -67,15 +67,19 @@ binds to the helper's bundle + signature, and it persists across host apps.
 Consequences to explain to the user:
 
 - **`notDetermined` is normal and permanent on the direct probe.** The grant
-  lives on the helper, invisible to `auth-status`. If actual Calendar /
-  Reminders / Contacts calls succeed, authorization is fine — do NOT chase
-  the `notDetermined` reading or tell the user to grant the terminal.
+  lives on the helper, where a direct `auth-status` cannot see it. If actual
+  Calendar / Reminders / Contacts calls succeed, authorization is fine — do
+  NOT chase the `notDetermined` reading or tell the user to grant the
+  terminal. To read the helper's own status, run `scripts/doctor.sh`: it
+  probes both routes and prints a line per route per domain.
 - **The first helper call per domain raises the macOS dialog.** The runner
   allows ~2 minutes for it; tell the user to watch for and answer the
   prompt. Grants persist afterward.
 - **Re-signing the helper drops all its grants.** `scripts/build-helper-app.sh`
   therefore skips rebuilding when nothing changed; expect re-prompts only
-  after a real helper update.
+  after a real helper update. When it has happened, `scripts/doctor.sh`
+  reports the helper route as not granted while the direct probe still reads
+  the same as before.
 - **If helper calls fail with Launch Services error -1712**, a previous
   helper instance is stuck (typically an unanswered dialog). Run
   `scripts/doctor.sh --fix` (see `/apple-pim:doctor`), then retry.
