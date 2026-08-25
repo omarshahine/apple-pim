@@ -75,6 +75,17 @@ struct NoopLocator: MessageLocator {
 /// - `jxa`: no locator, no database opened.
 /// - `auto`: locator when one can be opened, silently Noop otherwise.
 /// - `sqlite`: locator required; an open failure is reported to the caller.
+///
+/// KNOWN GAP, and the reason it is stated here rather than left to be rediscovered: the
+/// account-ambiguity refusal `SQLiteEngine.resolve` raises needs the Envelope Index to see
+/// that a name spans two logical accounts, so the `.jxa` arm above — which opens no database
+/// by contract — cannot raise it, and an ambiguous hint falls through to the JXA scan's
+/// first-match resolution. This is NOT the read/write split: every read command guards its
+/// fast path with the same `engine != .jxa`, so `--engine jxa` skips the check for reads
+/// exactly as it does for writes. Closing it means either opening the index under `--engine
+/// jxa` (breaking the contract, and unavailable anyway without Full Disk Access) or teaching
+/// the JXA sites to treat a multi-result `Mail.accounts.whose({name:})` as ambiguous.
+/// Tracked separately rather than changed here.
 func makeMessageLocator(engine: EngineChoice) throws -> MessageLocator {
     guard engine != .jxa else { return NoopLocator() }
     do {
