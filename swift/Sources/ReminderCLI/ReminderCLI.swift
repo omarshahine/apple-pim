@@ -191,6 +191,13 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
     if let dueDate = reminder.dueDateComponents {
         dict["dueDate"] = dateComponentsToString(dueDate)
     }
+    if let startDate = reminder.startDateComponents {
+        // Written on every dated reminder, mirrored from the due date (`setReminderDueDate`).
+        // Returned so that mirroring is inspectable rather than implicit: a reminder carrying a
+        // start date but no due date renders as dateless in Reminders.app, and that is only
+        // diagnosable if reads show the field.
+        dict["startDate"] = dateComponentsToString(startDate)
+    }
     if let notes = reminder.notes, !notes.isEmpty {
         dict["notes"] = notes
     }
@@ -207,6 +214,51 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
     }
 
     return dict
+}
+
+/// When a reminder's earliest alarm lands before its due date, the alert moment and the due
+/// moment — in that order.
+///
+/// Reminders.app has ONE notion of a reminder's time: it draws the EARLIEST alarm, and falls
+/// back to the due date only when a reminder has no alarms at all. So an alarm 15 minutes
+/// before a 3:00 due date does not add a heads-up ahead of a 3:00 reminder — it makes the
+/// reminder read 2:45, and the due time appears nowhere in the app.
+///
+/// Verified against Reminders.app on macOS 26: due 15:00 with no alarm renders "3:00 PM"; the
+/// same reminder with a -15m alarm renders "2:45 PM"; adding a companion offset-0 alarm does
+/// NOT restore it, because earliest still wins. Converting the offset to an absolute alarm
+/// resolves to the same instant and renders identically. Reminders' own writes only ever use
+/// `relativeOffset: 0` — an alert AT the due date — which is why the app has no UI for this
+/// and no way to draw it.
+///
+/// There is therefore no EventKit shape that renders as "due 3:00, alert 2:45". The field is
+/// not invisible, which mirroring could fix; it is *load-bearing in a way the caller did not
+/// ask for*, so the only honest move left is to say so at the moment it is written.
+///
+/// Location alarms carry no time of their own and are excluded.
+func earlyAlarmShift(for reminder: EKReminder) -> (alert: Date, due: Date)? {
+    guard let dueComponents = reminder.dueDateComponents,
+          let due = Calendar.current.date(from: dueComponents),
+          let alarms = reminder.alarms else { return nil }
+    let alertDates = alarms.compactMap { alarm -> Date? in
+        guard alarm.structuredLocation == nil else { return nil }
+        return alarm.absoluteDate ?? due.addingTimeInterval(alarm.relativeOffset)
+    }
+    guard let earliest = alertDates.min(), earliest < due else { return nil }
+    return (earliest, due)
+}
+
+/// The caller-facing form of `earlyAlarmShift`, or `nil` when nothing is being moved.
+func earlyAlarmWarnings(for reminder: EKReminder) -> [String] {
+    guard let shift = earlyAlarmShift(for: reminder) else { return [] }
+    let formatter = DateFormatter()
+    formatter.dateFormat = "yyyy-MM-dd HH:mm"
+    return ["Apple Reminders shows a reminder at its earliest alarm, not its due date, so this "
+            + "reminder will display and fire at \(formatter.string(from: shift.alert)) rather "
+            + "than \(formatter.string(from: shift.due)). Reminders has one alert per reminder "
+            + "and no separate due time, so an early alert cannot be added alongside the due "
+            + "date. Use an alarm of 0 to alert at the due date, or set the due date to when "
+            + "you actually want to be reminded."]
 }
 
 /// Marker line that carries a reminder's URL where Apple Reminders will actually show it.
@@ -264,8 +316,7 @@ func dateComponentsToString(_ components: DateComponents) -> String {
     return dateStr
 }
 
-/// Sets a reminder's date, keeping `startDateComponents` mirrored to
-/// `dueDateComponents`.
+/// Sets a reminder's due date and mirrors `startDateComponents` to match.
 ///
 /// Reminders.app writes both fields together and offers no separate "start
 /// date" control, but EventKit does not mirror them for you. Writing due
@@ -273,14 +324,6 @@ func dateComponentsToString(_ components: DateComponents) -> String {
 /// ends up with a start date but no due date renders as *dateless* in
 /// Reminders.app while still occupying a date slot in EventKit. Always go
 /// through this instead of assigning `dueDateComponents` directly.
-/// Sets a reminder's due date and mirrors `startDateComponents` to match.
-///
-/// Reminders.app writes both fields together and offers no separate "start
-/// date" control, but EventKit does not mirror them for you. Writing due
-/// alone leaves whatever start date was there before, and a reminder that
-/// ends up with a start date but no due date renders as *dateless* in
-/// Reminders.app. Always go through this instead of assigning
-/// `dueDateComponents` directly.
 func setReminderDueDate(_ reminder: EKReminder, to due: DateComponents?) {
     reminder.dueDateComponents = due
     reminder.startDateComponents = due.map { mirroredStart(from: $0) }
@@ -345,6 +388,12 @@ func alarmToDict(_ alarm: EKAlarm) -> [String: Any] {
     var dict: [String: Any] = [
         "relativeOffset": alarm.relativeOffset
     ]
+
+    if let absoluteDate = alarm.absoluteDate {
+        // An absolute alarm reports `relativeOffset: 0`, so without this an alarm pinned to a
+        // fixed moment read back identically to one anchored on the due date.
+        dict["absoluteDate"] = ISO8601DateFormatter().string(from: absoluteDate)
+    }
 
     if let location = alarm.structuredLocation {
         var locDict: [String: Any] = [:]
@@ -808,7 +857,11 @@ struct CreateReminder: AsyncParsableCommand {
           help: "Mirror --url into the notes so Apple Reminders shows a tappable link")
     var urlInNotes: Bool = true
 
-    @Option(name: .long, help: "Alarm minutes before due (can specify multiple)")
+    @Option(name: .long, help: ArgumentHelp(
+        "Alarm minutes before due (can specify multiple). NOT an early heads-up: Apple "
+        + "Reminders shows a reminder at its earliest alarm, so --alarm 15 on a reminder due "
+        + "at 3:00 makes it read and fire at 2:45, with the due time shown nowhere. Use 0 to "
+        + "alert at the due date, which is what Reminders itself writes"))
     var alarm: [Int] = []
 
     @Option(name: .long, help: "Recurrence rule as JSON (e.g., '{\"frequency\":\"monthly\",\"interval\":1}')")
@@ -862,11 +915,17 @@ struct CreateReminder: AsyncParsableCommand {
 
         try eventStore.save(reminder, commit: true)
 
-        outputJSON([
+        var payload: [String: Any] = [
             "success": true,
             "message": "Reminder created successfully",
             "reminder": reminderToDict(reminder)
-        ])
+        ]
+        // Loud at the moment it happens: an early alarm silently relocates the reminder in
+        // Reminders.app, and nothing downstream can tell that from a reminder genuinely due
+        // then. See `earlyAlarmShift`.
+        let warnings = earlyAlarmWarnings(for: reminder)
+        if !warnings.isEmpty { payload["warnings"] = warnings }
+        outputJSON(payload)
     }
 }
 
@@ -1027,11 +1086,16 @@ struct UpdateReminder: AsyncParsableCommand {
 
         try eventStore.save(reminder, commit: true)
 
-        outputJSON([
+        var payload: [String: Any] = [
             "success": true,
             "message": "Reminder updated successfully",
             "reminder": reminderToDict(reminder)
-        ])
+        ]
+        // Reachable without touching alarms at all: moving the due date LATER can push an
+        // existing alarm before it, so the check is on the saved state, not on what changed.
+        let warnings = earlyAlarmWarnings(for: reminder)
+        if !warnings.isEmpty { payload["warnings"] = warnings }
+        outputJSON(payload)
     }
 }
 
@@ -1122,6 +1186,7 @@ struct BatchCreateReminder: AsyncParsableCommand {
 
         var createdReminders: [[String: Any]] = []
         var errors: [[String: Any]] = []
+        var warnings: [String] = []
 
         for (index, reminderInput) in reminders.enumerated() {
             do {
@@ -1174,6 +1239,9 @@ struct BatchCreateReminder: AsyncParsableCommand {
                 // Save with commit: false to batch changes
                 try eventStore.save(reminder, commit: false)
                 createdReminders.append(reminderToDict(reminder))
+                warnings.append(contentsOf: earlyAlarmWarnings(for: reminder).map {
+                    "\(reminderInput.title): \($0)"
+                })
             } catch {
                 errors.append([
                     "index": index,
@@ -1188,14 +1256,16 @@ struct BatchCreateReminder: AsyncParsableCommand {
             try eventStore.commit()
         }
 
-        outputJSON([
+        var payload: [String: Any] = [
             "success": errors.isEmpty,
             "message": "Batch create completed",
             "created": createdReminders,
             "createdCount": createdReminders.count,
             "errors": errors,
             "errorCount": errors.count
-        ])
+        ]
+        if !warnings.isEmpty { payload["warnings"] = warnings }
+        outputJSON(payload)
     }
 }
 

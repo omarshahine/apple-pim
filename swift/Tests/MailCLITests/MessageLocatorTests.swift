@@ -190,17 +190,18 @@ final class MessageLocatorTests: XCTestCase {
         XCTAssertEqual(refs["gmail-only@example.com"]?.isEmpty, true)
     }
 
-    func testAnAMBIGUOUSAccountHintFailsOPENToEmptyCandidates() throws {
+    func testAnAMBIGUOUSAccountHintREFUSESTheWrite() throws {
         // The other account-hint failure: `accountUUIDs(matching:)` THROWS `.ambiguous` for a
-        // name spanning two logical accounts. A write must not inherit that (JXA still
-        // completes the write under `--engine auto`), so `resolve`'s `try?` fails OPEN. Every
-        // other fixture leaves the throw unreachable; this one reaches it.
+        // name spanning two logical accounts. `resolve` used to swallow that with `try?` and
+        // fail OPEN, which is correct about the LOCATOR and wrong about the net effect — the
+        // path it opened into is the JXA mailbox scan, which resolves accounts by first match.
+        // An ambiguous scope therefore refused a read and GUESSED a write. It now propagates,
+        // and `rethrowFatalFastPathError` turns it into a caller error under every engine.
         let index = try openFixture(accountsSQL: Self.sharedUsernameAccountRows)
 
         // Precondition: the throw actually fires here. Without it this test's outcome is
         // indistinguishable from `testUnresolvableAccountYieldsEmptyCandidatesAndDoesNotThrow`
-        // above — an account that merely matched nothing — and the swallow would still be
-        // untested.
+        // above — an account that merely matched nothing.
         XCTAssertThrowsError(try index.accountUUIDs(matching: "shared@example.com")) { error in
             guard case EnvelopeIndexError.ambiguous(let message) = error else {
                 return XCTFail("fixture precondition: expected .ambiguous, got \(error)")
@@ -211,37 +212,46 @@ final class MessageLocatorTests: XCTestCase {
         let engine = try SQLiteEngine(index: index)
 
         // Control, same database, same seam: an UNAMBIGUOUS hint still resolves. This is what
-        // separates "the swallow fired" from "the accounts store never loaded" — an unwired
+        // separates "the refusal fired" from "the accounts store never loaded" — an unwired
         // seam would empty this arm too.
         let unambiguous = try engine.resolve(
             messageIds: ["<gmail-only@example.com>"], mailbox: nil, account: "Shared A")
         XCTAssertEqual(unambiguous["gmail-only@example.com"]?.count, 1)
         XCTAssertEqual(unambiguous["gmail-only@example.com"]?.first?.accountUUID, gmailAccount)
 
-        // The fail-open. A throw out of `resolve` fails this test outright (it propagates);
-        // what is asserted is the shape the comment promises — every requested id still a key,
-        // every one carrying an empty candidate list, including ids in BOTH of the accounts the
-        // ambiguous username spans.
-        let refs = try engine.resolve(
+        // The refusal, carrying the ambiguity out of `resolve` unchanged so the caller is told
+        // which hint was ambiguous rather than being handed a first-match guess.
+        XCTAssertThrowsError(try engine.resolve(
             messageIds: ["<gmail-only@example.com>", "<other-acct@example.com>",
                          "<nope@example.com>"],
-            mailbox: nil, account: "shared@example.com")
+            mailbox: nil, account: "shared@example.com")) { error in
+            guard case EnvelopeIndexError.ambiguous(let message) = error else {
+                return XCTFail("expected .ambiguous out of resolve, got \(error)")
+            }
+            XCTAssertTrue(message.contains("multiple logical accounts"))
+        }
+    }
 
-        XCTAssertEqual(Set(refs.keys),
-                       ["gmail-only@example.com", "other-acct@example.com", "nope@example.com"])
-        for (id, candidates) in refs {
-            XCTAssertTrue(candidates.isEmpty, "\(id) must resolve to no candidates")
+    func testAmbiguousAccountIsFatalUnderEveryEngine() throws {
+        // The read path makes `.ambiguous` fatal regardless of engine because it describes the
+        // caller's INPUT, not the engine. The write path reaches the same helper through
+        // `resolveRowidMap`'s catch, so this holds the shared contract: `auto` must not
+        // degrade an ambiguous hint into the guessing scan the way it degrades a real engine
+        // failure.
+        let ambiguous = EnvelopeIndexError.ambiguous("Account matches multiple logical accounts: x")
+        for engine in [EngineChoice.auto, .sqlite, .jxa] {
+            XCTAssertThrowsError(try rethrowFatalFastPathError(engine, ambiguous)) { error in
+                guard case CLIError.invalidInput = error else {
+                    return XCTFail("\(engine): expected invalidInput, got \(error)")
+                }
+            }
         }
 
-        // And the same thing as JXA sees it: the comment's claim is about `lookup.candidates`,
-        // which the JS side reads off this map. Every array empty is `candidates.length === 0`
-        // for every id, so the `whose` scan makes every selection — v3.11's behaviour exactly.
-        let map = try parseRowidMap(buildRowidMapJS(refs))
-        XCTAssertEqual(Set(map.keys),
-                       ["gmail-only@example.com", "other-acct@example.com", "nope@example.com"])
-        for (id, entries) in map {
-            XCTAssertTrue(entries.isEmpty, "\(id) must reach JXA with an empty candidate array")
-        }
+        // The contrast that makes the line above mean something: a NON-ambiguity failure still
+        // fails open under `auto`, so a missing or unreadable index degrades to the JXA scan
+        // exactly as before. Only the caller's own ambiguous input is refused.
+        XCTAssertNoThrow(try rethrowFatalFastPathError(.auto, CLIError.notFound("no index")))
+        XCTAssertThrowsError(try rethrowFatalFastPathError(.sqlite, CLIError.notFound("no index")))
     }
 
     // MARK: - Candidate ordering

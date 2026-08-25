@@ -77,5 +77,21 @@ jobs:
             --source-commit "${{ github.sha }}" \
             --source-ref "${{ github.ref_name }}"
 
-      - name: Verify
-        run: clawhub package inspect apple-pim-cli
+      # `clawhub package inspect apple-pim-cli` with no version prints whatever is
+      # currently latest and exits 0 either way, so it proved nothing about THIS
+      # publish — the same hole the NPM verify step had. Pinning `--version` makes
+      # it an assertion: the CLI exits 1 on "Version not found", so the loop ends
+      # only when the tag's version is actually resolvable.
+      - name: Verify the published version is live on ClawHub
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          for attempt in $(seq 1 20); do
+            if clawhub package inspect apple-pim-cli --version "$VERSION" --json > inspect.json; then
+              echo "apple-pim-cli@$VERSION is live on ClawHub."
+              exit 0
+            fi
+            echo "Attempt $attempt: $VERSION not on ClawHub yet; retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::apple-pim-cli@$VERSION never appeared on ClawHub after 5 minutes"
+          exit 1

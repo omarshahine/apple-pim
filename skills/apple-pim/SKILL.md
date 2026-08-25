@@ -200,6 +200,41 @@ When reading events/reminders, the `recurrence` array includes:
    that line; updating other fields preserves both. Pass `urlInNotes: false` (or
    `--no-url-in-notes` on the CLI) when you want the value stored for machine use only
 
+8. **`alarm` on a reminder moves the reminder; it is not an early heads-up** — Apple Reminders
+   has one notion of a reminder's time and draws the *earliest* alarm, falling back to the due
+   date only when a reminder has no alarms. `alarm: [15]` on a reminder due at 3:00 makes it
+   read and fire at 2:45, and the 3:00 due time appears nowhere in the app. Adding a companion
+   alarm at the due date does not restore it (earliest still wins), and an absolute alarm
+   resolves to the same instant. Use `alarm: [0]` to alert at the due date — that is what
+   Reminders itself writes — or set the due date to the time the user actually wants. The CLI
+   returns a `warnings` array whenever a write moves the visible time; surface it
+9. **`startDate` mirrors the due date and is returned on reads** — Reminders offers no separate
+   start-date control, so the CLI keeps the two in sync on every write. A reminder that ends up
+   with a start date but no due date renders as *dateless* in Reminders while still occupying a
+   date slot in EventKit; the returned `startDate` is how you diagnose that
+
+### What EventKit cannot reach
+
+These are Reminders/Calendar features with no EventKit API. **Say so and stop — do not
+improvise an adjacent thing.** Writing `#tag` into a title, creating five flat reminders to
+stand in for a checklist, or putting "SUBTASK:" in the notes produces data the user did not ask
+for and has to clean up by hand.
+
+| Feature | Status |
+| --- | --- |
+| Subtasks / nesting | **Verified dead.** `parentID` (type `EKObjectID`) accepts a `setValue` in memory but does not survive `eventStore.save()`; every object ID comes back temporary, and AppleScript's `container` is read-only. Only the Reminders UI can create the relationship |
+| Tags | No API — a `#tag` in a title or note is inert text, not a tag |
+| Flag | No API. Distinct from priority, which *is* supported |
+| Attached images / files | No API. Part of why a link has to live in `notes` to be reachable |
+| Sections within a list | No API |
+| Smart Lists | No API |
+| Remind me when messaging | No API |
+| Assignee on a shared list | No API |
+
+Calendar's `url` field is **not** on this list: Calendar renders `EKEvent.url` as a live link in
+the event inspector, so `url` on an event reaches the user as-is and needs no mirroring. Only
+Reminders hides it.
+
 ### Contact Management
 1. **Use unified contacts** for consistent view across accounts
 2. **Preserve existing data** when updating (only modify changed fields)

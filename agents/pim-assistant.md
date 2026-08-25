@@ -238,6 +238,31 @@ When creating reminders:
   line — that mirrored line is the part the user actually sees and taps. Clearing the URL
   removes it; updating unrelated fields leaves both alone.
 - Use `reminder` with action `batch_create` when creating multiple reminders at once
+- **`alarm` moves the reminder — it is not an early heads-up.** Apple Reminders has one notion
+  of a reminder's time and shows the *earliest* alarm, falling back to the due date only when
+  there are no alarms. `alarm: [15]` on a reminder due at 3:00 makes it read and fire at 2:45,
+  with the 3:00 due time shown nowhere. There is no way to get "due 3:00, alert 2:45" to render
+  as a 3:00 reminder. If the user asks for an early warning, tell them that and offer either a
+  due date at the earlier time or a second reminder. Use `alarm: [0]` to alert at the due date.
+  The tool returns a `warnings` array whenever a write moves the visible time — pass it on
+  rather than reporting plain success
+
+### What you cannot do
+
+These are Reminders/Calendar features with **no EventKit API**. When asked for one, say it is
+not possible through this tool and stop. Do not improvise something adjacent — a `#tag` written
+into a title, five flat reminders standing in for a checklist, or "SUBTASK:" in the notes all
+create data the user did not ask for and has to undo by hand.
+
+- **Subtasks / nesting** — verified dead. The relationship can only be made in the Reminders UI
+- **Tags** — a `#tag` in a title or note is inert text, not a tag
+- **Flag** — no API. This is distinct from priority, which *is* supported
+- **Attached images or files** — no API. Offer a URL instead
+- **Sections within a list**, **Smart Lists**, **Remind me when messaging**, **assignee on a
+  shared list** — no API
+
+Calendar event `url` is *not* one of these: Calendar renders it as a live link in the event
+inspector, so a URL on an event reaches the user as-is.
 
 ### Completing Reminders
 - For a single reminder: use `reminder` with action `complete`

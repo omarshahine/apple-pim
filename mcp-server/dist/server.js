@@ -77126,7 +77126,7 @@ import { dirname as dirname2, join as join3 } from "path";
 // package.json
 var package_default = {
   name: "apple-pim-mcp",
-  version: "3.14.0",
+  version: "3.15.0",
   description: "MCP server for Apple PIM, a Personal Information Manager for Calendar, Reminders, Contacts, and Mail",
   type: "module",
   main: "dist/server.js",
@@ -77847,7 +77847,7 @@ var tools = [
           type: "boolean",
           description: "Whether to mirror `url` into the notes as a visible link (default true). Set false to store the URL for machine use only, accepting that nothing about it is visible in Apple Reminders. Ignored when no url is supplied."
         },
-        alarm: { type: "array", items: { type: "number" }, description: "Alarm minutes before due" },
+        alarm: { type: "array", items: { type: "number" }, description: "Alarm minutes before due. NOT an early heads-up: Apple Reminders shows a reminder at its earliest alarm, so 15 on a reminder due at 3:00 makes it read and fire at 2:45, with the due time shown nowhere. Use 0 to alert at the due date." },
         // No `required` here — empty object {} means "remove location" (batch_create has required since it doesn't support removal)
         location: {
           type: "object",
@@ -77883,7 +77883,11 @@ var tools = [
                 type: "boolean",
                 description: "Mirror url into the notes as a visible link (default true)."
               },
-              alarm: { type: "array", items: { type: "number" } },
+              alarm: {
+                type: "array",
+                items: { type: "number" },
+                description: "Alarm minutes before due. Reminders shows a reminder at its earliest alarm, so a nonzero value moves the time the reminder displays and fires. Use 0 to alert at the due date."
+              },
               location: {
                 type: "object",
                 properties: {

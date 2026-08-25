@@ -51,5 +51,32 @@ jobs:
         run: npm publish --provenance --access public
         working-directory: openclaw
 
-      - name: Verify
-        run: npm view apple-pim-cli version
+      # npm answers `publish` before the version is queryable, and prints
+      # "Your package is being processed and may take a few minutes to become
+      # available" saying so. The previous check ran `npm view apple-pim-cli
+      # version` in the same job one line later and only ECHOED the result, so
+      # on the v3.14.0 run it printed 3.13.0 — the PREVIOUS version — and passed.
+      # A publish that genuinely failed to land looked identical.
+      #
+      # Poll the version-specific registry document instead, which 404s until the
+      # tag's version exists, and fail if it never appears. `no-cache` keeps a CDN
+      # copy of an earlier 404 from ending the poll early.
+      - name: Verify the published version is live on the registry
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          URL="https://registry.npmjs.org/apple-pim-cli/${VERSION}"
+          for attempt in $(seq 1 20); do
+            if curl -fsS -H 'Cache-Control: no-cache' "$URL" -o manifest.json; then
+              PUBLISHED=$(node -p "require('./manifest.json').version")
+              if [ "$PUBLISHED" = "$VERSION" ]; then
+                echo "apple-pim-cli@$VERSION is live on the registry."
+                exit 0
+              fi
+              echo "::error::Registry served version $PUBLISHED at $URL"
+              exit 1
+            fi
+            echo "Attempt $attempt: $VERSION not on the registry yet; retrying in 15s..."
+            sleep 15
+          done
+          echo "::error::apple-pim-cli@$VERSION never appeared on the registry after 5 minutes"
+          exit 1

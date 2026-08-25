@@ -366,13 +366,22 @@ extension SQLiteEngine: MessageLocator {
         // accelerates here and matches no account there — the same command completes under
         // `--engine auto` and reports "Message not found" under `--engine jxa`.
         //
-        // `try?` swallows `.ambiguous` on purpose — fail OPEN: an empty UUID set skips the byId
-        // path and lets JXA pick exactly as it would with no locator. Correct but slow, never
-        // wrong. Pinned by
-        // `MessageLocatorTests.testAnAMBIGUOUSAccountHintFailsOPENToEmptyCandidates`.
+        // `.ambiguous` PROPAGATES rather than being swallowed. Failing open here is correct
+        // about the locator in isolation — an empty UUID set skips the byId path and leaves
+        // JXA to pick exactly as it would with no locator — but it is wrong about the net
+        // effect, because the path it opens into is the JXA mailbox scan, which resolves
+        // accounts by FIRST MATCH. That is the same silent wrong-account pick the read path
+        // refuses outright (`rethrowFatalFastPathError`), so failing open here made an
+        // ambiguous account scope refuse a READ and guess a WRITE — backwards, since the
+        // write is the more consequential of the two.
+        //
+        // `resolveRowidMap` routes this through `rethrowFatalFastPathError`, which turns
+        // `.ambiguous` into `CLIError.invalidInput` under EVERY engine. Other errors out of
+        // the accounts store still fail open there, so a genuine index failure degrades to
+        // the scan as before — only the caller's own ambiguous input is refused.
         var accountUUIDs: Set<String>?
         if let account {
-            accountUUIDs = Set((try? index.accountUUIDs(matching: account)) ?? [])
+            accountUUIDs = Set(try index.accountUUIDs(matching: account))
         }
 
         // Every requested id is a key, so the JXA side can tell "resolved to nothing" from
