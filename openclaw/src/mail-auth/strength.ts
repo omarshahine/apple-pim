@@ -1,18 +1,20 @@
 /**
  * Maps `mail-cli auth-check` output onto per-identifier authentication strength.
  *
- * This is the shim boundary for OpenClaw RFC 0027
- * (https://github.com/openclaw/rfcs/pull/51). Core does not yet ship
- * `IdentifierAuthentication`, so the type is declared locally and the gate is applied
- * plugin-side. When the kernel lands the primitive, this module keeps its logic and only
- * its consumers change: the strengths below are handed to the ingress subject instead of
- * being enforced here.
+ * This was the shim boundary for OpenClaw RFC 0028
+ * (https://github.com/openclaw/rfcs/pull/51) while core did not yet ship
+ * `IdentifierAuthentication`. The kernel primitive now exists
+ * (openclaw/openclaw#123782), so the type comes from the plugin SDK and the gate runs in
+ * the ingress kernel: this module keeps its verdict→strength logic, and its consumers hand
+ * the strengths to the ingress subject instead of enforcing a minimum here.
  *
  * The invariant this module exists to hold: strength is derived only from transport
  * metadata that our own boundary authenticated, never from sender-controlled message
  * content. `mail-cli auth-check` enforces the provenance half (authserv-id pinning, SPF
  * alignment); this module refuses to promote anything it cannot justify.
  */
+
+import type { IdentifierAuthentication } from "openclaw/plugin-sdk/channel-ingress-runtime";
 
 /**
  * Ordered authentication strength. Mirrors the RFC 0027 scale.
@@ -28,30 +30,7 @@
  * wrong reason, which is how a diagnostic ends up describing a precise address as a
  * nickname. The RFC gained the fourth level after implementing it here surfaced the gap.
  */
-export type IdentifierAuthentication = "verified" | "asserted" | "unverified" | "mutable";
-
-const RANK: Record<IdentifierAuthentication, number> = {
-  verified: 3,
-  asserted: 2,
-  unverified: 1,
-  mutable: 0,
-};
-
-/** Returns true when `actual` meets or exceeds the required minimum. */
-export function meetsMinimum(
-  actual: IdentifierAuthentication,
-  minimum: IdentifierAuthentication,
-): boolean {
-  return RANK[actual] >= RANK[minimum];
-}
-
-/** Returns the weaker of two strengths, which is how entry and subject sides combine. */
-export function weakest(
-  a: IdentifierAuthentication,
-  b: IdentifierAuthentication,
-): IdentifierAuthentication {
-  return RANK[a] <= RANK[b] ? a : b;
-}
+export type { IdentifierAuthentication };
 
 /** Verdict vocabulary emitted by `mail-cli auth-check`. */
 export type MailAuthVerdict = "verified" | "suspicious" | "unknown" | "untrusted";

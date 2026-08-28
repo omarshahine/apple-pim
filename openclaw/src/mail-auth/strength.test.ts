@@ -2,10 +2,30 @@ import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
 import {
   mailAuthToIdentifierStrengths,
-  meetsMinimum,
-  weakest,
+  type IdentifierAuthentication,
   type MailAuthCheckResult,
 } from "./strength.ts";
+
+const authenticationRank: Record<IdentifierAuthentication, number> = {
+  verified: 3,
+  asserted: 2,
+  unverified: 1,
+  mutable: 0,
+};
+
+function meetsMinimum(
+  actual: IdentifierAuthentication,
+  minimum: IdentifierAuthentication,
+): boolean {
+  return authenticationRank[actual] >= authenticationRank[minimum];
+}
+
+function weakest(
+  a: IdentifierAuthentication,
+  b: IdentifierAuthentication,
+): IdentifierAuthentication {
+  return meetsMinimum(a, b) ? b : a;
+}
 
 /** Builds an auth-check result without restating unrelated fields in every case. */
 function result(overrides: Partial<MailAuthCheckResult> = {}): MailAuthCheckResult {

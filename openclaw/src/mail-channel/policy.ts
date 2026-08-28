@@ -10,9 +10,6 @@
  *   - every default is closed
  */
 
-import type { IdentifierAuthentication, MailIdentifierStrengths } from "../mail-auth/strength.ts";
-import { meetsMinimum } from "../mail-auth/strength.ts";
-
 /** What the channel does with an inbound message. */
 export type Admission = "dispatch" | "observe" | "drop";
 
@@ -30,13 +27,17 @@ export type IngressDecision = {
 };
 
 export type IngressInput = {
-  strengths: MailIdentifierStrengths;
-  /** Sender address, already normalized. */
-  senderAddress: string;
-  /** True when the sender matches an inbound allowlist entry or the operator. */
+  /**
+   * The ingress kernel's admission for this message: allowlist matching and the
+   * min(entry, subject) authentication gate, decided together in core
+   * (`resolveChannelMessageIngress`). Thread permission is expressed to the kernel as an
+   * injected allowlist entry, so a kernel admit already implies sufficient authentication.
+   */
+  kernelAdmitted: boolean;
+  /** True when the transport proved the sender's *domain*; feeds the observe escalation. */
+  domainVerified: boolean;
+  /** True when the sender matches a configured inbound allowlist entry or the operator. */
   allowlisted: boolean;
-  /** Minimum strength an identifier needs before it may authorize. */
-  minIdentifierAuthentication: IdentifierAuthentication;
   /** True when this message came from an address the agent itself sends as. */
   selfAddressed: boolean;
   /** Result of the thread rule, when the message claims thread membership. */
@@ -44,14 +45,14 @@ export type IngressInput = {
 };
 
 /**
- * Decides admission for one inbound message.
+ * Layers channel product policy over the kernel's admission.
  *
- * Order matters and is deliberate:
+ * The kernel owns "may this sender authorize a run": allowlist ∧ authentication strength.
+ * This function owns what the *channel* does around that answer, and order matters:
  *   1. loop guard, before any policy can grant anything
- *   2. thread permission, which is narrower than the allowlist and independent of it
- *   3. allowlist plus sufficient address strength
- *   4. authenticated-but-unknown, which is readable and nothing more
- *   5. everything else
+ *   2. the kernel's admit, attributed to the grant that carried it
+ *   3. authenticated-but-unknown, which is readable and nothing more
+ *   4. everything else
  */
 export function decideIngress(input: IngressInput): IngressDecision {
   // I13. An agent that can send and read mail can answer itself.
@@ -59,23 +60,14 @@ export function decideIngress(input: IngressInput): IngressDecision {
     return { admission: "drop", reason: "self_addressed" };
   }
 
-  const addressStrongEnough = meetsMinimum(
-    input.strengths.address,
-    input.minIdentifierAuthentication,
-  );
-
-  // I9. Thread permission waives the *allowlist*, because the agent already chose to
-  // contact this person when it started the thread. It does not waive *authentication*.
-  // decideThreadReply matches on the sender address, and an unauthenticated address is a
-  // claim: anyone who learns a participant's address and an agent Message-ID could
-  // otherwise spoof their way into a dispatch.
-  if (input.threadPermitted && addressStrongEnough) {
-    return { admission: "dispatch", reason: "thread_originated_by_agent" };
-  }
-
-  // I1, I4.
-  if (input.allowlisted && addressStrongEnough) {
-    return { admission: "dispatch", reason: "allowlisted_and_authenticated" };
+  // I1, I4, I9. The kernel admitted the sender through an allowlist entry with sufficient
+  // per-message strength. Thread permission waives the *allowlist*, never *authentication*:
+  // it enters the kernel as an injected entry whose subject-side strength is still gated,
+  // so an admit through only that entry is the thread grant in kernel clothing.
+  if (input.kernelAdmitted) {
+    return input.allowlisted
+      ? { admission: "dispatch", reason: "allowlisted_and_authenticated" }
+      : { admission: "dispatch", reason: "thread_originated_by_agent" };
   }
 
   // I5, I11, I4a. The transport proved a domain; nothing proved this human may direct an
@@ -87,7 +79,7 @@ export function decideIngress(input: IngressInput): IngressDecision {
   // dropping them here would mean adding someone to `allowFrom` *reduced* what the channel
   // does with their mail. That inversion is silent, and it lands on exactly the addresses
   // the operator cared enough to configure.
-  if (input.strengths.domain === "verified") {
+  if (input.domainVerified) {
     return {
       admission: "observe",
       reason:

@@ -16,11 +16,11 @@
       "./src/index.ts"
     ],
     "compat": {
-      "pluginApi": ">=2026.6.5"
+      "pluginApi": ">=2026.8.1"
     },
     "build": {
-      "openclawVersion": "2026.6.5",
-      "pluginSdkVersion": "2026.6.5"
+      "openclawVersion": "2026.8.1",
+      "pluginSdkVersion": "2026.8.1"
     },
     "environment": {
       "binaries": [
@@ -87,7 +87,7 @@
     "turndown": "^7.2.2"
   },
   "peerDependencies": {
-    "openclaw": ">=2026.6.5"
+    "openclaw": ">=2026.8.1"
   },
   "peerDependenciesMeta": {
     "openclaw": {
@@ -100,6 +100,6 @@
     "@types/node": "^25.5.0",
     "@types/mailparser": "^3.4.6",
     "tsup": "^8.5.0",
-    "openclaw": ">=2026.6.5"
+    "openclaw": ">=2026.8.1"
   }
 }
