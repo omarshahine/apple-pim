@@ -6,6 +6,7 @@ import type { OpenClawConfig } from "openclaw/plugin-sdk/config-contracts";
 
 const OPTIONS: DispatchOptions = {
   cfg: {} as OpenClawConfig,
+  agentId: "lobster",
   operatorAddresses: ["operator@example.com"],
   egressAllowlist: ["known@example.com"],
   selfAddresses: ["lobster@example.com"],
@@ -180,9 +181,11 @@ describe("dispatchAdmittedMessage", () => {
   // conversations; a thread has a natural start and finish.
   it("scopes the session per thread", async () => {
     const keys: (string | undefined)[] = [];
+    const agentIds: (string | undefined)[] = [];
     const { deps: d } = deps({
       dispatchReply: async ({ ctx }) => {
         keys.push(ctx.SessionKey);
+        agentIds.push(ctx.AgentId);
       },
     });
     const first = classified("operator@example.com");
@@ -197,10 +200,11 @@ describe("dispatchAdmittedMessage", () => {
       await dispatchAdmittedMessage(m, d, OPTIONS);
     }
     assert.deepEqual(keys, [
-      "apple-mail:default:m1",
-      "apple-mail:default:m1",
-      "apple-mail:default:m3",
+      "agent:lobster:apple-mail:default:m1",
+      "agent:lobster:apple-mail:default:m1",
+      "agent:lobster:apple-mail:default:m3",
     ]);
+    assert.deepEqual(agentIds, ["lobster", "lobster", "lobster"]);
   });
 
   it("keeps two senders in one thread together, since no thread spans strangers", async () => {
@@ -215,7 +219,10 @@ describe("dispatchAdmittedMessage", () => {
     b.threadKey = "m1";
     await dispatchAdmittedMessage(a, d, OPTIONS);
     await dispatchAdmittedMessage(b, d, OPTIONS);
-    assert.deepEqual(keys, ["apple-mail:default:m1", "apple-mail:default:m1"]);
+    assert.deepEqual(keys, [
+      "agent:lobster:apple-mail:default:m1",
+      "agent:lobster:apple-mail:default:m1",
+    ]);
   });
 });
 

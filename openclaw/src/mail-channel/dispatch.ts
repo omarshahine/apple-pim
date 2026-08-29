@@ -39,7 +39,7 @@ export type ReplySender = (params: {
  * reached through `ctx.channelRuntime`, whose surface is `{ [key: string]: unknown }`.
  */
 export type ReplyDispatcher = (params: {
-  ctx: { Body?: string; From?: string; To?: string; SessionKey?: string };
+  ctx: { Body?: string; From?: string; To?: string; SessionKey?: string; AgentId?: string };
   cfg: OpenClawConfig;
   // `deliver` must return a promise: the SDK awaits it to know when a block settled.
   dispatcherOptions: { deliver: (payload: { text?: string }) => Promise<unknown> };
@@ -73,6 +73,8 @@ export type DispatchDeps = {
 
 export type DispatchOptions = {
   cfg: OpenClawConfig;
+  /** Agent selected by the channel binding. Required when more than one agent exists. */
+  agentId: string;
   /** Addresses belonging to the operator. Always a permitted reply recipient. */
   operatorAddresses: readonly string[];
   /** Recipients the agent may originate mail to. */
@@ -131,7 +133,9 @@ function buildPrompt(message: MailboxMessage, summary: string | undefined): stri
   parts.push(
     "The body was deliberately not fetched, because most admitted mail is never worth " +
       "opening. When answering needs it, call `apple_pim_mail` with `action: \"get\"` and " +
-      "`id` set to the Message-ID above, then answer what the message actually asks.\n\n" +
+      "`id` set to the Message-ID above, then answer what the message actually asks. " +
+      "Do not call the mail tool's `send` or `reply` actions. Channel delivery owns the " +
+      "outbound reply and will send your final text exactly once.\n\n" +
       "Your reply is sent to the sender verbatim as the email body, so write the message " +
       "itself: no preamble, no restating the subject, no narrating that mail arrived.",
   );
@@ -191,7 +195,8 @@ export async function dispatchAdmittedMessage(
       // and finish. `threadKey` is the anchor the agent recorded for this thread, so every
       // message in it lands in the same session, and correspondents still cannot read each
       // other because no thread spans two of them.
-      SessionKey: `${options.sessionPrefix}:${message.threadKey}`,
+      SessionKey: `agent:${options.agentId}:${options.sessionPrefix}:${message.threadKey}`,
+      AgentId: options.agentId,
     },
     cfg: options.cfg,
     dispatcherOptions: {

@@ -231,6 +231,15 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
       replySubject(subject),
       "--body",
       body,
+      // Port 465 is blocked on some otherwise-supported networks. The Swift transport
+      // supports STARTTLS natively, and iCloud exposes it on 587.
+      "--tls-mode",
+      "starttls",
+      "--port",
+      "587",
+      // Delivery completion must not depend on a second IMAP connection. The channel keeps
+      // its own durable thread record using the SMTP Message-ID returned below.
+      "--no-imap-append-sent",
       // Threads the reply onto the original. `smtp-send` derives `References` from this when
       // none is passed, which is correct for answering a message directly.
       "--in-reply-to",

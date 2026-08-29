@@ -35,6 +35,7 @@ import {
 } from "../../lib/mail-quarantine.js";
 import { dispatchAdmittedMessage } from "./dispatch.ts";
 import { dispatchReplyWithBufferedBlockDispatcher } from "openclaw/plugin-sdk/reply-dispatch-runtime";
+import { resolveAgentRoute } from "openclaw/plugin-sdk/routing";
 import {
   channelBlockedPatch,
   channelReadyPatch,
@@ -334,6 +335,12 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
               completed += 1;
               continue;
             }
+            const route = resolveAgentRoute({
+              cfg: ctx.cfg,
+              channel: CHANNEL_ID,
+              accountId: ctx.accountId,
+              peer: { kind: "direct", id: message.address },
+            });
             await dispatchAdmittedMessage(
               message,
               {
@@ -359,6 +366,7 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
               },
               {
                 cfg: ctx.cfg,
+                agentId: route.agentId,
                 operatorAddresses: config.operatorAddresses ?? [],
                 egressAllowlist: config.egressAllowlist ?? [],
                 selfAddresses: config.selfAddresses ?? [],
