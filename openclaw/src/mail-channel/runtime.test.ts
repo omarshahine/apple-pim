@@ -3,7 +3,7 @@
 // ourselves means owning that too.
 import { describe, it } from "node:test";
 import { strict as assert } from "node:assert";
-import { replySubject } from "./runtime.ts";
+import { replySubject, replyTransportArgs } from "./runtime.ts";
 
 describe("replySubject", () => {
   it("prefixes a plain subject", () => {
@@ -26,5 +26,23 @@ describe("replySubject", () => {
 
   it("trims surrounding whitespace rather than embedding it", () => {
     assert.equal(replySubject("  Testing  "), "Re: Testing");
+  });
+});
+
+describe("replyTransportArgs", () => {
+  it("uses network-safe submission defaults for iCloud identities", () => {
+    assert.deepEqual(replyTransportArgs("agent@icloud.com"), [
+      "--tls-mode",
+      "starttls",
+      "--port",
+      "587",
+      "--no-imap-append-sent",
+    ]);
+    assert.deepEqual(replyTransportArgs("agent@ME.com"), replyTransportArgs("agent@icloud.com"));
+  });
+
+  it("does not override a custom SMTP transport", () => {
+    assert.deepEqual(replyTransportArgs("agent@example.com"), []);
+    assert.deepEqual(replyTransportArgs(undefined), []);
   });
 });

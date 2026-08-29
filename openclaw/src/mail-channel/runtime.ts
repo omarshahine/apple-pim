@@ -202,6 +202,18 @@ export function replySubject(subject: string | undefined): string {
 }
 
 /**
+ * Network-safe iCloud defaults for installations that use the CLI's implicit iCloud host.
+ * Other senders keep their configured SMTP transport untouched.
+ */
+export function replyTransportArgs(fromAddress: string | undefined): string[] {
+  const domain = fromAddress?.split("@").at(-1)?.trim().toLowerCase();
+  if (!domain || !["icloud.com", "me.com", "mac.com"].includes(domain)) {
+    return [];
+  }
+  return ["--tls-mode", "starttls", "--port", "587", "--no-imap-append-sent"];
+}
+
+/**
  * Sends a reply through `mail-cli smtp-send`.
  *
  * Deliberately not `mail-cli reply`, which drives Mail.app over JXA. That path asks Mail to
@@ -231,15 +243,10 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
       replySubject(subject),
       "--body",
       body,
-      // Port 465 is blocked on some otherwise-supported networks. The Swift transport
-      // supports STARTTLS natively, and iCloud exposes it on 587.
-      "--tls-mode",
-      "starttls",
-      "--port",
-      "587",
-      // Delivery completion must not depend on a second IMAP connection. The channel keeps
-      // its own durable thread record using the SMTP Message-ID returned below.
-      "--no-imap-append-sent",
+      // Port 465 is blocked on some otherwise-supported networks. Apply the known-good
+      // iCloud submission path only to iCloud identities; custom SMTP senders must retain
+      // the host, port, TLS, and Sent-folder behavior from their own configuration.
+      ...replyTransportArgs(options.fromAddress),
       // Threads the reply onto the original. `smtp-send` derives `References` from this when
       // none is passed, which is correct for answering a message directly.
       "--in-reply-to",

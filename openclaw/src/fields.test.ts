@@ -14,7 +14,7 @@ describe("mail field selection", () => {
 
     assert.deepEqual(result, {
       success: true,
-      message: { id: "m1", sender: "omar@example.com", content: "hello", source: "raw" },
+      message: { id: "m1", sender: "omar@example.com", content: "hello" },
     });
   });
 });
