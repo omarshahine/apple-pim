@@ -88,19 +88,41 @@ runs:
           exit 0
         fi
 
-        # Three assertions, one per thing openclaw/src/mail-channel/inbound.ts depends on:
-        # the module it imports from, the function it calls, and the policy field it
-        # passes. The field matters most: it is an ordinary property, so an SDK without
-        # it drops the value silently and the authentication gate stops running with
-        # nothing raised anywhere.
+        # Extract rather than stream. Two reasons, both load-bearing:
+        #
+        # 1. `tar ... | grep -q` is a false-NEGATIVE generator under `pipefail`. `grep -q`
+        #    exits 0 at its first match and closes the pipe, `tar` then takes SIGPIPE (141),
+        #    and `pipefail` makes the PIPELINE non-zero even though the capability WAS
+        #    found. The `|| MISSING=` branch would record a present symbol as absent and
+        #    block every publish workflow against a perfectly good SDK. It is racy on how
+        #    much output precedes the match, so it would also fail intermittently. `grep -r`
+        #    over files runs no pipeline and cannot hit this.
+        # 2. Slurping `tar xzO` into a shell variable mangles the package anyway: command
+        #    substitution strips NUL bytes and openclaw ships binaries.
+        mkdir -p "$WORK/x"
+        tar xzf "$WORK/sdk.tgz" -C "$WORK/x" 2>/dev/null || true
+
+        # Every assertion is scoped to the SHIPPED RUNTIME. npm packs `docs/` (confirmed:
+        # docs/plugins/sdk-channel-ingress.md), so searching the whole tarball would let a
+        # release that merely DOCUMENTS this contract pass a probe asking whether it
+        # IMPLEMENTS it. npm tarballs always root at `package/`.
+        DIST="$WORK/x/package/dist"
+
         MISSING=""
-        tar tzf "$WORK/sdk.tgz" 2>/dev/null | grep -q 'plugin-sdk/channel-ingress-runtime' \
-          || MISSING="$MISSING plugin-sdk/channel-ingress-runtime"
-        CONTENTS="$(tar xzOf "$WORK/sdk.tgz" 2>/dev/null || true)"
-        printf '%s' "$CONTENTS" | grep -q 'resolveChannelMessageIngress' \
-          || MISSING="$MISSING resolveChannelMessageIngress"
-        printf '%s' "$CONTENTS" | grep -q 'minIdentifierAuthentication' \
-          || MISSING="$MISSING minIdentifierAuthentication"
+        ls "$DIST"/plugin-sdk/channel-ingress-runtime.* >/dev/null 2>&1 \
+          || MISSING="$MISSING dist/plugin-sdk/channel-ingress-runtime"
+
+        # One assertion per thing openclaw/src/mail-channel/inbound.ts depends on: BOTH
+        # imported functions and the policy field it passes. The field matters most -- it is
+        # an ordinary property, so an SDK without it drops the value silently and the
+        # authentication gate stops running with nothing raised anywhere.
+        #
+        # Searched across dist/ rather than pinned to channel-ingress-runtime.d.ts, because
+        # the types are re-exported through generated chunk files (measured: the field lives
+        # in a plugin-entry-*.d.ts chunk, not in the runtime module itself).
+        for sym in defineStableChannelIngressIdentity resolveChannelMessageIngress minIdentifierAuthentication; do
+          grep -rqF "$sym" "$DIST" 2>/dev/null || MISSING="$MISSING $sym"
+        done
 
         if [ -n "$MISSING" ]; then
           echo "available=false" >> "$GITHUB_OUTPUT"
