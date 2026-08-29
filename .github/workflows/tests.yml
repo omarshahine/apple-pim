@@ -74,6 +74,73 @@ jobs:
       - name: Run Swift tests
         run: swift test
 
+  # openclaw/ defines `"test": "node --test \"src/**/*.test.ts\""` and, until now, nothing
+  # ran it. Those suites cover the mail channel's ingress admission -- allowlist matching,
+  # per-message authentication strength, the loop guard, thread permission, and the
+  # scenario table that exists to catch drift between the documented rows and the code.
+  # #121 rewrote all three of them under six green checks that never executed one.
+  #
+  # It cannot run for real yet: openclaw/package.json pins a floor no published release
+  # satisfies, so `npm install` here fails with ETARGET. Rather than land a red job or
+  # wait and forget, the job lands now and turns itself on the moment an installable SDK
+  # ships the contract. While it cannot run it says so in the step summary and in a
+  # notice, because a job that goes quietly green is the failure mode this repo keeps
+  # finding (see the v3.14.0 publish "Verify" step, and this suite's own absence).
+  #
+  # Do NOT make this a required check until the summary stops saying "skipped".
+  openclaw-plugin-tests:
+    name: OpenClaw Plugin
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          # `node --test` runs .ts directly via type stripping on 22+.
+          node-version: 24
+
+      - name: Probe the OpenClaw SDK contract
+        id: sdk
+        uses: ./.github/actions/openclaw-sdk-contract
+
+      - name: Skip, loudly, while no installable SDK ships the contract
+        if: steps.sdk.outputs.available != 'true'
+        env:
+          DETAIL: ${{ steps.sdk.outputs.detail }}
+        run: |
+          echo "::notice::openclaw tests skipped -- $DETAIL"
+          {
+            echo "### OpenClaw plugin tests: SKIPPED"
+            echo ""
+            echo "> $DETAIL"
+            echo ""
+            echo "This job proves nothing in this run. It starts running by itself once a"
+            echo "published SDK ships the channel-ingress contract."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Install root dependencies
+        if: steps.sdk.outputs.available == 'true'
+        run: npm install
+
+      - name: Install plugin dependencies
+        if: steps.sdk.outputs.available == 'true'
+        working-directory: openclaw
+        run: npm install
+
+      - name: Run OpenClaw plugin tests
+        if: steps.sdk.outputs.available == 'true'
+        working-directory: openclaw
+        run: npm test
+
+      - name: Record that the suite actually ran
+        if: steps.sdk.outputs.available == 'true'
+        env:
+          VERSION: ${{ steps.sdk.outputs.version }}
+        run: |
+          echo "### OpenClaw plugin tests: RAN against openclaw@$VERSION" >> "$GITHUB_STEP_SUMMARY"
+
   version-check:
     name: Version Consistency
     runs-on: ubuntu-latest

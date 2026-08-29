@@ -1,0 +1,114 @@
+name: OpenClaw SDK contract probe
+description: >-
+  Reports whether a PUBLISHED openclaw release satisfying this plugin's declared
+  floor actually ships the channel-ingress identifier-authentication contract the
+  mail channel calls. Asserts the capability, never a version string.
+
+outputs:
+  available:
+    description: "true when a published, installable SDK ships the contract"
+    value: ${{ steps.probe.outputs.available }}
+  version:
+    description: "Resolved SDK version that was probed; empty when the range resolves to nothing"
+    value: ${{ steps.probe.outputs.version }}
+  detail:
+    description: "One-line human-readable reason, suitable for a notice or an error"
+    value: ${{ steps.probe.outputs.detail }}
+
+runs:
+  using: composite
+  steps:
+    # Why a capability probe and not `if version >= 2026.8.1`:
+    #
+    # A version comparison is the same shape of check as the `npm view` verify step
+    # that passed on v3.14.0 while reading the PREVIOUS version off the registry. It
+    # reads like proof and is not. `2026.9.1-beta.1`, published 2026-08-28 and newer
+    # than the declared floor by every ordering, does NOT contain this contract, while
+    # openclaw `main` (package.json: 2026.8.1) does. Version order and capability are
+    # genuinely uncorrelated here, so the only honest question is whether the artifact
+    # npm would actually install exports what `mail-channel/inbound.ts` calls.
+    - id: probe
+      shell: bash
+      run: |
+        set -uo pipefail
+
+        FLOOR="$(node -p "require('./openclaw/package.json').peerDependencies.openclaw" 2>/dev/null || echo '')"
+        if [ -z "$FLOOR" ]; then
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "version=" >> "$GITHUB_OUTPUT"
+          echo "detail=could not read peerDependencies.openclaw from openclaw/package.json" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "Declared floor: openclaw@$FLOOR"
+
+        # Highest published version satisfying the floor.
+        #
+        # `npm view --json` does NOT stay silent when a range matches nothing: it prints a
+        # JS-ish `{ error: { code: 'E404', ... } }` blob to STDOUT (measured), which is not
+        # valid JSON and is not a version. Parsing loosely here would hand that blob on as a
+        # "resolved version" and the probe would go on to fail for the wrong reason. So the
+        # result is accepted only when it looks like a version, and anything else means
+        # unresolved -- which is a legitimate answer, not an error.
+        RESOLVED="$(npm view "openclaw@$FLOOR" version --json 2>/dev/null \
+          | node -e "
+              let s='';
+              process.stdin.on('data', d => s += d);
+              process.stdin.on('end', () => {
+                let out = '';
+                try {
+                  const v = JSON.parse(s);
+                  const picked = Array.isArray(v) ? v[v.length - 1] : v;
+                  if (typeof picked === 'string') out = picked;
+                } catch { out = ''; }
+                console.log(/^[0-9][0-9A-Za-z.+-]*$/.test(out) ? out : '');
+              });
+            " 2>/dev/null || echo '')"
+
+        if [ -z "$RESOLVED" ]; then
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "version=" >> "$GITHUB_OUTPUT"
+          echo "detail=no published openclaw release satisfies $FLOOR (npm resolves nothing; a >= range does not match prereleases)" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+        echo "Resolved: openclaw@$RESOLVED"
+
+        TARBALL="$(npm view "openclaw@$RESOLVED" dist.tarball 2>/dev/null | tr -d '[:space:]')"
+        if [ -z "$TARBALL" ]; then
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "version=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "detail=openclaw@$RESOLVED resolved but its tarball URL could not be read" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        WORK="$(mktemp -d)"
+        if ! curl -fsS "$TARBALL" -o "$WORK/sdk.tgz"; then
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "version=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "detail=could not download the openclaw@$RESOLVED tarball" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        # Three assertions, one per thing openclaw/src/mail-channel/inbound.ts depends on:
+        # the module it imports from, the function it calls, and the policy field it
+        # passes. The field matters most: it is an ordinary property, so an SDK without
+        # it drops the value silently and the authentication gate stops running with
+        # nothing raised anywhere.
+        MISSING=""
+        tar tzf "$WORK/sdk.tgz" 2>/dev/null | grep -q 'plugin-sdk/channel-ingress-runtime' \
+          || MISSING="$MISSING plugin-sdk/channel-ingress-runtime"
+        CONTENTS="$(tar xzOf "$WORK/sdk.tgz" 2>/dev/null || true)"
+        printf '%s' "$CONTENTS" | grep -q 'resolveChannelMessageIngress' \
+          || MISSING="$MISSING resolveChannelMessageIngress"
+        printf '%s' "$CONTENTS" | grep -q 'minIdentifierAuthentication' \
+          || MISSING="$MISSING minIdentifierAuthentication"
+
+        if [ -n "$MISSING" ]; then
+          echo "available=false" >> "$GITHUB_OUTPUT"
+          echo "version=$RESOLVED" >> "$GITHUB_OUTPUT"
+          echo "detail=openclaw@$RESOLVED is missing:$MISSING" >> "$GITHUB_OUTPUT"
+          exit 0
+        fi
+
+        echo "available=true" >> "$GITHUB_OUTPUT"
+        echo "version=$RESOLVED" >> "$GITHUB_OUTPUT"
+        echo "detail=openclaw@$RESOLVED ships the channel-ingress contract" >> "$GITHUB_OUTPUT"

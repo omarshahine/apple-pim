@@ -16,9 +16,54 @@ permissions:
 # omarshahine/homebrew-tap with Contents: read & write. The default GITHUB_TOKEN
 # cannot push to a different repository.
 jobs:
+  # Publishing is gated on the SDK actually shipping what the mail channel calls,
+  # because the three publish workflows fire independently on the same tag. Without
+  # this, a premature tag fails the two npm-installing workflows and SUCCEEDS on
+  # Homebrew, which builds the Swift CLI from the source tarball and never touches
+  # openclaw/. That leaves the tap pointing at a version npm and ClawHub never got,
+  # which is worse than nothing publishing at all.
+  preflight:
+    name: SDK contract preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+
+      - name: Probe the OpenClaw SDK contract
+        id: sdk
+        uses: ./.github/actions/openclaw-sdk-contract
+
+      - name: Refuse to publish against an SDK without the contract
+        if: steps.sdk.outputs.available != 'true'
+        env:
+          DETAIL: ${{ steps.sdk.outputs.detail }}
+        run: |
+          echo "::error::$DETAIL"
+          {
+            echo "### Publish blocked"
+            echo ""
+            echo "\`openclaw/src/mail-channel/inbound.ts\` calls the channel-ingress"
+            echo "identifier-authentication contract, and no installable SDK ships it yet."
+            echo ""
+            echo "> $DETAIL"
+          } >> "$GITHUB_STEP_SUMMARY"
+          exit 1
+
+      - name: Report
+        if: steps.sdk.outputs.available == 'true'
+        env:
+          DETAIL: ${{ steps.sdk.outputs.detail }}
+        run: echo "::notice::$DETAIL"
+
   bump:
     name: Bump apple-pim-cli formula
     runs-on: ubuntu-latest
+    needs: preflight
     env:
       TAP_REPO: omarshahine/homebrew-tap
       FORMULA_PATH: Formula/apple-pim-cli.rb
