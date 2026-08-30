@@ -83,6 +83,50 @@ final class DueAlertSyncTests: XCTestCase {
         XCTAssertEqual(offsets(reminder), [0])
     }
 
+    // MARK: - Retiming a timed reminder to all-day
+
+    /// Greptile P1 on #126: the implicit alert was added while the reminder was timed, then
+    /// the due date became all-day and the alarm stayed, resolving to a midnight ping.
+    func testRetimingToAllDayDropsTheImplicitAlert() {
+        let reminder = makeReminder(hour: 15, minute: 0)
+        syncDueAlert(reminder, enabled: true)
+        XCTAssertEqual(offsets(reminder), [0], "precondition: the implicit alert is there")
+
+        reminder.dueDateComponents = DateComponents(year: 2026, month: 9, day: 4)
+        syncDueAlert(reminder, enabled: true, dueDateChanged: true)
+        XCTAssertTrue(offsets(reminder).isEmpty)
+    }
+
+    /// The narrowing that keeps the strip from eating real data: an alarm carrying an
+    /// `absoluteDate` is the "all-day reminder, alert me at 9am" shape, which is what most
+    /// all-day alarms in a real library actually are.
+    func testRetimingToAllDayKeepsAnAbsoluteDateAlert() {
+        let reminder = makeReminder(hour: 15, minute: 0)
+        let alarm = EKAlarm(absoluteDate: Date(timeIntervalSince1970: 1_787_500_000))
+        reminder.addAlarm(alarm)
+
+        reminder.dueDateComponents = DateComponents(year: 2026, month: 9, day: 4)
+        syncDueAlert(reminder, enabled: true, dueDateChanged: true)
+        XCTAssertEqual(reminder.alarms?.count, 1)
+        XCTAssertNotNil(reminder.alarms?.first?.absoluteDate)
+    }
+
+    /// A genuine early offset is the caller's, not ours, and survives the transition.
+    func testRetimingToAllDayKeepsANonZeroOffset() {
+        let reminder = makeReminder(hour: 15, minute: 0, offsets: [-900])
+        reminder.dueDateComponents = DateComponents(year: 2026, month: 9, day: 4)
+        syncDueAlert(reminder, enabled: true, dueDateChanged: true)
+        XCTAssertEqual(offsets(reminder), [-900])
+    }
+
+    /// On create there is no previous state, so an explicit `--alarm 0` beside an all-day due
+    /// is a stated intent rather than a leftover. Nothing is stripped without the flag.
+    func testCreateLeavesAnExplicitZeroAlarmOnAnAllDayReminder() {
+        let reminder = makeReminder(hour: nil, minute: nil, offsets: [0])
+        syncDueAlert(reminder, enabled: true)
+        XCTAssertEqual(offsets(reminder), [0])
+    }
+
     /// A location alarm is still an alarm. The reminder already notifies on arrival, so
     /// adding a time alert would be a second notification the caller never asked for.
     func testALocationAlarmCountsAsAnAlarm() {

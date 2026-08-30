@@ -238,9 +238,32 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
 /// what the caller asked for: adding an offset-0 alarm beside an early one would not change
 /// what Reminders DISPLAYS -- earliest wins, see `earlyAlarmShift` -- but would add a second
 /// ping nobody asked for.
-func syncDueAlert(_ reminder: EKReminder, enabled: Bool) {
+/// - Parameter dueDateChanged: true on the update path, where the due date was just
+///   rewritten and an offset-0 alarm left over from a previous TIMED due would now resolve
+///   to midnight. On create there is no previous state, so an explicit `--alarm 0` beside an
+///   all-day due is the caller's stated intent and is left alone.
+func syncDueAlert(_ reminder: EKReminder, enabled: Bool, dueDateChanged: Bool = false) {
     guard enabled else { return }
-    guard reminder.dueDateComponents?.hour != nil else { return }
+
+    guard reminder.dueDateComponents?.hour != nil else {
+        // The due date is all-day now. A BARE relative alarm resolves to midnight, which is
+        // the state this function exists to avoid and one Reminders never produces on its
+        // own -- so a timed reminder retimed to all-day must not keep the alert added when
+        // it was timed.
+        //
+        // Narrow on purpose. An alarm carrying an `absoluteDate` is the real "all-day
+        // reminder, alert me at 9am" shape and is common in practice (measured in a live
+        // library: of 4 all-day reminders holding alarms, 3 carry an absoluteDate and only
+        // 1 is a bare offset). Location alarms have no time of their own. Both are left.
+        guard dueDateChanged else { return }
+        for alarm in reminder.alarms ?? []
+        where alarm.structuredLocation == nil && alarm.absoluteDate == nil
+            && alarm.relativeOffset == 0 {
+            reminder.removeAlarm(alarm)
+        }
+        return
+    }
+
     guard !reminder.hasAlarms else { return }
     reminder.addAlarm(EKAlarm(relativeOffset: 0))
 }
@@ -1129,7 +1152,7 @@ struct UpdateReminder: AsyncParsableCommand {
         // a priority change) must not quietly grow an alarm the reminder never had. Setting
         // a due time is the moment the app itself would have written one.
         if due != nil {
-            syncDueAlert(reminder, enabled: dueAlert)
+            syncDueAlert(reminder, enabled: dueAlert, dueDateChanged: true)
         }
 
         try eventStore.save(reminder, commit: true)
