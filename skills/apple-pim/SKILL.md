@@ -215,7 +215,10 @@ When reading events/reminders, the `recurrence` array includes:
    indistinguishable from one created in the app. All-day dues get nothing — an alert on a
    date with no time resolves to midnight. An explicit `alarm` is left exactly as passed.
    Opt out with `dueAlert: false` (`--no-due-alert`). On update this applies only when `due`
-   is also being set, so an unrelated edit never grows an alarm
+   is also being set, so an unrelated edit never grows an alarm.
+   This is about matching Apple's representation, **not** about whether the reminder fires:
+   dated reminders written with no alarm at all do still notify. Do not re-investigate that;
+   it is settled
 10. **`startDate` mirrors the due date and is returned on reads** — Reminders offers no separate
    start-date control, so the CLI keeps the two in sync on every write. A reminder that ends up
    with a start date but no due date renders as *dateless* in Reminders while still occupying a

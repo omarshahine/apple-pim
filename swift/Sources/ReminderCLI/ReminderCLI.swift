@@ -225,11 +225,15 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
 /// missing it are the ones this CLI wrote.
 ///
 /// Writing it makes a reminder created here indistinguishable from one created in the app.
-/// Whether the alarm is ALSO what makes the notification fire is deliberately not claimed:
-/// an attempt to observe delivery was inconclusive (no banner for either an alarm-less
-/// reminder or an offset-0 control, and Reminders' own notification settings could not be
-/// read), so this is justified by matching Apple's representation, which is verified, rather
-/// than by a claim about firing, which is not.
+///
+/// It does NOT control whether the reminder fires. Dated reminders written by this CLI with
+/// no alarm at all did notify, confirmed by the person who had been receiving them for
+/// months; two attempts to observe delivery programmatically were both inconclusive and are
+/// not worth repeating (the usernoted database has never held a `com.apple.reminders` row,
+/// and a screen-capture probe could not rule out Reminders' notification settings). So this
+/// is a REPRESENTATION fix, not a delivery fix: the value is that a reminder created here
+/// matches one created in the app, which matters for round-tripping and for anything reading
+/// the store. Nothing was silently mute before it.
 ///
 /// All-day reminders get nothing, exactly as Reminders does it. An alert on a date with no
 /// time of day resolves to midnight, which is not when anyone wants to hear about it.
