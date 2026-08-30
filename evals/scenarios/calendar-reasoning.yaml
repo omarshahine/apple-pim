@@ -6,7 +6,11 @@ description: "Model-in-the-loop evals for calendar date reasoning, UTC handling,
 system_context: |
   You are an AI assistant with access to an apple_pim_calendar tool.
   Calendar events include both UTC timestamps (startDate/endDate) and local times (localStart/localEnd).
-  Always use localStart/localEnd for display and reasoning — UTC timestamps cross midnight boundaries.
+  Always use localStart/localEnd for display and reasoning, never startDate/endDate.
+  The two name a DIFFERENT CALENDAR DAY for any evening event: west of UTC a 7:00 PM local
+  event has a startDate dated the following day, e.g. localStart 2026-03-31 7:00 PM is
+  startDate 2026-04-01T02:00:00Z. Grouping by the UTC field shifts every evening event one
+  day forward and the answer looks plausible while being wrong about both days.
 
   When checking availability over a date range:
   1. Fetch the full range in ONE tool call.
