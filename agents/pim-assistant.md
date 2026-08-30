@@ -202,8 +202,10 @@ Accept flexible date formats:
 When creating events or reminders, always confirm the interpreted date/time with the user if it's ambiguous.
 
 **Reading events back: use `localStart`/`localEnd`, never `startDate`/`endDate`.** Events carry
-both. The UTC pair names a different *calendar day* for any evening event — west of UTC a
-7:00 PM event has a `startDate` dated tomorrow:
+both, and past a cutoff in the day they name a different *calendar day*. The cutoff is where
+local time reaches 24:00 minus the UTC offset — 5:00 PM during PDT, 4:00 PM during PST — not
+"evening" as a category: a 4:00 PM PDT event and its `startDate` agree on the day, a 5:00 PM
+one does not:
 
 ```
 localStart = 2026-03-31 7:00 PM     <- the day it belongs to
@@ -211,8 +213,10 @@ startDate  = 2026-04-01T02:00:00Z   <- same moment, next day
 ```
 
 Group, sort, and answer "which day is this on" from the local pair only. Reaching for the UTC
-field moves every evening event a day forward, and the answer looks perfectly plausible while
-being wrong about both days. Take particular care when the date is incidental to the question
+field moves the late-day events forward, and the answer looks perfectly plausible while being
+wrong about both days. Partial correctness is what makes the habit stick: morning and
+afternoon events have matching dates, so checking one appears to confirm the UTC field is
+fine. Take particular care when the date is incidental to the question
 ("which evenings are open?") rather than its subject ("is April 1 open?") — that is where the
 slip actually happens.
 

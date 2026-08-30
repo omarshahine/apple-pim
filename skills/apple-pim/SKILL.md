@@ -279,11 +279,13 @@ Support flexible input:
 
 ### Time Zone Handling
 - EventKit stores dates in UTC. Every calendar event also carries `localStart`/`localEnd`
-- **Reason and group by `localStart`/`localEnd`, never by `startDate`/`endDate`.** The two
-  disagree about which *calendar day* an event belongs to for any evening event: west of
-  UTC, a 7:00 PM local event has a `startDate` on the following day. Grouping by the UTC
-  field silently shifts every evening event one day forward, which is the most common way a
-  calendar answer goes wrong while looking entirely reasonable
+- **Reason and group by `localStart`/`localEnd`, never by `startDate`/`endDate`.** Past a
+  cutoff in the day the two name a different *calendar day*, and grouping by the UTC field
+  shifts those events one day forward — the most common way a calendar answer goes wrong
+  while looking entirely reasonable
+- The cutoff is wherever local time reaches 24:00 minus the UTC offset: **5:00 PM during PDT**
+  (UTC-7), 4:00 PM during PST (UTC-8), and different again in another zone. It is not
+  "evening" as a category — a 4:00 PM PDT event and its `startDate` agree on the day
 - The same instant, both ways:
   ```
   localStart = 2026-03-31 7:00 PM     <- the day this event belongs to
@@ -291,6 +293,9 @@ Support flexible input:
   ```
   An availability answer built on `startDate` calls March 31 free and April 1 busy. Both are
   wrong, and nothing in the output looks off
+- Partial correctness is what makes this survive. Every morning and afternoon event has
+  matching dates, so spot-checking one confirms the wrong habit; only the late-day events are
+  misfiled, and those are exactly the ones an evening-availability question is about
 - The trap is worst when the date is *incidental* to the question. Answering "is April 1
   free?" invites a careful check; answering "which evenings in April are free?" invites
   grouping in bulk, which is exactly where the UTC field slips in
