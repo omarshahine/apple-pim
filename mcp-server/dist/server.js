@@ -77126,7 +77126,7 @@ import { dirname as dirname2, join as join3 } from "path";
 // package.json
 var package_default = {
   name: "apple-pim-mcp",
-  version: "3.15.0",
+  version: "3.16.0",
   description: "MCP server for Apple PIM, a Personal Information Manager for Calendar, Reminders, Contacts, and Mail",
   type: "module",
   main: "dist/server.js",
@@ -77848,6 +77848,7 @@ var tools = [
           description: "Whether to mirror `url` into the notes as a visible link (default true). Set false to store the URL for machine use only, accepting that nothing about it is visible in Apple Reminders. Ignored when no url is supplied."
         },
         alarm: { type: "array", items: { type: "number" }, description: "Alarm minutes before due. NOT an early heads-up: Apple Reminders shows a reminder at its earliest alarm, so 15 on a reminder due at 3:00 makes it read and fire at 2:45, with the due time shown nowhere. Use 0 to alert at the due date." },
+        dueAlert: { type: "boolean", description: "Attach the alert Apple Reminders itself writes for a timed due date (an alarm at the due moment), so the reminder matches one created in the app. Default true. All-day due dates never get one, and an explicit alarm is left alone." },
         // No `required` here — empty object {} means "remove location" (batch_create has required since it doesn't support removal)
         location: {
           type: "object",
@@ -77887,6 +77888,10 @@ var tools = [
                 type: "array",
                 items: { type: "number" },
                 description: "Alarm minutes before due. Reminders shows a reminder at its earliest alarm, so a nonzero value moves the time the reminder displays and fires. Use 0 to alert at the due date."
+              },
+              dueAlert: {
+                type: "boolean",
+                description: "Attach the alert Apple Reminders itself writes for a timed due date (default true). All-day dues never get one."
               },
               location: {
                 type: "object",
@@ -78156,6 +78161,7 @@ var WRAPPER_KEYS = /* @__PURE__ */ new Set([
   "reminders",
   "contacts",
   "messages",
+  "message",
   "calendars",
   "lists",
   "groups",
@@ -78201,6 +78207,8 @@ function applyFieldSelection(result, fields) {
   for (const [key, value] of Object.entries(result)) {
     if (WRAPPER_KEYS.has(key) && Array.isArray(value)) {
       filtered[key] = value.map((item) => pickFields(item, fields));
+    } else if (key === "message" && value && typeof value === "object") {
+      filtered[key] = pickFields(value, fields);
     } else if (WRAPPER_KEYS.has(key)) {
       filtered[key] = value;
     } else {
@@ -78460,6 +78468,8 @@ function buildReminderCreateArgs(args, targetList) {
         cliArgs.push("--alarm", String(val));
     }
   }
+  if (args.dueAlert === false)
+    cliArgs.push("--no-due-alert");
   if (args.location)
     cliArgs.push("--location", JSON.stringify(args.location));
   if (args.recurrence)
@@ -78480,6 +78490,8 @@ function buildReminderUpdateArgs(args) {
     cliArgs.push("--url", args.url);
   if (args.url !== void 0 && args.urlInNotes === false)
     cliArgs.push("--no-url-in-notes");
+  if (args.dueAlert === false)
+    cliArgs.push("--no-due-alert");
   if (args.location)
     cliArgs.push("--location", JSON.stringify(args.location));
   if (args.recurrence)

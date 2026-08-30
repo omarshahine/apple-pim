@@ -208,7 +208,15 @@ When reading events/reminders, the `recurrence` array includes:
    resolves to the same instant. Use `alarm: [0]` to alert at the due date — that is what
    Reminders itself writes — or set the due date to the time the user actually wants. The CLI
    returns a `warnings` array whenever a write moves the visible time; surface it
-9. **`startDate` mirrors the due date and is returned on reads** — Reminders offers no separate
+9. **A timed due date gets an alert automatically** — Reminders.app attaches an alarm at the
+   due moment to every timed reminder created in its UI (measured in a live library: 116 of
+   178 timed reminders carry it) and attaches nothing to an all-day one (115 of 119 carry
+   nothing). The CLI now writes the same shape, so a reminder created here is
+   indistinguishable from one created in the app. All-day dues get nothing — an alert on a
+   date with no time resolves to midnight. An explicit `alarm` is left exactly as passed.
+   Opt out with `dueAlert: false` (`--no-due-alert`). On update this applies only when `due`
+   is also being set, so an unrelated edit never grows an alarm
+10. **`startDate` mirrors the due date and is returned on reads** — Reminders offers no separate
    start-date control, so the CLI keeps the two in sync on every write. A reminder that ends up
    with a start date but no due date renders as *dateless* in Reminders while still occupying a
    date slot in EventKit; the returned `startDate` is how you diagnose that

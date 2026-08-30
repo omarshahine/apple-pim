@@ -247,6 +247,12 @@ When creating reminders:
   The tool returns a `warnings` array whenever a write moves the visible time — pass it on
   rather than reporting plain success
 
+- **A timed due date gets an alert automatically.** Reminders.app attaches an alarm at the
+  due moment to every timed reminder created in its UI, and none to an all-day one; the tool
+  writes the same shape so what you create matches what the app creates. You do not need to
+  ask for it or mention it. All-day reminders get no alert, and an explicit `alarm` is left
+  alone. `dueAlert: false` opts out if a caller wants a dateless-alert reminder
+
 ### What you cannot do
 
 These are Reminders/Calendar features with **no EventKit API**. When asked for one, say it is
