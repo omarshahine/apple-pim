@@ -75,9 +75,16 @@ scenarios:
     grading:
       must_identify_available:
         - "2026-04-01"                  # Wednesday - work events end by 1 PM
-        - "2026-04-08"                  # Wednesday - dentist+OPG end by 3 PM
         - "2026-04-10"                  # Friday - board meeting ends at 1 PM (Sarah leaves)
       must_identify_blocked:
+        # April 8 is a Wednesday whose only events (dentist, OPG) end by 3 PM, which is why
+        # it used to sit in must_identify_available. But it falls INSIDE "Sarah Easter
+        # Break" (all-day Apr 2 -> Apr 10; an all-day end is exclusive, so it covers Apr
+        # 2..Apr 9), and this prompt says to exclude dates when Sarah is visiting while
+        # system_context says visits block the whole stretch. Blocked is the only answer
+        # consistent with what the model was told; as an "available" it marked a correct
+        # response wrong. The neighbouring Apr 10 comment already knew Sarah leaves then.
+        - "2026-04-08"                  # Wednesday - inside Sarah's Easter Break
         - "2026-04-02"                  # Thursday - Sarah pickup + Easter break
         - "2026-04-03"                  # Friday - Canlis already booked
         - "2026-04-09"                  # Thursday - Joyce dinner already booked
@@ -89,7 +96,12 @@ scenarios:
   - id: dinner-already-booked
     description: "Must recognize existing dinner events and not suggest those evenings as 'open'"
     fixture: "calendar/multi-week-schedule"
-    user_message: "Which evenings this week (Mar 31 - Apr 6) already have dinner plans?"
+    # Asked as "dinner plans" this contradicted its own rubric: the Wildwood Budget
+    # Ratification Meeting is a 7:00-9:30 PM MEETING, not a dinner, so a model answering
+    # the question as written correctly omitted it and failed must_mention. The
+    # must_not_claim_open expectations show the intent was evening OCCUPANCY, so the
+    # question is what needed fixing rather than the expectations.
+    user_message: "Which evenings this week (Mar 31 - Apr 6) already have something booked in the dinner slot?"
     grading:
       must_mention:
         - "Wildwood Budget"             # Mar 31 evening
