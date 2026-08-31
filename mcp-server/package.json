@@ -17,7 +17,7 @@
     "turndown": "^7.2.2"
   },
   "devDependencies": {
-    "esbuild": "^0.20.0",
-    "vitest": "^3.2.4"
+    "esbuild": "^0.28.2",
+    "vitest": "^4.1.11"
   }
 }
