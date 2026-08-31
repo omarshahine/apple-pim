@@ -91,6 +91,7 @@ Each Swift CLI is a standalone binary that reads from macOS frameworks, validate
 - Auto-merge is enabled at the repo level; use it on PRs so merges wait for required checks.
 - This repo ignores lockfiles; CI uses `npm install` (not `npm ci`) in `mcp-server`.
 - Agent evals run on `ubuntu-latest` (no macOS needed since they use mock fixtures).
+- The two macOS jobs (`MCP Server (Node)`, `Swift CLI`) run only on pull requests and only when their source paths changed (`dorny/paths-filter` gating in `tests.yml`); job-level skips still satisfy the required checks. macOS minutes bill at 10x Linux, so pushes to main run only the Linux jobs.
 
 ## Code Hygiene
 
