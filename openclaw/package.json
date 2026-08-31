@@ -96,8 +96,8 @@
   },
   "main": "./dist/index.js",
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "@types/node": "^25.5.0",
+    "typescript": "^7.0.2",
+    "@types/node": "^26.4.0",
     "@types/mailparser": "^3.4.6",
     "tsup": "^8.5.0",
     "openclaw": ">=2026.8.1"
