@@ -495,6 +495,23 @@ func runJXA(_ script: String) throws -> Any {
     let stderrStr = String(data: stderrData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
 
     guard proc.terminationStatus == 0 else {
+        // The account-ambiguity refusal, raised by `resolveAccountsByHint` inside the script.
+        //
+        // Intercepted here rather than at each call site because every one of the ~12
+        // generated scripts that resolves an account hint reaches the user through this one
+        // function, and their result shapes do not agree: two return a Mail message object
+        // with no error channel at all, `search` returns a bare array, and the rest return
+        // `{error:}` mapped to `CLIError.notFound`. A thrown JS Error needs none of that, and
+        // it cannot be dropped by a call site that forgot to look. Every `runJXA(...)` in
+        // this file is a plain `try` with no `try?` and no swallowing catch, so this refusal
+        // reaches the caller from all of them.
+        //
+        // `invalidInput` for the same reason `rethrowFatalFastPathError` uses it on the
+        // SQLite side: ambiguity describes the caller's input, not the engine. Same exit
+        // code, same `Error: ` prefix, so the two engines now refuse identically.
+        if let ambiguity = AccountAmbiguity.messageFromJXAStderr(stderrStr) {
+            throw CLIError.invalidInput(ambiguity)
+        }
         if stderrStr.contains("not allowed to send keystrokes") || stderrStr.contains("not allowed assistive access") {
             throw CLIError.accessDenied("Grant access in System Settings > Privacy & Security > Automation")
         }
@@ -524,6 +541,8 @@ func findMessageJXA(targetId: String, mailbox: String?, account: String?) -> Str
     let accountFilter = account.map { "'\(escapeForJXA($0))'" } ?? "null"
 
     return """
+    \(AccountAmbiguity.jxaHelperSource())
+
     function findMessage() {
         const Mail = Application("Mail");
         const targetId = '\(escapedId)';
@@ -544,7 +563,7 @@ func findMessageJXA(targetId: String, mailbox: String?, account: String?) -> Str
             'Archive', 'All Mail', 'Drafts',
             'Deleted Messages', 'Deleted Items', 'Trash',
             'Junk', 'Junk Email', 'Junk E-mail', 'Bulk', 'Spam'];
-        const accounts = acctHint ? Mail.accounts.whose({name: acctHint})() : Mail.accounts();
+        const accounts = resolveAccountsByHint(Mail, acctHint);
         const searched = new Set();
 
         // If mailbox hint given, try it first (optimization, not a hard filter)
@@ -665,6 +684,8 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
     let debugMode = debug
 
     return """
+    \(AccountAmbiguity.jxaHelperSource())
+
     const rowidMap = \(rowidMapJS);
     const mboxHint = \(mailboxFilter);
     const acctHint = \(accountFilter);
@@ -702,6 +723,12 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
     // did not resolve — the candidate's UUID comes from Mail's own accounts database while
     // this arm matches against JXA's `account.id()`, and the account NAME is the fallback for
     // any Mail version where those two do not agree.
+    // Deliberately NOT routed through resolveAccountsByHint. `name` is not a user hint: it
+    // is the Envelope Index's own display name for a rowid candidate, read back out of
+    // rowidMap. Refusing here would fail a write over an ambiguity in data this code
+    // produced, and returning null on a miss is load-bearing -- the caller must fall through
+    // to the `whose` scan, which can still complete the write. (Under --engine jxa rowidMap
+    // is always empty, so this is unreachable in the mode the ambiguity gap was about.)
     function getAccountByName(name) {
         var matches = [];
         try { matches = Mail.accounts.whose({name: name})(); } catch(e) { return null; }
@@ -790,7 +817,7 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
         }
 
         lookup.method = 'whose';
-        var accounts = acctHint ? Mail.accounts.whose({name: acctHint})() : Mail.accounts();
+        var accounts = resolveAccountsByHint(Mail, acctHint);
         var searched = new Set();
 
         if (mboxHint) {
@@ -957,6 +984,8 @@ struct ListMailboxes: AsyncParsableCommand {
 
         let script = """
         const Mail = Application("Mail");
+        \(AccountAmbiguity.jxaHelperSource())
+
         const accountFilter = \(accountFilter);
         const results = [];
 
@@ -973,7 +1002,7 @@ struct ListMailboxes: AsyncParsableCommand {
         }
 
         if (accountFilter) {
-            const accts = Mail.accounts.whose({name: accountFilter})();
+            const accts = resolveAccountsByHint(Mail, accountFilter);
             if (accts.length === 0) {
                 JSON.stringify({error: "Account not found: " + accountFilter});
             } else {
@@ -1070,15 +1099,15 @@ struct ListMessages: AsyncParsableCommand {
 
         let script = """
         const Mail = Application("Mail");
+        \(AccountAmbiguity.jxaHelperSource())
+
         const accountFilter = \(accountFilter);
         const mailboxName = '\(mailboxName)';
         const limit = \(limit);
         const filterType = \(filterVal);
 
         function findMailbox() {
-            const accounts = accountFilter
-                ? Mail.accounts.whose({name: accountFilter})()
-                : Mail.accounts();
+            const accounts = resolveAccountsByHint(Mail, accountFilter);
             for (let a = 0; a < accounts.length; a++) {
                 const mbs = accounts[a].mailboxes.whose({name: mailboxName})();
                 if (mbs.length > 0) return mbs[0];
@@ -1347,6 +1376,8 @@ struct SearchMessages: AsyncParsableCommand {
 
         let script = """
         const Mail = Application("Mail");
+        \(AccountAmbiguity.jxaHelperSource())
+
         const query = '\(escapedQuery)';
         const searchField = '\(escapedField)';
         const accountFilter = \(accountFilter);
@@ -1404,9 +1435,7 @@ struct SearchMessages: AsyncParsableCommand {
             }
         }
 
-        const accounts = accountFilter
-            ? Mail.accounts.whose({name: accountFilter})()
-            : Mail.accounts();
+        const accounts = resolveAccountsByHint(Mail, accountFilter);
 
         for (let a = 0; a < accounts.length && results.length < limit; a++) {
             const acct = accounts[a];
@@ -1568,7 +1597,7 @@ struct MoveMessage: AsyncParsableCommand {
 
         function findDestMailbox(sourceAccount) {
             const accounts = destAccountName
-                ? Mail.accounts.whose({name: destAccountName})()
+                ? resolveAccountsByHint(Mail, destAccountName)
                 : [sourceAccount];
             for (let a = 0; a < accounts.length; a++) {
                 const mbs = accounts[a].mailboxes.whose({name: destMailboxName})();

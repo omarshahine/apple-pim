@@ -18,6 +18,14 @@ row-id, so JXA can address it directly instead of scanning mailbox by mailbox,
 and they fall back to that scan whenever the lookup cannot answer. `send` and
 `reply` are unaffected.
 
+An `--account` hint that matches two accounts is **refused**, not resolved, under every
+engine. Both would otherwise pick a first match: the Envelope Index returns a set, and
+`Mail.accounts.whose({name:})` returns them in enumeration order. Acting on either is a
+silent wrong-account read, and a wrong-account write is not reversible. The two engines word
+the refusal differently on purpose — the index can suggest an account UUID because it can
+resolve one, and JXA resolves nothing but a name, so it says to rename the account in Mail
+or re-run under `--engine auto`.
+
 ## Why JXA?
 
 Mail.app has no native Swift framework (unlike EventKit/Contacts). JXA (JavaScript for Automation) provides:

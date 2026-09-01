@@ -302,8 +302,7 @@ final class EnvelopeIndex {
         let logicalAccountIDs = Set(matches.compactMap { metadata[$0]?.logicalAccountID })
         guard logicalAccountIDs.count <= 1 else {
             throw EnvelopeIndexError.ambiguous(
-                "Account matches multiple logical accounts: \(requestedName). "
-                + "Use the display name or account UUID instead.")
+                AccountAmbiguity.envelopeIndexMessage(requestedName: requestedName))
         }
         return matches.sorted()
     }

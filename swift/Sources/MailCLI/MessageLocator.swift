@@ -76,16 +76,14 @@ struct NoopLocator: MessageLocator {
 /// - `auto`: locator when one can be opened, silently Noop otherwise.
 /// - `sqlite`: locator required; an open failure is reported to the caller.
 ///
-/// KNOWN GAP, and the reason it is stated here rather than left to be rediscovered: the
-/// account-ambiguity refusal `SQLiteEngine.resolve` raises needs the Envelope Index to see
-/// that a name spans two logical accounts, so the `.jxa` arm above — which opens no database
-/// by contract — cannot raise it, and an ambiguous hint falls through to the JXA scan's
-/// first-match resolution. This is NOT the read/write split: every read command guards its
-/// fast path with the same `engine != .jxa`, so `--engine jxa` skips the check for reads
-/// exactly as it does for writes. Closing it means either opening the index under `--engine
-/// jxa` (breaking the contract, and unavailable anyway without Full Disk Access) or teaching
-/// the JXA sites to treat a multi-result `Mail.accounts.whose({name:})` as ambiguous.
-/// Tracked separately rather than changed here.
+/// The account-ambiguity refusal is NOT part of what the `.jxa` arm gives up, though it was
+/// once. `SQLiteEngine.resolve` raises it by asking the Envelope Index whether a name spans
+/// two logical accounts, which the `.jxa` arm cannot do — it opens no database by contract —
+/// so an ambiguous hint used to fall through to the JXA scan's first-match resolution, for
+/// reads and writes alike. It is now detected on the JXA side instead, with no database:
+/// `resolveAccountsByHint` (AccountAmbiguity.swift) treats a multi-result
+/// `Mail.accounts.whose({name:})` as the ambiguity it is and refuses. Both engines therefore
+/// refuse the same input, as `rethrowFatalFastPathError` has always claimed they should.
 func makeMessageLocator(engine: EngineChoice) throws -> MessageLocator {
     guard engine != .jxa else { return NoopLocator() }
     do {
