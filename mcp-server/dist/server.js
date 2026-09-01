@@ -77126,7 +77126,7 @@ import { dirname as dirname2, join as join3 } from "path";
 // package.json
 var package_default = {
   name: "apple-pim-mcp",
-  version: "3.16.0",
+  version: "3.16.1",
   description: "MCP server for Apple PIM, a Personal Information Manager for Calendar, Reminders, Contacts, and Mail",
   type: "module",
   main: "dist/server.js",
@@ -77138,13 +77138,13 @@ var package_default = {
   },
   dependencies: {
     "@modelcontextprotocol/sdk": "^1.0.0",
-    "js-yaml": "^4.1.0",
+    "js-yaml": "^5.4.1",
     mailparser: "^3.9.3",
     turndown: "^7.2.2"
   },
   devDependencies: {
-    esbuild: "^0.20.0",
-    vitest: "^3.2.4"
+    esbuild: "^0.28.2",
+    vitest: "^4.1.11"
   }
 };
 
@@ -77429,9 +77429,9 @@ function parseEtimeSeconds(etime) {
   const [hh, mm, ss] = parts;
   return days * 86400 + hh * 3600 + mm * 60 + ss;
 }
+var HELPER_PROC_MARKER = "PIMHelper\\.app/Contents/.*pim-helper";
 async function findHelperProcesses() {
-  const marker = "PIMHelper.app/Contents/MacOS/pim-helper";
-  const { out } = await runQuick("/usr/bin/pgrep", ["-f", marker]);
+  const { out } = await runQuick("/usr/bin/pgrep", ["-f", HELPER_PROC_MARKER]);
   const pids = out.split("\n").map((l) => parseInt(l.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0);
   const procs = [];
   for (const pid of pids) {
