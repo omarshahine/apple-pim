@@ -88,7 +88,11 @@ Each Swift CLI is a standalone binary that reads from macOS frameworks, validate
   - `MCP Server (Node)`
   - `Swift CLI`
   - `Version Consistency`
-  - `OpenClaw Plugin` (promoted 2026-09-01 after its first real runs against openclaw@2026.8.1)
+  - `OpenClaw Plugin` (promoted 2026-09-01 after its first real runs against openclaw@2026.8.1).
+    Runs the `openclaw/` suite -- the mail-channel ingress admission tests. It FAILS, rather
+    than skipping green, when its capability probe finds no published SDK shipping the
+    channel-ingress contract: a required check that ran nothing is the failure mode #122 was
+    filed about. Do not relax it to unblock a PR; fix the floor in `openclaw/package.json`.
 - Auto-merge is enabled at the repo level; use it on PRs so merges wait for required checks.
 - This repo ignores lockfiles; CI uses `npm install` (not `npm ci`) in `mcp-server`.
 - Agent evals run on `ubuntu-latest` (no macOS needed since they use mock fixtures).
