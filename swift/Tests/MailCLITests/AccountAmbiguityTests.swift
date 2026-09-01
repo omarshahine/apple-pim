@@ -140,6 +140,49 @@ final class AccountAmbiguityTests: XCTestCase {
             "Account name matches 2 accounts in Mail: Work (old). Rename one.")
     }
 
+    // MARK: - The stdout backstop
+
+    /// One JSON result carrying the marker, as a caught throw would produce it.
+    private func resultJSON(message: String) -> String {
+        "{\"results\":[],\"errors\":[{\"id\":\"<a@x>\",\"error\":\""
+            + AccountAmbiguity.jxaMarker + message
+            + "\"}],\"_lookup\":{\"backend\":\"jxa-only\"}}"
+    }
+
+    /// The caught path: a `catch` folded the marker into the script's JSON result and the
+    /// script exited 0. `assertAccountHintResolvable` stops scripts getting here; this makes
+    /// "the marker is not user-facing" hold even if one ever does again.
+    func testTheMarkerIsRecoveredFromAJSONResult() {
+        let json = resultJSON(message: "Account name matches 2 accounts in Mail: Shared. Rename one.")
+        XCTAssertEqual(AccountAmbiguity.messageFromJXAOutput(json),
+                       "Account name matches 2 accounts in Mail: Shared. Rename one.")
+    }
+
+    /// Stops at the JSON string's own closing quote rather than swallowing the rest of the
+    /// document.
+    func testTheRecoveredMessageStopsAtTheStringItLivesIn() {
+        let message = AccountAmbiguity.messageFromJXAOutput(
+            resultJSON(message: "Two accounts named Shared."))
+        XCTAssertEqual(message, "Two accounts named Shared.")
+        XCTAssertFalse(message?.contains("_lookup") ?? true, "must not run past its own string")
+    }
+
+    /// An account name carrying a quote or a backslash arrives JSON-escaped. It must come
+    /// back as itself rather than truncating the message at the escape.
+    func testJSONEscapesInTheAccountNameSurvive() {
+        // JSON source: ... matches 2 accounts in Mail: He said \"hi\" C:\\Mail. Rename one.
+        let json = resultJSON(
+            message: "Matches 2 accounts in Mail: He said \\\"hi\\\" C:\\\\Mail. Rename one.")
+        XCTAssertEqual(AccountAmbiguity.messageFromJXAOutput(json),
+                       "Matches 2 accounts in Mail: He said \"hi\" C:\\Mail. Rename one.")
+    }
+
+    func testOrdinaryOutputIsNotMistakenForARefusal() {
+        XCTAssertNil(AccountAmbiguity.messageFromJXAOutput(
+            "{\"results\":[{\"id\":\"<a@x>\"}],\"errors\":[]}"))
+        XCTAssertNil(AccountAmbiguity.messageFromJXAOutput(""))
+    }
+
     // MARK: - Both engines refuse, and say something true
 
     /// The two refusals are deliberately worded differently, and the JXA one must not repeat
@@ -223,7 +266,7 @@ final class AccountAmbiguityWiringTests: XCTestCase {
 final class GeneratedScriptSyntaxTests: XCTestCase {
 
     /// Compile `js` and return the compiler's complaint, or nil when it parsed.
-    private func compilationError(_ js: String) throws -> String? {
+    fileprivate func compilationError(_ js: String) throws -> String? {
         let osacompile = URL(fileURLWithPath: "/usr/bin/osacompile")
         guard FileManager.default.isExecutableFile(atPath: osacompile.path) else {
             throw XCTSkip("/usr/bin/osacompile unavailable")
@@ -286,5 +329,149 @@ final class GeneratedScriptSyntaxTests: XCTestCase {
             findHelper: generateUnifiedFindMsgJXA(
                 rowidMapJS: "{}", backend: "jxa-only", mailbox: nil, account: "Shared 'quoted'"))
         XCTAssertNil(try compilationError(script))
+    }
+}
+
+/// The batch commands, which swallowed the refusal.
+///
+/// `batch-update` and `batch-delete` wrap each entry's `findMsg()` in a JS `try/catch` that
+/// records the error and continues. That caught `resolveAccountsByHint`'s throw, so osascript
+/// exited 0, `runJXA`'s non-zero guard never fired, and the internal marker was rendered to
+/// the user once per message id — while `--engine sqlite` refused the same input non-zero.
+/// It also bit `--engine auto` without Full Disk Access, where `NoopLocator` resolves nothing
+/// and raises nothing, so no Swift-side check ran either.
+///
+/// These run the REAL emitted scripts against a fake Mail. The wiring assertions below would
+/// not have caught the original bug on their own — the helper WAS present and WAS called, one
+/// layer too deep — so the executable ones carry the weight here.
+final class BatchCommandAmbiguityTests: XCTestCase {
+
+    /// A fake `Mail` with `accounts` callable and carrying `.whose`, plus enough of a mailbox
+    /// surface for the finder's scan to complete when it is allowed to run.
+    private static func fakeMailDeclaration(accountNames: [String]) -> String {
+        let list = accountNames.map { "'\($0)'" }.joined(separator: ", ")
+        return """
+        function __acct(n) {
+            return {
+                name: function () { return n; },
+                mailboxes: Object.assign(function () { return []; },
+                                         {whose: function () { return function () { return []; }; }})
+            };
+        }
+        const __names = [\(list)];
+        const __accounts = Object.assign(
+            function () { return __names.map(__acct); },
+            {whose: function (p) {
+                return function () {
+                    return __names.filter(function (n) { return n === p.name; }).map(__acct);
+                };
+            }});
+        const Mail = {accounts: __accounts, delete: function () {}, move: function () {}};
+        """
+    }
+
+    private struct Run { let stdout: String; let stderr: String; let status: Int32 }
+
+    /// Swap `Application("Mail")` for the fake and execute. Nothing here touches Mail.app.
+    private func run(_ script: String, accountNames: [String]) throws -> Run {
+        let real = "const Mail = Application(\"Mail\");"
+        XCTAssertTrue(script.contains(real), "script must declare Mail the usual way")
+        let js = script.replacingOccurrences(
+            of: real, with: Self.fakeMailDeclaration(accountNames: accountNames))
+
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let file = dir.appendingPathComponent("script.js")
+        try js.write(to: file, atomically: true, encoding: .utf8)
+
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+        proc.arguments = ["-l", "JavaScript", file.path]
+        let out = Pipe(), err = Pipe()
+        proc.standardOutput = out
+        proc.standardError = err
+        try proc.run()
+        let outData = out.fileHandleForReading.readDataToEndOfFile()
+        let errData = err.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        return Run(stdout: String(decoding: outData, as: UTF8.self),
+                   stderr: String(decoding: errData, as: UTF8.self),
+                   status: proc.terminationStatus)
+    }
+
+    private func finder(account: String?) -> String {
+        generateUnifiedFindMsgJXA(rowidMapJS: "{}", backend: "jxa-only",
+                                  mailbox: nil, account: account)
+    }
+
+    private func batchScripts(account: String?) -> [(String, String)] {
+        [("batch-update",
+          BatchUpdateMessages.buildScript(jsUpdates: "{id: '<a@x>', read: true}, {id: '<b@x>', read: true}",
+                                          findHelper: finder(account: account))),
+         ("batch-delete",
+          BatchDeleteMessages.buildScript(jsIds: "'<a@x>', '<b@x>'",
+                                          findHelper: finder(account: account)))]
+    }
+
+    /// The bug: exit 0, and the marker rendered into the result once per id.
+    func testAnAmbiguousAccountRefusesTheWholeBatch() throws {
+        for (name, script) in batchScripts(account: "Shared") {
+            let result = try run(script, accountNames: ["Shared", "Shared"])
+
+            XCTAssertNotEqual(result.status, 0,
+                              "\(name): an ambiguous scope must fail the run, not each entry")
+            XCTAssertFalse(result.stdout.contains(AccountAmbiguity.jxaMarker),
+                           "\(name): the marker must never reach a result: \(result.stdout)")
+            XCTAssertTrue(result.stderr.contains(AccountAmbiguity.jxaMarker),
+                          "\(name): the refusal must reach the stderr runJXA reads")
+            // The refusal fires before any message is touched, so no per-entry error is
+            // recorded at all -- one refusal for the batch, not N.
+            XCTAssertFalse(result.stdout.contains("<a@x>"),
+                           "\(name): nothing may be reported per entry: \(result.stdout)")
+        }
+    }
+
+    /// Whatever the fix does, it must not refuse a batch that is fine. Two distinct accounts
+    /// with a hint naming one, and no hint at all, both still run.
+    func testUnambiguousBatchesStillRun() throws {
+        for (name, script) in batchScripts(account: "Work") {
+            let result = try run(script, accountNames: ["Work", "Home"])
+            XCTAssertEqual(result.status, 0, "\(name) with a unique hint: \(result.stderr)")
+            XCTAssertTrue(result.stdout.contains("results"), "\(name): \(result.stdout)")
+        }
+        for (name, script) in batchScripts(account: nil) {
+            let result = try run(script, accountNames: ["Work", "Home"])
+            XCTAssertEqual(result.status, 0, "\(name) with no hint: \(result.stderr)")
+        }
+    }
+
+    /// Wiring: the assert is emitted, and emitted *before* the `try` that would eat it.
+    /// Position is the whole point, so it is asserted rather than mere presence.
+    func testTheAssertIsEmittedAheadOfThePerEntryTryCatch() {
+        for (name, script) in batchScripts(account: "Shared") {
+            guard let assertion = script.range(of: "assertAccountHintResolvable(Mail, acctHint);"),
+                  let firstTry = script.range(of: "try {") else {
+                return XCTFail("\(name): expected both the assert and a per-entry try")
+            }
+            XCTAssertLessThan(assertion.lowerBound, firstTry.lowerBound,
+                              "\(name): the assert must run before anything can catch it")
+        }
+    }
+
+    /// The generated batch scripts still parse with the assert in them.
+    func testTheBatchScriptsStillCompile() throws {
+        let syntax = GeneratedScriptSyntaxTests()
+        for (name, script) in batchScripts(account: "Shared 'quoted'") {
+            XCTAssertNil(try syntax.compilationErrorForTesting(script), name)
+        }
+    }
+}
+
+extension GeneratedScriptSyntaxTests {
+    /// Exposed so `BatchCommandAmbiguityTests` can reuse the compiler check.
+    func compilationErrorForTesting(_ js: String) throws -> String? {
+        try compilationError(js)
     }
 }

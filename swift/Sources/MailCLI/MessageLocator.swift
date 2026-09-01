@@ -83,7 +83,17 @@ struct NoopLocator: MessageLocator {
 /// reads and writes alike. It is now detected on the JXA side instead, with no database:
 /// `resolveAccountsByHint` (AccountAmbiguity.swift) treats a multi-result
 /// `Mail.accounts.whose({name:})` as the ambiguity it is and refuses. Both engines therefore
-/// refuse the same input, as `rethrowFatalFastPathError` has always claimed they should.
+/// refuse the same `--account`, as `rethrowFatalFastPathError` has always claimed they should.
+///
+/// Scoped to hints the CALLER supplied. Two account names the code derives for itself are
+/// deliberately still first-match, and neither is reachable from `--account`:
+/// `getAccountByName` in the write finder resolves the Envelope Index's own name for a rowid
+/// candidate, and `buildReplyAppleScript` emits `first account whose name is ...` for a name
+/// read back off the message it is replying to. The reply one is the weaker of the two: with
+/// two same-named accounts it can bind the wrong one and then fail its own lookup, surfacing
+/// as "Could not locate the original message" rather than as an ambiguity. Left alone because
+/// closing it means teaching the AppleScript reply path to address accounts by something
+/// other than name, which is a different change from this one.
 func makeMessageLocator(engine: EngineChoice) throws -> MessageLocator {
     guard engine != .jxa else { return NoopLocator() }
     do {

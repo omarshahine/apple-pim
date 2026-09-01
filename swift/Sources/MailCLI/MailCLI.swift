@@ -501,10 +501,17 @@ func runJXA(_ script: String) throws -> Any {
         // generated scripts that resolves an account hint reaches the user through this one
         // function, and their result shapes do not agree: two return a Mail message object
         // with no error channel at all, `search` returns a bare array, and the rest return
-        // `{error:}` mapped to `CLIError.notFound`. A thrown JS Error needs none of that, and
-        // it cannot be dropped by a call site that forgot to look. Every `runJXA(...)` in
-        // this file is a plain `try` with no `try?` and no swallowing catch, so this refusal
-        // reaches the caller from all of them.
+        // `{error:}` mapped to `CLIError.notFound`. A thrown JS Error needs none of that.
+        // Every `runJXA(...)` in this file is a plain `try` with no `try?` and no swallowing
+        // catch, so this refusal reaches the caller from all of them.
+        //
+        // What a thrown Error does NOT do by itself is survive a catch on the JS side. This
+        // comment used to claim it could not be dropped by a call site that forgot to look,
+        // and that was wrong: `batch-update` and `batch-delete` wrap each entry's `findMsg()`
+        // in a `try/catch`, which ate the refusal, exited 0, and rendered the marker to the
+        // user once per message id. `assertAccountHintResolvable`, called at script top level
+        // by the write finder, is the actual fix; the stdout check further down is the
+        // backstop that keeps the marker off a user's screen if it ever happens again.
         //
         // `invalidInput` for the same reason `rethrowFatalFastPathError` uses it on the
         // SQLite side: ambiguity describes the caller's input, not the engine. Same exit
@@ -519,6 +526,18 @@ func runJXA(_ script: String) throws -> Any {
     }
 
     let stdoutStr = String(data: stdoutData, encoding: .utf8)?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+    // The refusal again, this time having been caught inside the script and folded into its
+    // JSON result, which exits 0 and never reaches the stderr branch above.
+    //
+    // `assertAccountHintResolvable` is what stops a script getting here, and this is the
+    // backstop for if one ever does. It is what makes "the marker is not user-facing" a
+    // property of this function rather than a claim about every `catch` block in every
+    // generated script -- which is exactly the claim that turned out to be false for
+    // `batch-update` and `batch-delete`, where the marker was rendered once per message id.
+    if let ambiguity = AccountAmbiguity.messageFromJXAOutput(stdoutStr) {
+        throw CLIError.invalidInput(ambiguity)
+    }
 
     guard !stdoutStr.isEmpty else {
         return [String: Any]()
@@ -689,6 +708,9 @@ func generateUnifiedFindMsgJXA(rowidMapJS: String, backend: String,
     const rowidMap = \(rowidMapJS);
     const mboxHint = \(mailboxFilter);
     const acctHint = \(accountFilter);
+    // Refuse an ambiguous --account here, at top level, before any command's per-entry
+    // try/catch can swallow it. `batch-update` and `batch-delete` wrap findMsg() in one.
+    assertAccountHintResolvable(Mail, acctHint);
     const MAILBOX_PRIORITY = \(mailboxPriorityJSON());
     const _locatorBackend = '\(backend)';
     const _debug = \(debugMode ? "true" : "false");
