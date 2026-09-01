@@ -212,3 +212,79 @@ final class AccountAmbiguityWiringTests: XCTestCase {
                       "the finder must bring the helper into this script")
     }
 }
+
+/// Does the generated JXA actually parse?
+///
+/// Nothing asked this before. The suite reads emitted scripts as strings and checks for
+/// substrings, which cannot tell a well-formed script from one a bad interpolation broke --
+/// and #119 edited seven of them. `osacompile` answers it without running anything: it
+/// compiles, never executes, so no Mail.app and no automation permission is involved. It
+/// reports a syntax error on stderr while still exiting 0, so stderr is the signal.
+final class GeneratedScriptSyntaxTests: XCTestCase {
+
+    /// Compile `js` and return the compiler's complaint, or nil when it parsed.
+    private func compilationError(_ js: String) throws -> String? {
+        let osacompile = URL(fileURLWithPath: "/usr/bin/osacompile")
+        guard FileManager.default.isExecutableFile(atPath: osacompile.path) else {
+            throw XCTSkip("/usr/bin/osacompile unavailable")
+        }
+        let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: dir) }
+
+        let source = dir.appendingPathComponent("script.js")
+        try js.write(to: source, atomically: true, encoding: .utf8)
+
+        let proc = Process()
+        proc.executableURL = osacompile
+        proc.arguments = ["-l", "JavaScript",
+                          "-o", dir.appendingPathComponent("out.scpt").path,
+                          source.path]
+        let err = Pipe()
+        proc.standardOutput = Pipe()
+        proc.standardError = err
+        try proc.run()
+        let data = err.fileHandleForReading.readDataToEndOfFile()
+        proc.waitUntilExit()
+        let message = String(decoding: data, as: UTF8.self)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return message.isEmpty ? nil : message
+    }
+
+    /// Proves the check can fail, so a green run means something.
+    func testTheSyntaxCheckRejectsBrokenJavaScript() throws {
+        let error = try compilationError("function broken( { const x =")
+        XCTAssertNotNil(error, "osacompile must report a syntax error on malformed input")
+    }
+
+    func testTheHelperItselfParses() throws {
+        XCTAssertNil(try compilationError(AccountAmbiguity.jxaHelperSource()))
+    }
+
+    func testTheReadPathFinderParsesWithHintsAndWithout() throws {
+        for account in ["Shared 'quoted'", nil] {
+            let script = findMessageJXA(targetId: "<m'x@y>", mailbox: "Inbox \"A\"", account: account)
+            XCTAssertNil(try compilationError(script), "account hint: \(account ?? "nil")")
+        }
+    }
+
+    func testTheWritePathFinderParsesWithHintsAndWithout() throws {
+        for account in ["Shared 'quoted'", nil] {
+            let script = generateUnifiedFindMsgJXA(
+                rowidMapJS: "{\"a@b\":[{\"r\":7,\"acct\":\"X\"}]}", backend: "sqlite",
+                mailbox: "Inbox \"A\"", account: account)
+            XCTAssertNil(try compilationError(script), "account hint: \(account ?? "nil")")
+        }
+    }
+
+    /// The one command carrying two independent account hints, so the finder's copy of the
+    /// helper and the destination lookup's call to it appear in a single script.
+    func testTheMoveScriptParsesWithBothAccountHints() throws {
+        let script = MoveMessage.buildScript(
+            id: "<m'x@y>", toMailbox: "Archive \"2026\"", toAccount: "Shared 'quoted'",
+            findHelper: generateUnifiedFindMsgJXA(
+                rowidMapJS: "{}", backend: "jxa-only", mailbox: nil, account: "Shared 'quoted'"))
+        XCTAssertNil(try compilationError(script))
+    }
+}
