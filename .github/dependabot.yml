@@ -19,6 +19,15 @@ updates:
     schedule:
       interval: monthly
     groups:
+      # ⚠️ Security updates are NOT grouped by default, so a repo with three
+      # advisories in one lockfile gets three PRs that all edit it. Merging any
+      # one invalidates the other two, `@dependabot recreate` rebuilds them,
+      # and the next merge breaks them again -- a loop this fleet actually hit
+      # on Lobster, findmy-cli and openclaw-parcel. One PR per directory ends it.
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
       production:
         dependency-type: production
       development:
@@ -30,6 +39,15 @@ updates:
     schedule:
       interval: monthly
     groups:
+      # ⚠️ Security updates are NOT grouped by default, so a repo with three
+      # advisories in one lockfile gets three PRs that all edit it. Merging any
+      # one invalidates the other two, `@dependabot recreate` rebuilds them,
+      # and the next merge breaks them again -- a loop this fleet actually hit
+      # on Lobster, findmy-cli and openclaw-parcel. One PR per directory ends it.
+      security:
+        applies-to: security-updates
+        patterns:
+          - "*"
       production:
         dependency-type: production
       development:
