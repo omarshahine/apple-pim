@@ -498,6 +498,19 @@ If it scored `asserted`, this row would be decorative and I2, I7, and I8 would a
 The channel reports any `allowFrom` entry with no enrollment behind it at startup, so the
 gap between the two files is visible rather than inferred.
 
+The bar is enforced twice, on purpose. The ingress kernel resolves it as `min(entry,
+subject)`, and `resolveMailIngress` re-reads the subject strength itself before treating a
+kernel admit as an admit. That is one term checked twice rather than two policies that can
+disagree: this channel pins entry-side authentication to `verified`, so the kernel's minimum
+reduces to exactly the strength the local check reads.
+
+The second check exists because the first was silently absent once. `minIdentifierAuthentication`
+is an ordinary property and `IdentifierAuthentication` a type-only import, so both erase at
+runtime: a build against an SDK that ships the kernel, running against openclaw < 2026.8.1,
+resolved every import, dropped the gate, and dispatched I2, I7, and I8. Nothing raised. The
+plugin now imports `meetsIdentifierAuthentication` as a value, so an SDK without the kernel
+fails to link the module instead — the channel does not start, rather than starting open.
+
 Every default is closed. An install that configures nothing reads nothing and sends nothing,
 which is the correct resting state for a system whose failure mode is an agent acting on a
 stranger's instructions.

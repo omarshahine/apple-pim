@@ -216,6 +216,62 @@ func reminderToDict(_ reminder: EKReminder) -> [String: Any] {
     return dict
 }
 
+/// Attaches the alert Apple Reminders itself writes for a TIMED due date.
+///
+/// Reminders.app puts an `EKAlarm(relativeOffset: 0)` -- an alert AT the due moment -- on
+/// every timed reminder created through its UI, and nothing on an all-day one. Measured
+/// across a live library: of 178 timed reminders 116 carry it, while of 119 all-day
+/// reminders 115 carry nothing. That inverted ratio is the design, and the timed reminders
+/// missing it are the ones this CLI wrote.
+///
+/// Writing it makes a reminder created here indistinguishable from one created in the app.
+///
+/// It does NOT control whether the reminder fires. Dated reminders written by this CLI with
+/// no alarm at all did notify, confirmed by the person who had been receiving them for
+/// months; two attempts to observe delivery programmatically were both inconclusive and are
+/// not worth repeating (the usernoted database has never held a `com.apple.reminders` row,
+/// and a screen-capture probe could not rule out Reminders' notification settings). So this
+/// is a REPRESENTATION fix, not a delivery fix: the value is that a reminder created here
+/// matches one created in the app, which matters for round-tripping and for anything reading
+/// the store. Nothing was silently mute before it.
+///
+/// All-day reminders get nothing, exactly as Reminders does it. An alert on a date with no
+/// time of day resolves to midnight, which is not when anyone wants to hear about it.
+///
+/// Applies only when the reminder has no alarms already. An explicit `--alarm` stays exactly
+/// what the caller asked for: adding an offset-0 alarm beside an early one would not change
+/// what Reminders DISPLAYS -- earliest wins, see `earlyAlarmShift` -- but would add a second
+/// ping nobody asked for.
+/// - Parameter dueDateChanged: true on the update path, where the due date was just
+///   rewritten and an offset-0 alarm left over from a previous TIMED due would now resolve
+///   to midnight. On create there is no previous state, so an explicit `--alarm 0` beside an
+///   all-day due is the caller's stated intent and is left alone.
+func syncDueAlert(_ reminder: EKReminder, enabled: Bool, dueDateChanged: Bool = false) {
+    guard enabled else { return }
+
+    guard reminder.dueDateComponents?.hour != nil else {
+        // The due date is all-day now. A BARE relative alarm resolves to midnight, which is
+        // the state this function exists to avoid and one Reminders never produces on its
+        // own -- so a timed reminder retimed to all-day must not keep the alert added when
+        // it was timed.
+        //
+        // Narrow on purpose. An alarm carrying an `absoluteDate` is the real "all-day
+        // reminder, alert me at 9am" shape and is common in practice (measured in a live
+        // library: of 4 all-day reminders holding alarms, 3 carry an absoluteDate and only
+        // 1 is a bare offset). Location alarms have no time of their own. Both are left.
+        guard dueDateChanged else { return }
+        for alarm in reminder.alarms ?? []
+        where alarm.structuredLocation == nil && alarm.absoluteDate == nil
+            && alarm.relativeOffset == 0 {
+            reminder.removeAlarm(alarm)
+        }
+        return
+    }
+
+    guard !reminder.hasAlarms else { return }
+    reminder.addAlarm(EKAlarm(relativeOffset: 0))
+}
+
 /// When a reminder's earliest alarm lands before its due date, the alert moment and the due
 /// moment — in that order.
 ///
@@ -864,6 +920,11 @@ struct CreateReminder: AsyncParsableCommand {
         + "alert at the due date, which is what Reminders itself writes"))
     var alarm: [Int] = []
 
+    @Flag(inversion: .prefixedNo,
+          help: "Attach the alert Apple Reminders itself writes for a timed due date (an alarm at the due moment). All-day reminders never get one. Skipped when --alarm is given")
+    var dueAlert: Bool = true
+
+
     @Option(name: .long, help: "Recurrence rule as JSON (e.g., '{\"frequency\":\"monthly\",\"interval\":1}')")
     var recurrence: String?
 
@@ -912,6 +973,9 @@ struct CreateReminder: AsyncParsableCommand {
         if let recurrenceJSON = recurrence, let rule = parseRecurrenceRule(recurrenceJSON) {
             reminder.addRecurrenceRule(rule)
         }
+
+        // Last, so it can see every alarm the caller asked for and stand down if there is one.
+        syncDueAlert(reminder, enabled: dueAlert)
 
         try eventStore.save(reminder, commit: true)
 
@@ -1004,6 +1068,10 @@ struct UpdateReminder: AsyncParsableCommand {
           help: "Mirror --url into the notes so Apple Reminders shows a tappable link")
     var urlInNotes: Bool = true
 
+    @Flag(inversion: .prefixedNo,
+          help: "When --due sets a time on a reminder that has no alarms, attach the alert Apple Reminders itself writes. All-day dues never get one")
+    var dueAlert: Bool = true
+
     @Option(name: .long, help: "Location-based alarm as JSON (e.g., '{\"name\":\"Home\",\"latitude\":37.33,\"longitude\":-122.03,\"radius\":100,\"proximity\":\"arrive\"}')")
     var location: String?
 
@@ -1084,6 +1152,13 @@ struct UpdateReminder: AsyncParsableCommand {
             }
         }
 
+        // Gated on `--due` rather than run unconditionally: an unrelated update (a retitle,
+        // a priority change) must not quietly grow an alarm the reminder never had. Setting
+        // a due time is the moment the app itself would have written one.
+        if due != nil {
+            syncDueAlert(reminder, enabled: dueAlert, dueDateChanged: true)
+        }
+
         try eventStore.save(reminder, commit: true)
 
         var payload: [String: Any] = [
@@ -1145,6 +1220,8 @@ struct BatchReminderInput: Codable {
     /// true, matching the single-item `create` default.
     let urlInNotes: Bool?
     let alarm: [Int]?
+    /// Defaults to true, matching the single-item `create` default.
+    let dueAlert: Bool?
     let recurrence: RecurrenceJSON?
     let location: LocationJSON?
 }
@@ -1236,8 +1313,15 @@ struct BatchCreateReminder: AsyncParsableCommand {
                     }
                 }
 
+                // Last mutation before the save, so it sees every alarm this row asked for
+                // and stands down if there is one. Must precede `save`: mutating a staged
+                // object after it is saved and relying on the later `commit` to notice is
+                // not a contract EventKit offers.
+                syncDueAlert(reminder, enabled: reminderInput.dueAlert ?? true)
+
                 // Save with commit: false to batch changes
                 try eventStore.save(reminder, commit: false)
+
                 createdReminders.append(reminderToDict(reminder))
                 warnings.append(contentsOf: earlyAlarmWarnings(for: reminder).map {
                     "\(reminderInput.title): \($0)"

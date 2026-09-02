@@ -61,9 +61,10 @@ pane() {
 # before matched nothing, and every helper-process check silently passed.
 # This pattern matches both layouts and does not match the `open -W -a
 # .../PIMHelper.app` parent, whose argv carries no "Contents/".
-# NOTE: lib/cli-runner.js and openclaw/lib/cli-runner.js (line 191, identical
-# copies) still carry the old literal marker, so reapStaleHelpers() there is
-# equally blind. Fixing that touches the auto-kill path and is left separate.
+# lib/cli-runner.js exports the same pattern as HELPER_PROC_MARKER for
+# reapStaleHelpers(). The two are independent copies in different languages;
+# mcp-server/test/cli-runner-helper-proc.test.js pins the JS one against a real
+# pgrep, including that it does not match the `open` parent.
 HELPER_PROC_MARKER='PIMHelper\.app/Contents/.*pim-helper'
 
 helper_resident() { pgrep -f "$HELPER_PROC_MARKER" >/dev/null 2>&1; }

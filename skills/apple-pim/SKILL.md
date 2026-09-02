@@ -208,7 +208,18 @@ When reading events/reminders, the `recurrence` array includes:
    resolves to the same instant. Use `alarm: [0]` to alert at the due date — that is what
    Reminders itself writes — or set the due date to the time the user actually wants. The CLI
    returns a `warnings` array whenever a write moves the visible time; surface it
-9. **`startDate` mirrors the due date and is returned on reads** — Reminders offers no separate
+9. **A timed due date gets an alert automatically** — Reminders.app attaches an alarm at the
+   due moment to every timed reminder created in its UI (measured in a live library: 116 of
+   178 timed reminders carry it) and attaches nothing to an all-day one (115 of 119 carry
+   nothing). The CLI now writes the same shape, so a reminder created here is
+   indistinguishable from one created in the app. All-day dues get nothing — an alert on a
+   date with no time resolves to midnight. An explicit `alarm` is left exactly as passed.
+   Opt out with `dueAlert: false` (`--no-due-alert`). On update this applies only when `due`
+   is also being set, so an unrelated edit never grows an alarm.
+   This is about matching Apple's representation, **not** about whether the reminder fires:
+   dated reminders written with no alarm at all do still notify. Do not re-investigate that;
+   it is settled
+10. **`startDate` mirrors the due date and is returned on reads** — Reminders offers no separate
    start-date control, so the CLI keeps the two in sync on every write. A reminder that ends up
    with a start date but no due date renders as *dateless* in Reminders while still occupying a
    date slot in EventKit; the returned `startDate` is how you diagnose that
@@ -270,9 +281,30 @@ Support flexible input:
 - Relative: "in 2 hours", "next Tuesday"
 
 ### Time Zone Handling
-- EventKit stores dates in UTC
-- Display in local time zone
-- Be explicit about time zones in user output
+- EventKit stores dates in UTC. Every calendar event also carries `localStart`/`localEnd`
+- **Reason and group by `localStart`/`localEnd`, never by `startDate`/`endDate`.** Past a
+  cutoff in the day the two name a different *calendar day*, and grouping by the UTC field
+  shifts those events one day forward — the most common way a calendar answer goes wrong
+  while looking entirely reasonable
+- The cutoff is wherever local time reaches 24:00 minus the UTC offset: **5:00 PM during PDT**
+  (UTC-7), 4:00 PM during PST (UTC-8), and different again in another zone. It is not
+  "evening" as a category — a 4:00 PM PDT event and its `startDate` agree on the day
+- The same instant, both ways:
+  ```
+  localStart = 2026-03-31 7:00 PM     <- the day this event belongs to
+  startDate  = 2026-04-01T02:00:00Z   <- same moment, next calendar day
+  ```
+  An availability answer built on `startDate` calls March 31 free and April 1 busy. Both are
+  wrong, and nothing in the output looks off
+- Partial correctness is what makes this survive. Every morning and afternoon event has
+  matching dates, so spot-checking one confirms the wrong habit; only the late-day events are
+  misfiled, and those are exactly the ones an evening-availability question is about
+- The trap is worst when the date is *incidental* to the question. Answering "is April 1
+  free?" invites a careful check; answering "which evenings in April are free?" invites
+  grouping in bulk, which is exactly where the UTC field slips in
+- Requesting `start`/`startDate` via `fields` auto-includes `localStart` for this reason.
+  Do not strip it back out
+- Display in the local time zone and name the zone in user output
 
 ### Searching
 - Name search: `CNContact.predicateForContacts(matchingName:)`

@@ -5,19 +5,54 @@ on:
     branches: [main]
   pull_request:
 
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
+  # macOS runner minutes bill at 10x the Linux rate, so the two macOS jobs
+  # below only run on pull requests (the merge commit re-running them on push
+  # to main added nothing) and only when their source paths actually changed.
+  # Job-level skips via dorny/paths-filter still satisfy the required checks
+  # ("MCP Server (Node)", "Swift CLI") — a workflow-level paths filter would
+  # leave them stuck as Expected.
+  changes:
+    name: Detect Changes
+    runs-on: ubuntu-latest
+    outputs:
+      node: ${{ steps.filter.outputs.node }}
+      swift: ${{ steps.filter.outputs.swift }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: dorny/paths-filter@ceb8a2b8f2d89434be7ff52d3de7ec3738c5cc9d  # v4
+        id: filter
+        with:
+          filters: |
+            node:
+              - 'lib/**'
+              - 'mcp-server/**'
+              - 'package.json'
+              - '.github/workflows/tests.yml'
+            swift:
+              - 'swift/**'
+              - '.github/workflows/tests.yml'
+
   mcp-server-tests:
     name: MCP Server (Node)
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.node == 'true'
     runs-on: macos-latest
     defaults:
       run:
         working-directory: mcp-server
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
           node-version: 20
           cache: npm
@@ -40,10 +75,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
           node-version: 20
 
@@ -60,13 +95,15 @@ jobs:
 
   swift-cli-tests:
     name: Swift CLI
+    needs: changes
+    if: github.event_name == 'pull_request' && needs.changes.outputs.swift == 'true'
     runs-on: macos-latest
     defaults:
       run:
         working-directory: swift
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Select latest Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
@@ -74,29 +111,33 @@ jobs:
       - name: Run Swift tests
         run: swift test
 
-  # openclaw/ defines `"test": "node --test \"src/**/*.test.ts\""` and, until now, nothing
-  # ran it. Those suites cover the mail channel's ingress admission -- allowlist matching,
-  # per-message authentication strength, the loop guard, thread permission, and the
-  # scenario table that exists to catch drift between the documented rows and the code.
-  # #121 rewrote all three of them under six green checks that never executed one.
+  # openclaw/ defines `"test": "node --test \"src/**/*.test.ts\""`. Those suites cover
+  # the mail channel's ingress admission -- allowlist matching, per-message
+  # authentication strength, the loop guard, thread permission, and the scenario
+  # table that exists to catch drift between the documented rows and the code.
   #
-  # It cannot run for real yet: openclaw/package.json pins a floor no published release
-  # satisfies, so `npm install` here fails with ETARGET. Rather than land a red job or
-  # wait and forget, the job lands now and turns itself on the moment an installable SDK
-  # ships the contract. While it cannot run it says so in the step summary and in a
-  # notice, because a job that goes quietly green is the failure mode this repo keeps
-  # finding (see the v3.14.0 publish "Verify" step, and this suite's own absence).
+  # The job self-enabled on 2026-08-31 when openclaw@2026.8.1 hit npm -- the first
+  # published release that both satisfies the plugin's declared floor and ships the
+  # channel-ingress contract. The probe stays: it asserts the capability, not the
+  # version, so a future SDK that regresses the contract is caught for the right
+  # reason rather than by a version comparison.
   #
-  # Do NOT make this a required check until the summary stops saying "skipped".
+  # An unavailable contract now FAILS this job rather than skipping it green. That is
+  # a deliberate reversal: while nothing published shipped the contract, skipping was
+  # the honest answer and failing would have blocked every PR over an upstream gap
+  # nobody here could close. Now that one does ship it, and this job is a required
+  # check, a green skip is the exact failure mode #122 was filed about -- a check that
+  # reads as proof and ran nothing. The condition that made skipping right is gone, so
+  # the behaviour changes with it.
   openclaw-plugin-tests:
     name: OpenClaw Plugin
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
           # `node --test` runs .ts directly via type stripping on 22+.
           node-version: 24
@@ -105,37 +146,47 @@ jobs:
         id: sdk
         uses: ./.github/actions/openclaw-sdk-contract
 
-      - name: Skip, loudly, while no installable SDK ships the contract
+      - name: Fail when no installable SDK ships the contract
         if: steps.sdk.outputs.available != 'true'
         env:
           DETAIL: ${{ steps.sdk.outputs.detail }}
         run: |
-          echo "::notice::openclaw tests skipped -- $DETAIL"
           {
-            echo "### OpenClaw plugin tests: SKIPPED"
+            echo "### OpenClaw plugin tests: DID NOT RUN"
             echo ""
             echo "> $DETAIL"
             echo ""
-            echo "This job proves nothing in this run. It starts running by itself once a"
-            echo "published SDK ships the channel-ingress contract."
+            echo "This job proves nothing in this run, and it is a required check, so it"
+            echo "fails rather than reporting green on nothing."
+            echo ""
+            echo "The mail-channel ingress suite is the only thing standing between a"
+            echo "spoofed sender and an agent run, so \"could not check\" is not a pass."
+            echo "Expect this when the SDK the plugin's declared floor resolves to stops"
+            echo "shipping the channel-ingress contract, or when npm cannot be reached."
+            echo ""
+            echo "To unblock: fix the floor in openclaw/package.json, or wait for a"
+            echo "published SDK that satisfies it. Do not relax this job."
           } >> "$GITHUB_STEP_SUMMARY"
+          echo "::error::openclaw ingress suite did not run -- $DETAIL"
+          exit 1
 
       - name: Install root dependencies
-        if: steps.sdk.outputs.available == 'true'
         run: npm install
 
       - name: Install plugin dependencies
-        if: steps.sdk.outputs.available == 'true'
         working-directory: openclaw
-        run: npm install
+        # apple-pim-cli declares "os": ["darwin"] (at runtime it spawns the four
+        # macOS-only Swift CLIs), so a plain `npm install` refuses to run here with
+        # EBADPLATFORM. The test suite itself is pure logic and passes on linux
+        # (verified: node:24, 251/251); --force downgrades the platform check to a
+        # warning, which keeps this job off 10x-priced macOS runners.
+        run: npm install --force
 
       - name: Run OpenClaw plugin tests
-        if: steps.sdk.outputs.available == 'true'
         working-directory: openclaw
         run: npm test
 
       - name: Record that the suite actually ran
-        if: steps.sdk.outputs.available == 'true'
         env:
           VERSION: ${{ steps.sdk.outputs.version }}
         run: |
@@ -145,8 +196,8 @@ jobs:
     name: Version Consistency
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - uses: omarshahine/version-consistency-action@v1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: omarshahine/version-consistency-action@de358297133489498bca32eaea89a296e9e4a5b0  # v1
         with:
           sets: |
             - name: "Apple PIM plugin"

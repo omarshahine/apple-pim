@@ -11,6 +11,7 @@
 
 import {
   defineStableChannelIngressIdentity,
+  meetsIdentifierAuthentication,
   resolveChannelMessageIngress,
 } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import {
@@ -270,6 +271,11 @@ export type MailIngressParams = {
   minIdentifierAuthentication: IdentifierAuthentication;
   /** Conversation the kernel scopes this resolution to; the thread key in practice. */
   conversationId: string;
+  /**
+   * The ingress kernel, injectable so the strength gate below can be tested against a
+   * kernel that admits everything. Defaults to the SDK's. Nothing in production passes it.
+   */
+  resolveIngress?: typeof resolveChannelMessageIngress;
 };
 
 /**
@@ -291,7 +297,7 @@ export async function resolveMailIngress(
       ? [...params.allowFrom, params.address]
       : [...params.allowFrom];
 
-  const kernel = await resolveChannelMessageIngress({
+  const kernel = await (params.resolveIngress ?? resolveChannelMessageIngress)({
     channelId: "apple-mail",
     accountId: "default",
     identity: MAIL_INGRESS_IDENTITY,
@@ -306,10 +312,37 @@ export async function resolveMailIngress(
     allowFrom: effectiveAllowFrom,
   });
 
+  // Re-check the authentication half of the kernel's admit locally, and refuse to treat an
+  // admit that fails it as an admit.
+  //
+  // This is not a second policy. The channel pins entry-side authentication to `verified`
+  // (MAIL_INGRESS_IDENTITY), so the kernel's min(entry, subject) reduces to exactly the
+  // subject strength this line reads: one term, asserted twice, not two policies that can
+  // disagree.
+  //
+  // It is here because the gate was silently absent once and nothing raised. Every binding
+  // this module had to the identifier-authentication kernel was erasable: `IdentifierAuthentication`
+  // is a type-only import, and `minIdentifierAuthentication` is an ordinary property that an
+  // SDK predating the kernel drops on the floor. Built against a kernel-bearing SDK and run
+  // against openclaw < 2026.8.1, the module loaded, every import resolved, the gate stopped
+  // running, and I2/I7/I8 -- an allowlisted address with nothing behind it, a forged
+  // Authentication-Results, an attacker's own valid SPF -- were dispatched. Measured, not
+  // theorized: pinning openclaw@2026.7.1-2 turns 8 tests in this repo red on exactly those
+  // rows.
+  //
+  // `meetsIdentifierAuthentication` is imported as a VALUE for the same reason. An SDK
+  // without the kernel cannot satisfy that named import, so the module fails to link and the
+  // channel does not start -- loud and closed, rather than quiet and open. `compat.pluginApi`
+  // states the same floor, but it is enforced by the host; this holds when the host does not.
+  const strengthSufficient = meetsIdentifierAuthentication(
+    params.strengths.address,
+    params.minIdentifierAuthentication,
+  );
+
   return {
     kernelReasonCode: kernel.ingress.reasonCode,
     decision: decideIngress({
-      kernelAdmitted: kernel.ingress.admission === "dispatch",
+      kernelAdmitted: kernel.ingress.admission === "dispatch" && strengthSufficient,
       domainVerified: params.strengths.domain === "verified",
       allowlisted: params.allowlisted,
       selfAddressed: params.selfAddressed,
