@@ -249,3 +249,30 @@ describe("reminder url mirroring opt-out", () => {
       .not.toContain("--no-url-in-notes");
   });
 });
+
+// Reminders.app writes an alarm at the due moment on every TIMED reminder made in its UI
+// and none on an all-day one, so the CLI does the same and a reminder created here matches
+// one created in the app. Which dues qualify is the CLI's call; this layer only has to
+// carry the opt-out, and stay silent otherwise so the default keeps applying.
+describe("buildReminderCreateArgs / buildReminderUpdateArgs — dueAlert", () => {
+  it("stays silent by default, leaving the CLI default in force", () => {
+    expect(buildReminderCreateArgs({ title: "t", due: "2026-09-02 15:00" }))
+      .not.toContain("--no-due-alert");
+    expect(buildReminderUpdateArgs({ id: "1", due: "2026-09-02 15:00" }))
+      .not.toContain("--no-due-alert");
+  });
+
+  it("passes the opt-out when dueAlert is false", () => {
+    expect(buildReminderCreateArgs({ title: "t", due: "2026-09-02 15:00", dueAlert: false }))
+      .toContain("--no-due-alert");
+    expect(buildReminderUpdateArgs({ id: "1", due: "2026-09-02 15:00", dueAlert: false }))
+      .toContain("--no-due-alert");
+  });
+
+  // `true` is the default, so sending the flag for it would be noise — and there is no
+  // affirmative flag to send.
+  it("sends nothing when dueAlert is explicitly true", () => {
+    expect(buildReminderCreateArgs({ title: "t", due: "2026-09-02 15:00", dueAlert: true }))
+      .not.toContain("--no-due-alert");
+  });
+});

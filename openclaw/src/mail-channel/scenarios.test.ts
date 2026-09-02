@@ -21,6 +21,7 @@ import {
   type MailAuthCheckResult,
   type MailIdentifierStrengths,
 } from "../mail-auth/strength.ts";
+import { meetsIdentifierAuthentication } from "openclaw/plugin-sdk/channel-ingress-runtime";
 import { resolveMailIngress } from "./inbound.ts";
 import type { Admission } from "./policy.ts";
 
@@ -375,5 +376,94 @@ describe("scenario doc: invariants across the table", () => {
     assert.ok(spoofed, "I7 is the spoofed-operator row");
     const admission = await admissionFor({ auth: spoofed.auth, allowlisted: true }, "mutable");
     assert.equal(admission, "dispatch", "break-glass means exactly that");
+  });
+});
+
+/**
+ * The same table, run against a kernel with no authentication gate at all.
+ *
+ * This is the regression that shipped and was invisible. `minIdentifierAuthentication` is an
+ * ordinary property and `IdentifierAuthentication` a type-only import, so both erase at
+ * runtime: a build against a kernel-bearing SDK, running on openclaw < 2026.8.1, resolved
+ * every import, dropped the gate, and dispatched I2, I7 and I8. Pinning openclaw@2026.7.1-2
+ * reproduces it exactly -- 8 tests in this file and its neighbours go red on those rows.
+ *
+ * `failOpenKernel` is that SDK's behaviour distilled: admit everything the allowlist lets
+ * through, gate nothing. What these tests pin is that the channel refuses the spoofs anyway,
+ * so the admission no longer depends on the kernel choosing to enforce it.
+ *
+ * Scope is deliberately the authentication half only. The kernel still owns the allowlist,
+ * and a fail-open kernel does admit strangers (I5, I6) -- those rows are the kernel's job and
+ * are covered by the real-kernel table above.
+ */
+describe("the strength gate holds without the kernel", () => {
+  /** A kernel that admits every message it is handed. */
+  const failOpenKernel = (async () => ({
+    ingress: { admission: "dispatch", reasonCode: "fail_open_stub" },
+  })) as unknown as NonNullable<Parameters<typeof resolveMailIngress>[0]["resolveIngress"]>;
+
+  async function admissionWithoutKernelGate(
+    row: Pick<Row, "auth" | "allowlisted" | "selfAddressed" | "threadPermitted">,
+    minimum: IdentifierAuthentication,
+  ): Promise<Admission> {
+    const strengths = mailAuthToIdentifierStrengths(row.auth);
+    const address = row.auth.sender ?? "sender@example.test";
+    const resolved = await resolveMailIngress({
+      address,
+      strengths,
+      allowFrom: row.allowlisted ? [address] : [],
+      allowlisted: row.allowlisted ?? false,
+      selfAddressed: row.selfAddressed ?? false,
+      threadPermitted: row.threadPermitted ?? false,
+      minIdentifierAuthentication: minimum,
+      conversationId: "scenario-thread",
+      resolveIngress: failOpenKernel,
+    });
+    return resolved.decision.admission;
+  }
+
+  // The three rows the regression actually dispatched, named individually so a failure here
+  // reads as the security finding it is rather than as a table mismatch.
+  for (const id of ["I2", "I7", "I8"] as const) {
+    it(`${id} is still refused when the kernel gates nothing`, async () => {
+      const row = ROWS.find((r) => r.id === id);
+      assert.ok(row, `${id} is in the table`);
+      assert.notEqual(
+        await admissionWithoutKernelGate(row, "asserted"),
+        "dispatch",
+        `${id} at the default \`asserted\` minimum`,
+      );
+      assert.notEqual(
+        await admissionWithoutKernelGate(row, "verified"),
+        "dispatch",
+        `${id} at the strict \`verified\` minimum`,
+      );
+    });
+  }
+
+  // The general form: no row whose address is too weak for the configured minimum reaches an
+  // agent, whatever the kernel says. Stated over the whole table so a row added later is
+  // covered without anyone remembering to extend the list above.
+  it("dispatches nothing below the configured minimum, whatever the kernel returns", async () => {
+    for (const minimum of ["asserted", "verified"] as const) {
+      for (const row of ROWS) {
+        const strengths = mailAuthToIdentifierStrengths(row.auth);
+        if (meetsIdentifierAuthentication(strengths.address, minimum)) {
+          continue;
+        }
+        assert.notEqual(
+          await admissionWithoutKernelGate(row, minimum),
+          "dispatch",
+          `${row.id} (address ${strengths.address}) at minimum ${minimum}`,
+        );
+      }
+    }
+  });
+
+  // Guards the claim the production comment makes: the value import is what turns a
+  // kernel-less SDK into a link error instead of a silent fail-open. A type-only import
+  // would satisfy the compiler and vanish here.
+  it("binds the kernel primitive as a runtime value, not an erasable type", () => {
+    assert.equal(typeof meetsIdentifierAuthentication, "function");
   });
 });

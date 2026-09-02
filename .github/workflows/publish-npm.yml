@@ -21,10 +21,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Setup Node
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
           node-version: 24
 
@@ -60,7 +60,7 @@ jobs:
     needs: preflight
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
       - name: Setup Node.js
         # Node 24 ships with npm 11.x. Trusted Publisher OIDC requires
@@ -68,7 +68,7 @@ jobs:
         # Node 22's bundled npm 10.9.x silently 404s on the publish PUT
         # despite signed provenance landing in sigstore — that was the
         # cause of every failed CI publish since the OIDC migration.
-        uses: actions/setup-node@v5
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
           node-version: 24
           registry-url: "https://registry.npmjs.org"
