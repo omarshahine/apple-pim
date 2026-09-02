@@ -76,7 +76,12 @@ describe("createMailCliSender", () => {
 
     assert.deepEqual(result, { sentMessageId: "sent-123@icloud.com" });
     const body = await sentBody();
-    assert.match(body, /^Neither\.\n\nOn Sep 1, 2026, at .+, Omar Shahine <omar@shahine\.com> wrote:\n\n/);
+    // The attribution renders in the host's timezone, so the calendar date is whatever the
+    // machine running this says it is. Pinning it here would pass in Seattle and fail in CI.
+    assert.match(
+      body,
+      /^Neither\.\n\nOn Sep [12], 2026, at \d{1,2}:\d{2} [AP]M, Omar Shahine <omar@shahine\.com> wrote:\n\n/,
+    );
     assert.ok(
       body.endsWith("> Are you looking at the family calendar or my personal calendar"),
       `quoted original missing from body: ${JSON.stringify(body)}`,
