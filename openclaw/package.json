@@ -96,10 +96,10 @@
   },
   "main": "./dist/index.js",
   "devDependencies": {
-    "typescript": "^5.9.3",
-    "@types/node": "^25.5.0",
     "@types/mailparser": "^3.4.6",
+    "@types/node": "^25.5.0",
+    "openclaw": "^2026.8.2",
     "tsup": "^8.5.0",
-    "openclaw": ">=2026.8.1"
+    "typescript": "^5.9.3"
   }
 }
