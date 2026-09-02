@@ -54,6 +54,13 @@ export type MailCliOptions = {
   fromAddress?: string;
   /** Per-call timeout. A hung CLI must not stall the poll loop forever. */
   timeoutMs?: number;
+  /**
+   * Where degraded-but-completed work is reported, normally `ctx.log.warn`.
+   *
+   * Reading the original for the quote is best-effort, and best-effort work that fails
+   * silently is indistinguishable from work that was never attempted.
+   */
+  warn?: (message: string) => void;
 };
 
 const DEFAULT_TIMEOUT_MS = 60_000;
@@ -201,6 +208,110 @@ export function replySubject(subject: string | undefined): string {
   return /^re:/i.test(trimmed) ? trimmed : `Re: ${trimmed}`;
 }
 
+/** As much of the message being answered as quoting needs. */
+export type QuotedOriginal = {
+  /** Display form of the sender, e.g. `Omar Shahine <omar@shahine.com>`. */
+  sender?: string;
+  /** When the original was sent, in any form `Date` parses. */
+  date?: string;
+  /** Plain-text body of the original, quoted history and all. */
+  content?: string;
+};
+
+/**
+ * Ceiling on quoted text.
+ *
+ * A quote grows by the whole thread on every hop, and the channel answers mail it did not
+ * choose to receive: one 8 MB newsletter is enough to push a reply past what a submission
+ * server will accept, turning a courtesy into a failed send. Generous enough that a real
+ * conversation never reaches it.
+ */
+export const MAX_QUOTED_CHARS = 100_000;
+
+/**
+ * The `On <date>, <sender> wrote:` line, in Mail.app's own wording.
+ *
+ * Matching the local client is the point: these replies land in threads whose other half
+ * was quoted by Mail, and a second convention in the same thread reads as a different
+ * program talking. `undefined` when there is no sender to attribute to -- a bare `wrote:`
+ * names nobody, and the quote below it is still perfectly readable without a header.
+ */
+export function formatQuoteAttribution(
+  original: QuotedOriginal,
+  timeZone?: string,
+): string | undefined {
+  const sender = original.sender?.trim();
+  if (!sender) {
+    return undefined;
+  }
+  const when = original.date ? new Date(original.date) : undefined;
+  // An unparseable Date header costs the timestamp, never the attribution: who wrote the
+  // text below matters more than when they wrote it.
+  if (!when || Number.isNaN(when.getTime())) {
+    return `${sender} wrote:`;
+  }
+  const zone = timeZone ? { timeZone } : {};
+  // Date and time are formatted separately and joined with "at", which is how Mail writes
+  // it and what no single `toLocaleString` option produces.
+  const day = when.toLocaleString("en-US", {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+    ...zone,
+  });
+  const time = when
+    .toLocaleString("en-US", { hour: "numeric", minute: "2-digit", ...zone })
+    // ICU separates the time from AM/PM with U+202F. It renders identically and breaks
+    // every naive string comparison, including the operator eyeballing a diff.
+    .replace(/\u202f/g, " ");
+  return `On ${day}, at ${time}, ${sender} wrote:`;
+}
+
+/**
+ * Prefixes every line with `>`, the way every mail client marks quoted text.
+ *
+ * Blank lines are prefixed too. An unprefixed blank line ends the quote block in most
+ * clients, so the remainder of the original renders as though the agent had written it --
+ * which is exactly the confusion quoting exists to prevent.
+ */
+export function quoteText(content: string): string {
+  const normalized = content.replace(/\r\n?/g, "\n");
+  const truncated = normalized.length > MAX_QUOTED_CHARS;
+  const body = truncated ? normalized.slice(0, MAX_QUOTED_CHARS) : normalized;
+  const quoted = body
+    .split("\n")
+    // An already-quoted line gains a bare `>` rather than `> `, so a long thread nests as
+    // `>>>` instead of gaining two columns of indent per hop.
+    .map((line) => (line ? (line.startsWith(">") ? `>${line}` : `> ${line}`) : ">"))
+    .join("\n");
+  // Said in the message rather than logged: the recipient is the one who needs to know the
+  // quote is not the whole of what was said.
+  return truncated ? `${quoted}\n>\n> [Quoted text truncated]` : quoted;
+}
+
+/**
+ * Builds the outgoing body: the agent's answer, then the quoted original beneath it.
+ *
+ * Top-posted, because that is what the operator's client does and what the operator reads.
+ *
+ * The original is optional and stays optional all the way down. Reading it means a second
+ * `mail-cli` call that can fail on its own, and a reply that never leaves is a far worse
+ * outcome than one that arrives without its quote.
+ */
+export function composeReplyBody(
+  reply: string,
+  original?: QuotedOriginal,
+  timeZone?: string,
+): string {
+  const answer = reply.trimEnd();
+  const content = original?.content?.trim();
+  if (!original || !content) {
+    return answer;
+  }
+  const attribution = formatQuoteAttribution(original, timeZone);
+  return [answer, "", ...(attribution ? [attribution, ""] : []), quoteText(content)].join("\n");
+}
+
 /**
  * Network-safe iCloud defaults for installations that use the CLI's implicit iCloud host.
  * Other senders keep their configured SMTP transport untouched.
@@ -213,6 +324,38 @@ export function replyTransportArgs(fromAddress: string | undefined): string[] {
   return ["--tls-mode", "starttls", "--port", "587", "--no-imap-append-sent"];
 }
 
+/** One message as `mail-cli get` returns it, narrowed to the fields this module reads. */
+type FetchedMessage = {
+  sender?: string;
+  dateSent?: string;
+  dateReceived?: string;
+  content?: string;
+};
+
+/**
+ * Reads one message by Message-ID.
+ *
+ * Also `--engine sqlite`, so also the account UUID. Shared by the quote and the body
+ * reader: both want the same row, and two copies of the argv would drift.
+ */
+async function readMessage(
+  options: MailCliOptions,
+  messageId: string,
+): Promise<FetchedMessage | undefined> {
+  const result = await runJson<{ message?: FetchedMessage; content?: string }>(options, [
+    "get",
+    "--id",
+    messageId,
+    ...(options.accountId ? ["--account", options.accountId] : []),
+    "--engine",
+    "sqlite",
+    "--format",
+    "json",
+  ]);
+  // Older CLI builds put `content` at the top level rather than under `message`.
+  return result.message ?? (result.content ? { content: result.content } : undefined);
+}
+
 /**
  * Sends a reply through `mail-cli smtp-send`.
  *
@@ -221,6 +364,10 @@ export function replyTransportArgs(fromAddress: string | undefined): string[] {
  * point inside quote level 1; writing the body into it renders the agent's own words as
  * quoted text. No prompt can undo that, because the quoting is applied after the text is
  * handed over.
+ *
+ * The quote itself is rebuilt here instead, from the original read back through
+ * `mail-cli get`, which puts the agent's text above it where the operator expects to find
+ * it rather than inside it.
  *
  * Composing the MIME message directly also settles two things the JXA path could not:
  *
@@ -232,6 +379,34 @@ export function replyTransportArgs(fromAddress: string | undefined): string[] {
  *   reply be proven to belong to a thread the agent started.
  */
 export function createMailCliSender(options: MailCliOptions): ReplySender {
+  /**
+   * Reads the message being answered, for quoting.
+   *
+   * Best-effort on purpose. This is a second CLI call on the send path, and every way it
+   * can fail -- a deleted message, a locked Envelope Index, a timeout -- is a reason to
+   * send the reply without its quote, never a reason to lose the reply.
+   */
+  const readOriginal = async (messageId: string): Promise<QuotedOriginal | undefined> => {
+    try {
+      const message = await readMessage(options, messageId);
+      if (!message) {
+        return undefined;
+      }
+      return {
+        sender: message.sender,
+        // When it was written, not when it landed here: the attribution says "wrote".
+        date: message.dateSent ?? message.dateReceived,
+        content: message.content,
+      };
+    } catch (error) {
+      options.warn?.(
+        `apple-mail: could not read ${messageId} to quote it (${String(error)}); the reply ` +
+          `is being sent without the original below it`,
+      );
+      return undefined;
+    }
+  };
+
   return async ({ messageId, to, body, subject }) => {
     // Every value is an argv element, never a shell word, so agent-authored text cannot
     // become a command. execFile does not spawn a shell.
@@ -242,7 +417,10 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
       "--subject",
       replySubject(subject),
       "--body",
-      body,
+      // The agent writes the answer; the transport composes the message. Quoting belongs on
+      // this side because the agent never sees the original body unless it asked for it,
+      // and a quote it pasted itself would be text a prompt could talk it out of.
+      composeReplyBody(body, await readOriginal(messageId)),
       // Port 465 is blocked on some otherwise-supported networks. Apply the known-good
       // iCloud submission path only to iCloud identities; custom SMTP senders must retain
       // the host, port, TLS, and Sent-folder behavior from their own configuration.
@@ -270,19 +448,5 @@ export function createMailCliSender(options: MailCliOptions): ReplySender {
 export function createMailCliBodyReader(
   options: MailCliOptions,
 ): (messageId: string) => Promise<string | undefined> {
-  // Also --engine sqlite, so also the UUID. See MailCliOptions.
-  const accountArgs = options.accountId ? ["--account", options.accountId] : [];
-  return async (messageId) => {
-    const result = await runJson<{ message?: { content?: string }; content?: string }>(options, [
-      "get",
-      "--id",
-      messageId,
-      ...accountArgs,
-      "--engine",
-      "sqlite",
-      "--format",
-      "json",
-    ]);
-    return result.message?.content ?? result.content;
-  };
+  return async (messageId) => (await readMessage(options, messageId))?.content;
 }
