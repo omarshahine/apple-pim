@@ -348,7 +348,13 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
                 // Replies leave as the channel's own address, which is also what
                 // `selfAddresses` marks as ours on the way back in, so a reply cannot be
                 // read as a new inbound message from a stranger. Required at startup above.
-                sendReply: createMailCliSender({ fromAddress: replyFrom }),
+                sendReply: createMailCliSender({
+                  fromAddress: replyFrom,
+                  // The sender reads the message it is answering so it can quote it, and
+                  // that read goes through SQLite, which resolves mailboxes per account.
+                  accountId: config.accountId,
+                  warn: (message) => ctx.log?.warn?.(message),
+                }),
                 onSuppressed: ({ address, reason }) =>
                   ctx.log?.info?.(`apple-mail: reply to ${address} suppressed (${reason})`),
                 // The reply has already been sent by this point, so a store failure must not
