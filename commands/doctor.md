@@ -28,13 +28,15 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh" --fix
    A symlinked install gets a dev-mode warning: it breaks if the source repo
    is moved, renamed, or cleaned.
 2. **PATH** visibility of `~/.local/bin`.
-3. **PIMHelper.app** — presence, dispatcher executability, code signature.
+3. **Apple PIM Helper.app** — presence, dispatcher executability, code signature.
+   (Installs made before the rename are named `PIMHelper.app`; the doctor reports
+   them and tells you to re-run the installer, which renames in place.)
    The signature matters: macOS TCC binds permission grants to it.
 4. **Stuck helper processes** — a wedged `pim-helper` (usually an unanswered
    permission dialog) blocks every later call with Launch Services error
    -1712. `--fix` reaps these.
 5. **TCC authorization** per domain, prompt-free, on both routes. The direct
-   route is what a normal terminal gets. The PIMHelper route is what an agent
+   route is what a normal terminal gets. The helper route is what an agent
    shell gets, and it carries its own grant, bound to the helper's bundle and
    signature. Each domain prints one line per route. `auth-status` only reads
    the authorization status and never requests access, so probing through the
@@ -64,7 +66,7 @@ bash "${CLAUDE_PLUGIN_ROOT}/scripts/doctor.sh" --fix
   direct route works here, so nothing is broken until something calls from an
   embedded shell.
 - **helper route denied** → the grant exists and is switched off. System
-  Settings > Privacy & Security > the matching section, enable PIMHelper.
+  Settings > Privacy & Security > the matching section, enable Apple PIM Helper.
 - **helper probe inconclusive** → the probe could not reach the helper: one was
   already resident, the launch failed, or it returned nothing. Check the
   Helper processes section, clear a stuck instance with `--fix`, re-run.

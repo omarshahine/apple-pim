@@ -72357,8 +72357,16 @@ var HELPER_ELIGIBLE_CLIS = /* @__PURE__ */ new Set([
   "contacts-cli",
   "mail-cli"
 ]);
+var HELPER_APP_NAME = "Apple PIM Helper.app";
+var LEGACY_HELPER_APP_NAME = "PIMHelper.app";
 function helperAppPath() {
-  return process.env.APPLE_PIM_HELPER_APP || join(homedir(), "Applications", "PIMHelper.app");
+  if (process.env.APPLE_PIM_HELPER_APP) return process.env.APPLE_PIM_HELPER_APP;
+  const apps = join(homedir(), "Applications");
+  const current = join(apps, HELPER_APP_NAME);
+  if (existsSync(current)) return current;
+  const legacy = join(apps, LEGACY_HELPER_APP_NAME);
+  if (existsSync(legacy)) return legacy;
+  return current;
 }
 function runQuick(cmd, args) {
   return new Promise((resolve2) => {
@@ -72386,7 +72394,7 @@ function parseEtimeSeconds(etime) {
   const [hh, mm, ss] = parts;
   return days * 86400 + hh * 3600 + mm * 60 + ss;
 }
-var HELPER_PROC_MARKER = "PIMHelper\\.app/Contents/.*pim-helper";
+var HELPER_PROC_MARKER = "(Apple PIM Helper|PIMHelper)\\.app/Contents/.*pim-helper";
 async function findHelperProcesses() {
   const { out } = await runQuick("/usr/bin/pgrep", ["-f", HELPER_PROC_MARKER]);
   const pids = out.split("\n").map((l) => parseInt(l.trim(), 10)).filter((n) => Number.isFinite(n) && n > 0);
@@ -72490,7 +72498,7 @@ async function launchHelper(cli, args, env, timeoutMs, binDir) {
       if (isFailure) {
         let msg = stderr || openStderr || `Helper exited with code ${code}`;
         if (msg.includes("-1712")) {
-          msg = "PIMHelper.app did not respond (Launch Services error -1712). A previous helper instance is likely stuck \u2014 usually on an unanswered permission dialog. It has been scheduled for cleanup; retry this call. If it persists, run scripts/doctor.sh.";
+          msg = "Apple PIM Helper did not respond (Launch Services error -1712). A previous helper instance is likely stuck \u2014 usually on an unanswered permission dialog. It has been scheduled for cleanup; retry this call. If it persists, run scripts/doctor.sh.";
         }
         reject(new Error(msg));
         return;

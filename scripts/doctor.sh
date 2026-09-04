@@ -5,10 +5,10 @@
 # Checks every link in the chain a tool call depends on, in order:
 #   1. Swift CLI binaries in ~/.local/bin (dangling symlinks, executability)
 #   2. PATH visibility
-#   3. PIMHelper.app (presence, signature, Launch Services)
+#   3. Apple PIM Helper.app (presence, signature, Launch Services)
 #   4. Stuck helper instances (the -1712 wedge)
 #   5. TCC authorization per domain (prompt-free) — both the direct route
-#      and the PIMHelper route, which carry independent grants
+#      and the helper route, which carry independent grants
 #   6. MCP server build artifacts
 #
 # Read-only by default. `--fix` reaps stuck helper processes (the only
@@ -21,9 +21,26 @@
 set -uo pipefail
 
 BIN_DIR="${APPLE_PIM_BIN_DIR:-$HOME/.local/bin}"
-APP_PATH="${APPLE_PIM_HELPER_APP:-$HOME/Applications/PIMHelper.app}"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+
+# APPLE_PIM_HELPER_APP_NAME / _LEGACY_NAME and the signing identities. Sourced
+# here rather than at first use so APP_PATH below can be built from the shared
+# name instead of a second copy of it.
+# shellcheck source=lib/signing-identities.sh
+. "$SCRIPT_DIR/lib/signing-identities.sh"
+
+# Prefer the current bundle name, fall back to a not-yet-migrated legacy install
+# so the report describes the helper the user actually has. Mirrors
+# helperAppPath() in lib/cli-runner.js.
+APP_PATH="${APPLE_PIM_HELPER_APP:-}"
+LEGACY_APP_PATH="$HOME/Applications/$APPLE_PIM_HELPER_APP_LEGACY_NAME"
+if [[ -z "$APP_PATH" ]]; then
+    APP_PATH="$HOME/Applications/$APPLE_PIM_HELPER_APP_NAME"
+    if [[ ! -d "$APP_PATH" && -d "$LEGACY_APP_PATH" ]]; then
+        APP_PATH="$LEGACY_APP_PATH"
+    fi
+fi
 CLIS=(calendar-cli reminder-cli contacts-cli mail-cli)
 FIX=false
 [[ "${1:-}" == "--fix" ]] && FIX=true
@@ -59,13 +76,15 @@ pane() {
 # Contents/MacOS/../Resources/pim-helper.sh, so the process command line no
 # longer contains "Contents/MacOS/pim-helper" — the pattern this script used
 # before matched nothing, and every helper-process check silently passed.
-# This pattern matches both layouts and does not match the `open -W -a
-# .../PIMHelper.app` parent, whose argv carries no "Contents/".
+# This pattern matches both script layouts and both bundle names (the current
+# "Apple PIM Helper.app" and a not-yet-migrated "PIMHelper.app"), and does not
+# match the `open -W -a ".../Apple PIM Helper.app"` parent, whose argv carries
+# no "Contents/".
 # lib/cli-runner.js exports the same pattern as HELPER_PROC_MARKER for
 # reapStaleHelpers(). The two are independent copies in different languages;
 # mcp-server/test/cli-runner-helper-proc.test.js pins the JS one against a real
 # pgrep, including that it does not match the `open` parent.
-HELPER_PROC_MARKER='PIMHelper\.app/Contents/.*pim-helper'
+HELPER_PROC_MARKER='(Apple PIM Helper|PIMHelper)\.app/Contents/.*pim-helper'
 
 helper_resident() { pgrep -f "$HELPER_PROC_MARKER" >/dev/null 2>&1; }
 
@@ -186,8 +205,6 @@ echo ""
 # grants and the permission dialogs come back. Nothing errors, which is
 # exactly what makes it baffling without this section.
 echo "Code signing (determines whether permission grants survive upgrades):"
-# shellcheck source=lib/signing-identities.sh
-. "$SCRIPT_DIR/lib/signing-identities.sh"
 . "$SCRIPT_DIR/check-signing.sh"
 SIGNING_ADHOC=0
 for cli in "${CLIS[@]}"; do
@@ -233,8 +250,16 @@ fi
 echo ""
 
 # ------------------------------------------------------------------ helper
-echo "PIMHelper.app (TCC bridge for embedded shells):"
+echo "$APPLE_PIM_HELPER_APP_NAME (TCC bridge for embedded shells):"
 if [[ -d "$APP_PATH" ]]; then
+    if [[ "$APP_PATH" == "$LEGACY_APP_PATH" ]]; then
+        warn "installed under the old name $APPLE_PIM_HELPER_APP_LEGACY_NAME, so TCC prompts and"
+        echo "      System Settings > Privacy & Security still read \"PIMHelper\". Re-run"
+        echo "      scripts/build-helper-app.sh to rename it. The rename is a \`mv\`, which"
+        echo "      leaves the signature byte-identical, so grants survive it. A bundle"
+        echo "      that is ALSO out of date is rebuilt after the rename, and an ad-hoc"
+        echo "      rebuild does drop grants — see the code-signing section above."
+    fi
     if [[ -x "$APP_PATH/Contents/MacOS/pim-helper" ]]; then
         ok "installed at $APP_PATH"
     else
@@ -324,7 +349,7 @@ except Exception: print("unknown")' 2>/dev/null)"
                     ok "$domain: notDetermined here (direct route) — helper route unprobed, see above"
                 fi
             else
-                fail "$domain: notDetermined and no PIMHelper installed — no path to a grant"
+                fail "$domain: notDetermined and no helper app installed — no path to a grant"
             fi
             ;;
         denied)
@@ -351,9 +376,9 @@ except Exception: print("unknown")' 2>/dev/null)"
             ;;
         denied)
             if [[ "$auth" == "authorized" || "$auth" == "fullAccess" ]]; then
-                warn "$domain: helper route denied (direct route works here; enable PIMHelper in System Settings > Privacy & Security > $(pane "$domain") for embedded shells)"
+                warn "$domain: helper route denied (direct route works here; enable ${APPLE_PIM_HELPER_APP_NAME%.app} in System Settings > Privacy & Security > $(pane "$domain") for embedded shells)"
             else
-                fail "$domain: helper route denied — enable PIMHelper in System Settings > Privacy & Security > $(pane "$domain")"
+                fail "$domain: helper route denied — enable ${APPLE_PIM_HELPER_APP_NAME%.app} in System Settings > Privacy & Security > $(pane "$domain")"
             fi
             ;;
         *)

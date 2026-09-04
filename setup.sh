@@ -10,7 +10,7 @@
 #
 # Why copies are the default: a symlinked install points into this checkout,
 # so renaming, moving, or cleaning the repo silently bricks every consumer
-# (the MCP server, the OpenClaw plugin, PIMHelper.app). Copies survive all
+# (the MCP server, the OpenClaw plugin, Apple PIM Helper.app). Copies survive all
 # of that; rebuild + re-run --install to update them. --link restores the
 # old rebuild-updates-in-place behavior for active CLI development.
 
@@ -83,7 +83,7 @@ if [ "$INSTALL" = true ] && [ "$SIGNED_INSTALL" = true ]; then
         echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
     fi
     echo ""
-    echo "Installing PIMHelper.app (TCC bridge for embedded shells)..."
+    echo "Installing Apple PIM Helper.app (TCC bridge for embedded shells)..."
     "$SCRIPT_DIR/scripts/build-helper-app.sh"
 elif [ "$INSTALL" = true ]; then
     echo ""
@@ -125,7 +125,7 @@ elif [ "$INSTALL" = true ]; then
     fi
 
     echo ""
-    echo "Installing PIMHelper.app (TCC bridge for embedded shells)..."
+    echo "Installing Apple PIM Helper.app (TCC bridge for embedded shells)..."
     "$SCRIPT_DIR/scripts/build-helper-app.sh"
 else
     echo ""

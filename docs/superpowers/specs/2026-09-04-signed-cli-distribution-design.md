@@ -130,12 +130,14 @@ Steps:
    `codesign --force --timestamp --options runtime -i <identifier> --sign "Developer ID Application: OmarKnows LLC (N9DRSTM2U6)"`.
    Hardened runtime (`--options runtime`) and a secure timestamp are both
    notarization prerequisites.
-4. Assemble and sign `PIMHelper.app` the same way, universal launcher included.
+4. Assemble and sign `Apple PIM Helper.app` the same way, universal launcher
+   included. (The bundle is named for the user: LaunchServices takes the name
+   shown in a TCC prompt from the bundle's filename, not `CFBundleDisplayName`.)
 5. Notarize with `xcrun notarytool submit --wait`, authenticating with an App
    Store Connect API key (`APPLE_NOTARY_KEY_P8_BASE64`, `APPLE_NOTARY_KEY_ID`,
    `APPLE_NOTARY_ISSUER_ID`).
-6. Emit `apple-pim-clis-<version>-universal.zip`, `PIMHelper-<version>.zip`, and
-   a `SHA256SUMS` file.
+6. Emit `apple-pim-clis-<version>-universal.zip`,
+   `apple-pim-helper-<version>.zip`, and a `SHA256SUMS` file.
 7. Create a **draft** GitHub release for the tag carrying those assets. No
    workflow creates releases today; publishing notes stays a manual step, but
    the assets now have a home.

@@ -1,8 +1,8 @@
 #!/bin/zsh
 # Apple PIM Helper dispatcher.
 #
-# This script is the main executable of PIMHelper.app. When launched via
-# Launch Services (`open -W -a PIMHelper.app --args ...`), the .app becomes
+# This script is the main executable of Apple PIM Helper.app. When launched
+# via Launch Services (`open -W -a "Apple PIM Helper.app" --args ...`), the .app becomes
 # the responsible process for TCC, which gives the Calendar / Reminders /
 # Contacts CLIs a path to authorization that does not depend on the calling
 # shell (e.g. an embedded agent runtime) having its own TCC entry.

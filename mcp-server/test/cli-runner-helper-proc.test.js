@@ -10,7 +10,7 @@ import { HELPER_PROC_MARKER, findHelperProcesses } from "../../lib/cli-runner.js
 // own extended-regex engine to the joined argv, so these tests spawn processes with the real
 // argv shapes and run the real /usr/bin/pgrep.
 //
-// Membership, never set equality: a developer machine may well have a genuine PIMHelper
+// Membership, never set equality: a developer machine may well have a genuine helper
 // resident, and the test must not care.
 
 const isMacOS = process.platform === "darwin";
@@ -59,11 +59,17 @@ onMac("HELPER_PROC_MARKER against a real pgrep", () => {
     spawned.dirs = [];
   });
 
+  // Both bundle names have to match. "Apple PIM Helper.app" is what the installer creates;
+  // "PIMHelper.app" is what a host that has not re-run the installer still has, and its
+  // dispatcher wedges in exactly the same way. Note the space: pgrep -f matches against the
+  // joined argv, so the pattern has to survive a path containing one.
+  const BUNDLE_NAMES = ["Apple PIM Helper.app", "PIMHelper.app"];
+
   /** Build a fake bundle tree and return the paths the two layouts run as. */
-  function fakeBundle() {
+  function fakeBundle(bundleName) {
     const root = mkdtempSync(join(tmpdir(), "pimhelper-proc-"));
     spawned.dirs.push(root);
-    const app = join(root, "PIMHelper.app");
+    const app = join(root, bundleName);
     mkdirSync(join(app, "Contents", "MacOS"), { recursive: true });
     mkdirSync(join(app, "Contents", "Resources"), { recursive: true });
     return {
@@ -77,29 +83,33 @@ onMac("HELPER_PROC_MARKER against a real pgrep", () => {
     };
   }
 
-  it("matches the launcher layout, whose path the old literal missed", async () => {
-    const bundle = fakeBundle();
-    expect(bundle.launcherLayout).not.toContain("Contents/MacOS/pim-helper");
+  for (const bundleName of BUNDLE_NAMES) {
+    it(`matches the launcher layout under ${bundleName}, whose path the old literal missed`, async () => {
+      const bundle = fakeBundle(bundleName);
+      expect(bundle.launcherLayout).not.toContain("Contents/MacOS/pim-helper");
 
-    const child = spawnWithArgv(bundle.launcherLayout);
-    spawned.children.push(child);
+      const child = spawnWithArgv(bundle.launcherLayout);
+      spawned.children.push(child);
 
-    expect(await pgrepPids(HELPER_PROC_MARKER)).toContain(child.pid);
-  });
+      expect(await pgrepPids(HELPER_PROC_MARKER)).toContain(child.pid);
+    });
 
-  it("still matches pre-launcher bundles", async () => {
-    const bundle = fakeBundle();
-    const child = spawnWithArgv(bundle.preLauncherLayout);
-    spawned.children.push(child);
+    it(`still matches pre-launcher bundles under ${bundleName}`, async () => {
+      const bundle = fakeBundle(bundleName);
+      const child = spawnWithArgv(bundle.preLauncherLayout);
+      spawned.children.push(child);
 
-    expect(await pgrepPids(HELPER_PROC_MARKER)).toContain(child.pid);
-  });
+      expect(await pgrepPids(HELPER_PROC_MARKER)).toContain(child.pid);
+    });
+  }
 
   // The one that makes the widening safe. reapStaleHelpers() escalates to SIGKILL, so a
-  // pattern that caught the `open -W -a ... PIMHelper.app --args <cli> <out> <err>` parent
-  // would abort live calls instead of clearing wedged ones.
+  // pattern that caught the `open -W -a ... "Apple PIM Helper.app" --args <cli> <out> <err>`
+  // parent would abort live calls instead of clearing wedged ones. Checked against the
+  // current bundle name, whose space makes the `open` argv harder to tell from the
+  // dispatcher's than it used to be.
   it("does not match the `open` parent, which names the bundle but never enters it", async () => {
-    const bundle = fakeBundle();
+    const bundle = fakeBundle("Apple PIM Helper.app");
     const decoy = join(bundle.app, "Contents", "Resources", "not-the-helper.sh");
     const child = spawnWithArgv(decoy, [
       "-W",
@@ -124,7 +134,7 @@ onMac("HELPER_PROC_MARKER against a real pgrep", () => {
   });
 
   it("findHelperProcesses reports the launcher-layout process with an age", async () => {
-    const bundle = fakeBundle();
+    const bundle = fakeBundle("Apple PIM Helper.app");
     const child = spawnWithArgv(bundle.launcherLayout);
     spawned.children.push(child);
 

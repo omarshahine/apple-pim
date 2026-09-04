@@ -192,7 +192,7 @@ jobs:
             echo "signed $c as $id"
           done
 
-      - name: Build and sign PIMHelper.app
+      - name: Build and sign Apple PIM Helper.app
         env:
           APPLE_PIM_SIGN_IDENTITY: ${{ env.SIGN_IDENTITY }}
         run: |
@@ -204,16 +204,17 @@ jobs:
       # it must never reach a release.
       - name: Verify signatures before packaging
         run: |
+          . scripts/lib/signing-identities.sh
           scripts/verify-signed-clis.sh "$STAGE/clis" --require-universal
-          codesign --verify --strict --deep "$STAGE/helper/PIMHelper.app"
+          codesign --verify --strict --deep "$STAGE/helper/$APPLE_PIM_HELPER_APP_NAME"
 
           # Notarization rejects anything without the hardened runtime, and it
           # does so several minutes later at the submit step with an opaque
           # error. Assert the flag here, where the failure names itself.
-          for target in "$STAGE/helper/PIMHelper.app" $APPLE_PIM_SIGNED_CLIS; do
+          for target in "$STAGE/helper/$APPLE_PIM_HELPER_APP_NAME" $APPLE_PIM_SIGNED_CLIS; do
             case "$target" in
-              *PIMHelper.app) path="$target" ;;
-              *)              path="$STAGE/clis/$target" ;;
+              *.app) path="$target" ;;
+              *)     path="$STAGE/clis/$target" ;;
             esac
             if ! codesign -dvvv "$path" 2>&1 | grep -qE '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'; then
               echo "::error::$path is not signed with the hardened runtime; notarization would reject it"
@@ -228,12 +229,13 @@ jobs:
       - name: Package
         id: pkg
         run: |
+          . scripts/lib/signing-identities.sh
           V="${{ steps.meta.outputs.version }}"
           mkdir -p dist
           ditto -c -k "$STAGE/clis" "dist/apple-pim-clis-$V-universal.zip"
-          ditto -c -k --keepParent "$STAGE/helper/PIMHelper.app" "dist/PIMHelper-$V.zip"
+          ditto -c -k --keepParent "$STAGE/helper/$APPLE_PIM_HELPER_APP_NAME" "dist/apple-pim-helper-$V.zip"
           echo "clis=dist/apple-pim-clis-$V-universal.zip" >> "$GITHUB_OUTPUT"
-          echo "helper=dist/PIMHelper-$V.zip" >> "$GITHUB_OUTPUT"
+          echo "helper=dist/apple-pim-helper-$V.zip" >> "$GITHUB_OUTPUT"
 
       - name: Notarize
         env:
@@ -257,12 +259,13 @@ jobs:
       # stapling exists to satisfy.
       - name: Staple the helper bundle
         run: |
+          . scripts/lib/signing-identities.sh
           V="${{ steps.meta.outputs.version }}"
           ditto -x -k "${{ steps.pkg.outputs.helper }}" "$RUNNER_TEMP/stapled"
-          xcrun stapler staple "$RUNNER_TEMP/stapled/PIMHelper.app"
-          xcrun stapler validate "$RUNNER_TEMP/stapled/PIMHelper.app"
+          xcrun stapler staple "$RUNNER_TEMP/stapled/$APPLE_PIM_HELPER_APP_NAME"
+          xcrun stapler validate "$RUNNER_TEMP/stapled/$APPLE_PIM_HELPER_APP_NAME"
           /bin/rm -f "${{ steps.pkg.outputs.helper }}"
-          ditto -c -k --keepParent "$RUNNER_TEMP/stapled/PIMHelper.app" "dist/PIMHelper-$V.zip"
+          ditto -c -k --keepParent "$RUNNER_TEMP/stapled/$APPLE_PIM_HELPER_APP_NAME" "dist/apple-pim-helper-$V.zip"
 
       - name: Checksums
         run: cd dist && shasum -a 256 ./*.zip > SHA256SUMS && cat SHA256SUMS

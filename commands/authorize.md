@@ -56,12 +56,12 @@ Use `apple-pim` with action `authorize` to trigger macOS permission prompts:
 - "Grant access to reminders" -> `apple-pim` with action `authorize` and domain "reminders"
 - "Set up permissions" -> `apple-pim` with action `authorize` for all domains
 
-## The PIMHelper.app route (agent shells / embedded runtimes)
+## The Apple PIM Helper.app route (agent shells / embedded runtimes)
 
 When the CLIs run under an agent runtime (Claude Code, OpenClaw, launchd
 jobs), macOS attributes TCC to that runtime — which usually has no grant and
 **cannot even raise a prompt**. The plugin handles this via
-`~/Applications/PIMHelper.app`: calls route through the helper, the grant
+`~/Applications/Apple PIM Helper.app`: calls route through the helper, the grant
 binds to the helper's bundle + signature, and it persists across host apps.
 
 Consequences to explain to the user:

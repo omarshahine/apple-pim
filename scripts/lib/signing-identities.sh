@@ -33,6 +33,24 @@ APPLE_PIM_SIGNING_CERT="Developer ID Application: OmarKnows LLC (${APPLE_PIM_TEA
 APPLE_PIM_IDENTIFIER_PREFIX="com.omarshahine.apple-pim"
 APPLE_PIM_HELPER_BUNDLE_ID="${APPLE_PIM_IDENTIFIER_PREFIX}.helper"
 
+# Filesystem name of the helper bundle. Load-bearing for a different reason
+# than the identifiers above: LaunchServices derives the name macOS shows in a
+# TCC prompt and in System Settings > Privacy & Security from the bundle's
+# FILENAME, and deliberately ignores a CFBundleDisplayName that disagrees with
+# it (otherwise any app could masquerade as another). The bundle has always
+# declared CFBundleName = "Apple PIM Helper" and macOS has always shown
+# "PIMHelper"; renaming the directory is the only thing that changes it.
+#
+# The bundle IDENTIFIER above is unchanged, and that is what TCC keys grants
+# on, so a Developer ID install keeps its grants across this rename.
+APPLE_PIM_HELPER_APP_NAME="Apple PIM Helper.app"
+
+# What installs from before the rename are called. Still resolved at runtime so an
+# existing bundle keeps working until the user re-runs the installer, which
+# removes it (leaving it in place would show a second, dead "PIMHelper" row in
+# the Privacy pane alongside the real one).
+APPLE_PIM_HELPER_APP_LEGACY_NAME="PIMHelper.app"
+
 # Space-separated rather than an array: macOS ships bash 3.2, and the rest of
 # this repo's shell is written to stay 3.2-clean (see scripts/doctor.sh).
 APPLE_PIM_SIGNED_CLIS="calendar-cli reminder-cli contacts-cli mail-cli"
@@ -66,7 +84,7 @@ pim_signing_identifier() {
         calendar-cli|reminder-cli|contacts-cli|mail-cli)
             printf '%s.%s' "$APPLE_PIM_IDENTIFIER_PREFIX" "$1"
             ;;
-        helper|PIMHelper.app|PIMHelper)
+        helper|"Apple PIM Helper.app"|"Apple PIM Helper"|PIMHelper.app|PIMHelper)
             printf '%s' "$APPLE_PIM_HELPER_BUNDLE_ID"
             ;;
         *)

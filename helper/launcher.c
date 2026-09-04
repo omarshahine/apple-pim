@@ -1,11 +1,11 @@
-// Mach-O launcher for PIMHelper.app.
+// Mach-O launcher for Apple PIM Helper.app.
 //
 // Why this exists: macOS refuses to launch an application bundle whose
 // CFBundleExecutable is a shell script. LaunchServices rejects it before the
 // script ever runs, with:
 //
 //     _LSOpenURLsWithCompletionHandler() failed for the application
-//     ~/Applications/PIMHelper.app with error -10669
+//     "~/Applications/Apple PIM Helper.app" with error -10669
 //
 // -10669 sits in the LaunchServices reserved range whose documented
 // neighbours are all "this executable cannot run here" errors

@@ -274,7 +274,7 @@ Durable memory promoted from `~/.claude/projects/-Users-omarshahine-GitHub-apple
 - [Mail attachment policy is default-deny](feedback_attachment_exfil_defense.md) — `lib/safe-attachments.js` is opt-in only; don't loosen the default or weaken the hard denylist
 
 ## Project memories
-- [TCC helper app](project_tcc_helper_app.md) — `helper/` + `PIMHelper.app` is the durable fix for macOS TCC responsible-process attribution; `lib/cli-runner.js` auto-routes Calendar/Reminders/Contacts through it
+- [TCC helper app](project_tcc_helper_app.md) — `helper/` + `Apple PIM Helper.app` is the durable fix for macOS TCC responsible-process attribution; `lib/cli-runner.js` auto-routes Calendar/Reminders/Contacts through it
 
 ### memory/feedback_attachment_exfil_defense.md
 
@@ -329,16 +329,18 @@ When Omar says "push" (especially as a one-word reply), he usually means `git pu
 
 ---
 name: tcc-helper-app
-description: "PIMHelper.app is the durable workaround for macOS TCC's responsible-process attribution when the Swift CLIs are spawned by an embedded shell that has no Calendar/Reminders/Contacts TCC entry (e.g. Clawpilot)."
+description: "Apple PIM Helper.app is the durable workaround for macOS TCC's responsible-process attribution when the Swift CLIs are spawned by an embedded shell that has no Calendar/Reminders/Contacts TCC entry (e.g. Clawpilot)."
 metadata: 
   node_type: memory
   type: project
   originSessionId: 6d16d518-5726-4838-8a45-de7839764276
 ---
 
-The plugin ships an in-repo helper at `helper/` (Info.plist + `pim-helper` zsh dispatcher). `scripts/build-helper-app.sh` assembles it into `~/Applications/PIMHelper.app` (overridable via `APPLE_PIM_HELPER_APP`), ad-hoc signs it, and lsregisters it. `setup.sh --install` runs the installer.
+The plugin ships an in-repo helper at `helper/` (Info.plist + `pim-helper` zsh dispatcher). `scripts/build-helper-app.sh` assembles it into `~/Applications/Apple PIM Helper.app` (overridable via `APPLE_PIM_HELPER_APP`), ad-hoc signs it, and lsregisters it. `setup.sh --install` runs the installer.
 
-`lib/cli-runner.js` auto-detects: on first call to each Calendar / Reminders / Contacts CLI it probes `auth-status` directly; unless authorization is `authorized` or `fullAccess`, and provided the helper exists, it caches `route=helper` for that CLI for the remainder of the process. Helper invocations go through `/usr/bin/open -W -a PIMHelper.app --args <cli> <out> <err> <args...>` with `APPLE_PIM_BIN_DIR` exported so the dispatcher can find the CLI binary.
+The bundle is named `Apple PIM Helper.app`, not `PIMHelper.app`, because LaunchServices takes the name shown in a TCC prompt and in System Settings > Privacy & Security from the bundle's **filename** and ignores a `CFBundleDisplayName` that disagrees with it. A pre-rename install is migrated with `mv`, which leaves the code signature byte-identical (same CDHash) and the recorded designated requirement — identifier + Apple anchor + team OU, no path — still satisfied, so TCC grants survive the rename. The installer also refuses to replace a certificate-signed bundle with an ad-hoc one, which would drop the grants silently (`--allow-adhoc-downgrade` overrides).
+
+`lib/cli-runner.js` auto-detects: on first call to each Calendar / Reminders / Contacts CLI it probes `auth-status` directly; unless authorization is `authorized` or `fullAccess`, and provided the helper exists, it caches `route=helper` for that CLI for the remainder of the process. Helper invocations go through `/usr/bin/open -W -a "Apple PIM Helper.app" --args <cli> <out> <err> <args...>` with `APPLE_PIM_BIN_DIR` exported so the dispatcher can find the CLI binary.
 
 **Why:** macOS TCC attributes Calendar / Reminders / Contacts permissions to the *responsible process* — the LaunchServices-launched app, not the binary that calls EventKit / Contacts. When an embedded agent shell spawns the CLI as a child, the shell is the responsible process; EventKit can return `notDetermined`, `denied`, or read-insufficient `writeOnly` access. Wrapping the CLI in an ad-hoc-signed .app and invoking it via `open -W` makes the .app its own responsible process; the prompt fires against the helper's bundle id (`com.omarshahine.apple-pim.helper`) and the grant persists.
 
