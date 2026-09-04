@@ -79,6 +79,18 @@ jobs:
       KEYCHAIN: "${{ github.workspace }}/signing.keychain-db"
       STAGE: "${{ github.workspace }}/stage"
     steps:
+      # Dry runs sign with the production Developer ID. Without this, anyone
+      # who can dispatch a workflow could point it at a feature branch and
+      # obtain officially signed, notarized binaries built from unreviewed
+      # code. Restricting to main means signed output can only ever come from
+      # what actually passed review and CI. First step in the job on purpose:
+      # a rejected ref must not reach the certificate import.
+      - name: Refuse to sign a ref other than main
+        if: github.event_name == 'workflow_dispatch' && github.ref != 'refs/heads/main'
+        run: |
+          echo "::error::Signing is restricted to main; got ${{ github.ref }}."
+          exit 1
+
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
 
@@ -98,7 +110,16 @@ jobs:
             V="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
                  .claude-plugin/plugin.json | head -1)"
           fi
-          [ -n "$V" ] || { echo "::error::could not resolve a version"; exit 1; }
+          # Validate before this value reaches archive paths, later shell
+          # interpolation, or GITHUB_OUTPUT. A `/` would redirect the artifact
+          # path; quotes or newlines would corrupt the step output.
+          # `[[ =~ ]]` anchors to the whole string. `grep -E '^...$'` does NOT:
+          # it matches line by line, so a value like "3.17.0\nevil" passes on
+          # its first line -- which is the newline injection this guards against.
+          if ! [[ "$V" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::version must be X.Y.Z, got: $V"
+            exit 1
+          fi
           echo "version=$V" >> "$GITHUB_OUTPUT"
           echo "Resolved version: $V"
 
@@ -236,7 +257,7 @@ jobs:
       # Dry runs stop here: the proof is that signing, verification, and
       # notarization all succeeded and produced inspectable artifacts.
       - name: Upload artifacts (dry run)
-        if: github.ref_type != 'tag'
+        if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
         with:
           name: signed-artifacts-${{ steps.meta.outputs.version }}
@@ -246,7 +267,7 @@ jobs:
       # Draft, not published: release notes stay a deliberate human step, as
       # they are today. This only gives the signed assets somewhere to live.
       - name: Create draft release
-        if: github.ref_type == 'tag'
+        if: github.event_name == 'push' && github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
