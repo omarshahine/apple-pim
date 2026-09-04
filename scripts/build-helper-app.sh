@@ -30,7 +30,26 @@ SRC_DIR="$REPO_ROOT/helper"
 APP_PATH="${APPLE_PIM_HELPER_APP:-$HOME/Applications/PIMHelper.app}"
 SIGN_IDENTITY="${APPLE_PIM_SIGN_IDENTITY:--}"
 FORCE=false
-[[ "${1:-}" == "--force" ]] && FORCE=true
+STAGE_DIR=""
+
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --force) FORCE=true; shift ;;
+        # Assemble a release bundle into DIR instead of installing for the
+        # current user. Used by the signing workflow. Staging deliberately
+        # skips the freshness check, the Launch Services registration, and
+        # the "leave it alone to preserve TCC grants" logic: none of those
+        # apply to a build artifact on a throwaway runner, and the freshness
+        # check would happily no-op a release build.
+        --stage)
+            STAGE_DIR="$2"
+            APP_PATH="$2/PIMHelper.app"
+            FORCE=true
+            shift 2
+            ;;
+        *) echo "build-helper-app: unknown argument: $1" >&2; exit 2 ;;
+    esac
+done
 
 if [[ ! -f "$SRC_DIR/Info.plist" || ! -f "$SRC_DIR/pim-helper" || ! -f "$SRC_DIR/launcher.c" ]]; then
     echo "build-helper-app: missing helper sources at $SRC_DIR" >&2
@@ -109,9 +128,17 @@ cp "$SRC_DIR/Info.plist" "$APP_PATH/Contents/Info.plist"
 cp "$SRC_DIR/pim-helper" "$APP_PATH/Contents/Resources/pim-helper.sh"
 chmod +x "$APP_PATH/Contents/Resources/pim-helper.sh"
 
-# Build for the running architecture. -Os keeps the stub tiny; it does nothing
-# but resolve its own path and execv into /bin/zsh.
-cc -Os -Wall -Wextra -o "$APP_PATH/Contents/MacOS/pim-helper" "$SRC_DIR/launcher.c"
+# Local installs build for the running architecture only. A staged release
+# bundle must be universal: it is downloaded by machines we do not control,
+# and the package's deployment target (macOS 13) still includes Intel.
+# -Os keeps the stub tiny; it does nothing but resolve its own path and
+# execv into /bin/zsh.
+if [[ -n "$STAGE_DIR" ]]; then
+    cc -Os -Wall -Wextra -arch arm64 -arch x86_64 \
+        -o "$APP_PATH/Contents/MacOS/pim-helper" "$SRC_DIR/launcher.c"
+else
+    cc -Os -Wall -Wextra -o "$APP_PATH/Contents/MacOS/pim-helper" "$SRC_DIR/launcher.c"
+fi
 chmod +x "$APP_PATH/Contents/MacOS/pim-helper"
 
 # Record which launcher source built this binary so the freshness check above
@@ -120,11 +147,25 @@ launcher_source_hash > "$APP_PATH/$LAUNCHER_STAMP_REL"
 
 # Sign the bundle. --force overwrites any prior signature; --deep walks
 # contents (the bundle is shallow but this future-proofs nested files).
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_PATH" >/dev/null
+#
+# When signing with a real certificate, the hardened runtime and a secure
+# timestamp are added: both are hard prerequisites for Developer ID
+# notarization, and without them `notarytool submit` rejects the bundle and
+# the whole release fails. They are deliberately NOT applied to the ad-hoc
+# path, which is never notarized and where a timestamp server round-trip
+# would just make a local install slower and network-dependent.
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --deep --sign - "$APP_PATH" >/dev/null
+else
+    codesign --force --deep --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" "$APP_PATH" >/dev/null
+fi
 
-# Register with Launch Services so `open -a` resolves the bundle id.
+# Register with Launch Services so `open -a` resolves the bundle id. Skipped
+# when staging: a release artifact must not be registered on the build runner,
+# and registration is the installing machine's job.
 LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
-if [[ -x "$LSREGISTER" ]]; then
+if [[ -z "$STAGE_DIR" && -x "$LSREGISTER" ]]; then
     "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
 fi
 

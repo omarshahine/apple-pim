@@ -1,0 +1,231 @@
+name: Release Signed Artifacts
+
+on:
+  push:
+    tags:
+      - "v*"
+
+# Needed to create the draft release that carries the signed assets.
+permissions:
+  contents: write
+
+# Produces Developer ID signed, notarized, universal binaries and publishes
+# them as a draft GitHub release.
+#
+# Why this workflow exists: macOS TCC stores a client's designated requirement
+# verbatim. Binaries built by `swift build` are ad-hoc signed, so that
+# requirement is a bare cdhash pin and every upgrade silently invalidates the
+# user's Calendar / Reminders / Contacts grants. A certificate-signed binary
+# yields an identifier + team-OU requirement instead, which is content
+# independent and survives both rebuilds and certificate renewal.
+#
+# Secrets required:
+#   APPLE_DEVELOPER_ID_P12_BASE64    Developer ID Application cert + key + the
+#                                    Apple intermediate, base64 encoded.
+#   APPLE_DEVELOPER_ID_P12_PASSWORD  Export password for that .p12.
+#   APPLE_NOTARY_KEY_P8_BASE64       App Store Connect API key (.p8), base64.
+#   APPLE_NOTARY_KEY_ID              Key ID from the .p8 filename.
+#   APPLE_NOTARY_ISSUER_ID           Team-wide issuer UUID.
+#
+# NOTE for whoever regenerates the .p12: it must be produced by
+# /usr/bin/openssl (LibreSSL). Homebrew's OpenSSL 3 writes a PKCS12 that macOS
+# cannot import ("MAC verification failed during PKCS12 import"), and forcing
+# legacy algorithms only changes the error to "Unknown format in import".
+jobs:
+  # Same gate the other three publish workflows use. They fire independently on
+  # the same tag, so without this a premature tag can leave some registries
+  # updated and others not.
+  preflight:
+    name: SDK contract preflight
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
+        with:
+          node-version: 24
+
+      - name: Probe the OpenClaw SDK contract
+        id: sdk
+        uses: ./.github/actions/openclaw-sdk-contract
+
+      - name: Refuse to publish against an SDK without the contract
+        if: steps.sdk.outputs.available != 'true'
+        env:
+          DETAIL: ${{ steps.sdk.outputs.detail }}
+        run: |
+          echo "::error::$DETAIL"
+          exit 1
+
+  sign:
+    name: Sign and notarize
+    runs-on: macos-latest
+    needs: preflight
+    env:
+      SIGN_IDENTITY: "Developer ID Application: OmarKnows LLC (N9DRSTM2U6)"
+      KEYCHAIN: "${{ github.workspace }}/signing.keychain-db"
+      STAGE: "${{ github.workspace }}/stage"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Select latest Xcode
+        run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
+
+      - name: Resolve version from tag
+        id: meta
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
+      # SwiftPM builds a universal binary directly; no lipo step is needed.
+      # The package targets macOS 13, which still includes Intel.
+      - name: Build universal Swift CLIs
+        working-directory: swift
+        run: |
+          swift build -c release --arch arm64 --arch x86_64
+          for c in calendar-cli reminder-cli contacts-cli mail-cli; do
+            archs="$(lipo -archs ".build/release/$c")"
+            echo "$c: $archs"
+            case "$archs" in
+              *arm64*x86_64*|*x86_64*arm64*) ;;
+              *) echo "::error::$c is not universal ($archs)"; exit 1 ;;
+            esac
+          done
+
+      - name: Import signing certificate
+        env:
+          P12_BASE64: ${{ secrets.APPLE_DEVELOPER_ID_P12_BASE64 }}
+          P12_PASSWORD: ${{ secrets.APPLE_DEVELOPER_ID_P12_PASSWORD }}
+        run: |
+          # Deliberately not exported to GITHUB_ENV: that would put an
+          # unmasked secret in the environment of every later step, and
+          # `security delete-keychain` does not need it.
+          KEYCHAIN_PASSWORD="$(/usr/bin/openssl rand -base64 24)"
+
+          printf '%s' "$P12_BASE64" | base64 --decode > "$RUNNER_TEMP/devid.p12"
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN"
+          security import "$RUNNER_TEMP/devid.p12" -k "$KEYCHAIN" \
+            -P "$P12_PASSWORD" -T /usr/bin/codesign
+          security set-key-partition-list -S apple-tool:,apple: \
+            -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN" >/dev/null
+          /bin/rm -f "$RUNNER_TEMP/devid.p12"
+
+          # codesign resolves identities through the search list; --keychain
+          # alone fails with "no identity found".
+          security list-keychains -d user -s "$KEYCHAIN" \
+            "$HOME/Library/Keychains/login.keychain-db"
+
+          security find-identity -v -p codesigning "$KEYCHAIN" | grep "Developer ID Application"
+
+      - name: Sign the CLIs
+        run: |
+          . scripts/lib/signing-identities.sh
+          mkdir -p "$STAGE/clis"
+          for c in $APPLE_PIM_SIGNED_CLIS; do
+            id="$(pim_signing_identifier "$c")"
+            cp "swift/.build/release/$c" "$STAGE/clis/$c"
+            # --options runtime and --timestamp are both notarization
+            # prerequisites; -i pins the permanent identifier that TCC records.
+            codesign --force --timestamp --options runtime \
+              -i "$id" --sign "$SIGN_IDENTITY" "$STAGE/clis/$c"
+            echo "signed $c as $id"
+          done
+
+      - name: Build and sign PIMHelper.app
+        env:
+          APPLE_PIM_SIGN_IDENTITY: ${{ env.SIGN_IDENTITY }}
+        run: |
+          mkdir -p "$STAGE/helper"
+          scripts/build-helper-app.sh --stage "$STAGE/helper"
+
+      # Runs the same verifier users run at install time, against the artifact
+      # we are about to publish. If our own check would refuse this download,
+      # it must never reach a release.
+      - name: Verify signatures before packaging
+        run: |
+          scripts/verify-signed-clis.sh "$STAGE/clis" --require-universal
+          codesign --verify --strict --deep "$STAGE/helper/PIMHelper.app"
+
+          # Notarization rejects anything without the hardened runtime, and it
+          # does so several minutes later at the submit step with an opaque
+          # error. Assert the flag here, where the failure names itself.
+          for target in "$STAGE/helper/PIMHelper.app" $APPLE_PIM_SIGNED_CLIS; do
+            case "$target" in
+              *PIMHelper.app) path="$target" ;;
+              *)              path="$STAGE/clis/$target" ;;
+            esac
+            if ! codesign -dvvv "$path" 2>&1 | grep -qE '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'; then
+              echo "::error::$path is not signed with the hardened runtime; notarization would reject it"
+              codesign -dvvv "$path" 2>&1 | grep '^CodeDirectory' || true
+              exit 1
+            fi
+          done
+          echo "Hardened runtime present on the helper and all CLIs."
+        env:
+          APPLE_PIM_SIGNED_CLIS: calendar-cli reminder-cli contacts-cli mail-cli
+
+      - name: Package
+        id: pkg
+        run: |
+          V="${{ steps.meta.outputs.version }}"
+          mkdir -p dist
+          ditto -c -k "$STAGE/clis" "dist/apple-pim-clis-$V-universal.zip"
+          ditto -c -k --keepParent "$STAGE/helper/PIMHelper.app" "dist/PIMHelper-$V.zip"
+          echo "clis=dist/apple-pim-clis-$V-universal.zip" >> "$GITHUB_OUTPUT"
+          echo "helper=dist/PIMHelper-$V.zip" >> "$GITHUB_OUTPUT"
+
+      - name: Notarize
+        env:
+          KEY_P8: ${{ secrets.APPLE_NOTARY_KEY_P8_BASE64 }}
+          KEY_ID: ${{ secrets.APPLE_NOTARY_KEY_ID }}
+          ISSUER: ${{ secrets.APPLE_NOTARY_ISSUER_ID }}
+        run: |
+          printf '%s' "$KEY_P8" | base64 --decode > "$RUNNER_TEMP/notary.p8"
+          for z in "${{ steps.pkg.outputs.clis }}" "${{ steps.pkg.outputs.helper }}"; do
+            echo "Submitting $z"
+            xcrun notarytool submit "$z" \
+              --key "$RUNNER_TEMP/notary.p8" --key-id "$KEY_ID" --issuer "$ISSUER" \
+              --wait --timeout 30m
+          done
+          /bin/rm -f "$RUNNER_TEMP/notary.p8"
+
+      # Only the .app can be stapled. `stapler` does not support bare Mach-O
+      # executables, so the CLI zip ships notarized but unstapled. That is
+      # fine: a zip fetched with curl carries no com.apple.quarantine
+      # attribute, so Gatekeeper never performs the offline check that
+      # stapling exists to satisfy.
+      - name: Staple the helper bundle
+        run: |
+          V="${{ steps.meta.outputs.version }}"
+          ditto -x -k "${{ steps.pkg.outputs.helper }}" "$RUNNER_TEMP/stapled"
+          xcrun stapler staple "$RUNNER_TEMP/stapled/PIMHelper.app"
+          xcrun stapler validate "$RUNNER_TEMP/stapled/PIMHelper.app"
+          /bin/rm -f "${{ steps.pkg.outputs.helper }}"
+          ditto -c -k --keepParent "$RUNNER_TEMP/stapled/PIMHelper.app" "dist/PIMHelper-$V.zip"
+
+      - name: Checksums
+        run: cd dist && shasum -a 256 ./*.zip > SHA256SUMS && cat SHA256SUMS
+
+      # Draft, not published: release notes stay a deliberate human step, as
+      # they are today. This only gives the signed assets somewhere to live.
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/* \
+              --draft --title "$GITHUB_REF_NAME" --generate-notes
+          fi
+
+      # Runs even when an earlier step failed, so a failed run never leaves a
+      # signing identity behind on the runner or a mangled search list.
+      - name: Remove signing keychain
+        if: always()
+        run: |
+          security list-keychains -d user -s "$HOME/Library/Keychains/login.keychain-db" || true
+          security delete-keychain "$KEYCHAIN" || true

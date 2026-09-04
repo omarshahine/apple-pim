@@ -178,6 +178,51 @@ if [[ "$LINK_MODE_SEEN" == true ]]; then
 fi
 echo ""
 
+# ----------------------------------------------------------- code signing
+#
+# Why this check exists: TCC stores a client's designated requirement
+# verbatim. An ad-hoc signature yields a cdhash pin, so every rebuild of the
+# binary silently invalidates the user's Calendar / Reminders / Contacts
+# grants and the permission dialogs come back. Nothing errors, which is
+# exactly what makes it baffling without this section.
+echo "Code signing (determines whether permission grants survive upgrades):"
+# shellcheck source=lib/signing-identities.sh
+. "$SCRIPT_DIR/lib/signing-identities.sh"
+. "$SCRIPT_DIR/check-signing.sh"
+SIGNING_ADHOC=0
+for cli in "${CLIS[@]}"; do
+    p="$BIN_DIR/$cli"
+    [[ -e "$p" ]] || continue
+    expected="$(pim_signing_identifier "$cli")"
+    case "$(pim_classify_requirement "$(pim_designated_requirement "$p")" "$expected")" in
+        ok)
+            ok "$cli: signed, team $APPLE_PIM_TEAM_ID"
+            ;;
+        adhoc)
+            SIGNING_ADHOC=$((SIGNING_ADHOC + 1))
+            ;;
+        unsigned)
+            fail "$cli: no code signature at all"
+            ;;
+        wrong-team)
+            fail "$cli: signed by an unexpected team (expected $APPLE_PIM_TEAM_ID) — do not trust it"
+            ;;
+        wrong-identifier)
+            fail "$cli: unexpected signing identifier (expected $expected); existing grants will not apply"
+            ;;
+        *)
+            fail "$cli: signature is not anchored on a team OU; grants will not survive renewal"
+            ;;
+    esac
+done
+if (( SIGNING_ADHOC > 0 )); then
+    warn "$SIGNING_ADHOC of ${#CLIS[@]} CLIs are ad-hoc signed."
+    echo "      macOS pins ad-hoc binaries by content hash, so your Calendars/Reminders/"
+    echo "      Contacts grants are dropped every time these are rebuilt. That is why the"
+    echo "      permission prompts keep coming back. Signed builds fix it permanently."
+fi
+echo ""
+
 # -------------------------------------------------------------------- PATH
 echo "PATH:"
 if [[ ":$PATH:" == *":$BIN_DIR:"* ]]; then
