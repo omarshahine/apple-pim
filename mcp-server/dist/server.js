@@ -72570,7 +72570,7 @@ ${describeBinDirProblem(probeSwiftBinDirs([binDir]))}`;
       if (cli === "mail-cli") {
         return mailRouteFromAuthStatus(result);
       }
-      if (auth === "notDetermined") {
+      if (auth === "notDetermined" || auth === "writeOnly") {
         return { route: "helper", mayPrompt: true };
       }
       if (auth !== "authorized" && auth !== "fullAccess") {

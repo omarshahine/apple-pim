@@ -28,15 +28,18 @@ describe("Calendar helper routing", () => {
         }
         return { authorization };
       },
-      runViaHelperImpl: async (cli, args) => {
-        helperCalls.push({ cli, args });
+      runViaHelperImpl: async (cli, args, env, timeoutMs) => {
+        helperCalls.push({ cli, args, timeoutMs });
         return { events: [] };
       },
     });
 
     await expect(runCLI("calendar-cli", ["events"])).resolves.toEqual({ events: [] });
     expect(directCalls).toEqual([{ cliPath: calendarCLI, args: ["auth-status"] }]);
-    expect(helperCalls).toEqual([{ cli: "calendar-cli", args: ["events"] }]);
+    expect(helperCalls).toEqual([{ cli: "calendar-cli", args: ["events"], timeoutMs: authorization === "writeOnly" ? 120_000 : 30_000 }]);
+    await expect(runCLI("calendar-cli", ["events"])).resolves.toEqual({ events: [] });
+    expect(helperCalls[1].timeoutMs).toBe(30_000);
+    expect(directCalls).toHaveLength(1);
   });
 
   it.each(["authorized", "fullAccess"])("keeps %s calendar reads direct", async (authorization) => {
