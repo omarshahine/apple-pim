@@ -1,0 +1,25 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!--
+	Required under the hardened runtime, which notarization mandates.
+
+	The helper exists to be the TCC-responsible process for the Swift CLIs, so
+	it is the bundle macOS evaluates when they touch a protected resource. A
+	hardened-runtime binary without the matching entitlement is refused access
+	outright and NO consent dialog is shown, which leaves the user with nothing
+	to grant: the Contacts pane has no "+" button, and tccutil reset does not
+	help because the request never reaches a prompt.
+
+	That is exactly what shipped in v3.17.0 for Contacts (issue #159).
+	-->
+	<key>com.apple.security.personal-information.addressbook</key>
+	<true/>
+	<key>com.apple.security.personal-information.calendars</key>
+	<true/>
+	<!-- mail-cli drives Mail.app over JXA; reminder-cli/calendar-cli use EventKit. -->
+	<key>com.apple.security.automation.apple-events</key>
+	<true/>
+</dict>
+</plist>
