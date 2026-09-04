@@ -39,6 +39,24 @@ jobs:
               - 'swift/**'
               - '.github/workflows/tests.yml'
 
+  # Runs on Linux on purpose. The classifier and the verifier's decision logic
+  # are pure text, so they need no certificate, no TCC, and no macOS tooling --
+  # and macOS minutes bill at 10x. The macOS-only half (real codesign output,
+  # bash 3.2) is covered by the post-sign assertions in
+  # release-signed-artifacts.yml, which necessarily run on macOS anyway.
+  signing-tests:
+    name: Signing Checks (Shell)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - name: Requirement classifier
+        run: bash scripts/test/check-signing.test.sh
+
+      - name: Install-time verifier
+        run: bash scripts/test/verify-signed-clis.test.sh
+
   mcp-server-tests:
     name: MCP Server (Node)
     needs: changes

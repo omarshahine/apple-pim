@@ -32,8 +32,8 @@ trap cleanup EXIT
 # with "Developer ID Application: OmarKnows LLC (N9DRSTM2U6)".
 REAL_DEVID_DR='identifier "IDENTIFIER" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = N9DRSTM2U6'
 
-ADHOC_SOURCE="$HOME/.local/bin/mail-cli"
-FOREIGN_SOURCE="/opt/homebrew/bin/bun"
+ADHOC_SOURCE="${ADHOC_SOURCE:-$HOME/.local/bin/mail-cli}"
+FOREIGN_SOURCE="${FOREIGN_SOURCE:-/opt/homebrew/bin/bun}"
 
 check() {
     label="$1"; want="$2"; got="$3"; detail="${4:-}"
@@ -118,6 +118,30 @@ if [[ -x "$FOREIGN_SOURCE" ]]; then
     fi
 else
     printf '  skip foreign-team fixture unavailable (%s)\n' "$FOREIGN_SOURCE"
+fi
+
+# -------------------------------- foreign team, without needing a fixture
+# The real-binary version of this case (below/above, using bun) only runs
+# where that binary happens to exist, which is not CI. This seam-based twin
+# uses the real captured designated requirement of /opt/homebrew/bin/discrawl
+# -- a genuinely valid, notarized, foreign-team Developer ID signature -- so
+# the most security-relevant refusal is covered on every platform.
+(
+    pim_signature_valid() { return 0; }
+    . "$REPO_ROOT/scripts/verify-signed-clis.sh"
+    pim_designated_requirement() {
+        printf '%s' 'identifier "org.openclaw.discrawl" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = FWJYW4S8P8'
+    }
+    d="$TMPROOT/foreign-seam"; mkdir -p "$d"
+    for c in calendar-cli reminder-cli contacts-cli mail-cli; do : > "$d/$c"; done
+    pim_verify_dir "$d" false >"$TMPROOT/foreign-seam.out" 2>&1
+)
+rc=$?
+check "foreign-team Developer ID is refused (platform-independent)" 1 "$rc"
+if grep -q "different team" "$TMPROOT/foreign-seam.out" 2>/dev/null; then
+    printf '  ok   platform-independent refusal names the team mismatch\n'; PASS=$((PASS + 1))
+else
+    printf '  FAIL platform-independent refusal did not name the team mismatch\n'; FAIL=$((FAIL + 1))
 fi
 
 # ------------------------------------------------------ wrong identifier
