@@ -72525,7 +72525,12 @@ function mailRouteFromAuthStatus(status) {
   }
   return { route: "helper", mayPrompt: auth === "notDetermined" };
 }
-function createCLIRunner(binDir, envOverrides = {}, { timeoutMs = DEFAULT_TIMEOUT_MS } = {}) {
+function createCLIRunner(binDir, envOverrides = {}, {
+  timeoutMs = DEFAULT_TIMEOUT_MS,
+  runDirectImpl = runDirect,
+  runViaHelperImpl = runViaHelper,
+  helperExists = () => existsSync(helperAppPath())
+} = {}) {
   const route = /* @__PURE__ */ new Map();
   function childEnv() {
     const env = {};
@@ -72565,18 +72570,18 @@ ${describeBinDirProblem(probeSwiftBinDirs([binDir]))}`;
   }
   async function probeRoute(cli) {
     if (!HELPER_ELIGIBLE_CLIS.has(cli)) return { route: "direct", mayPrompt: false };
-    if (!existsSync(helperAppPath())) return { route: "direct", mayPrompt: false };
+    if (!helperExists()) return { route: "direct", mayPrompt: false };
     const cliPath = join(binDir, cli);
     try {
-      const result = await runDirect(cliPath, ["auth-status"], childEnv(), timeoutMs);
+      const result = await runDirectImpl(cliPath, ["auth-status"], childEnv(), timeoutMs);
       const auth = result?.authorization;
       if (cli === "mail-cli") {
         return mailRouteFromAuthStatus(result);
       }
-      if (auth === "notDetermined") {
+      if (auth === "notDetermined" || auth === "writeOnly") {
         return { route: "helper", mayPrompt: true };
       }
-      if (auth === "denied") {
+      if (auth !== "authorized" && auth !== "fullAccess") {
         return { route: "helper", mayPrompt: false };
       }
       return { route: "direct", mayPrompt: false };
@@ -72593,9 +72598,9 @@ ${describeBinDirProblem(probeSwiftBinDirs([binDir]))}`;
     if (decision.route === "helper") {
       const callTimeout = decision.mayPrompt ? Math.max(timeoutMs, PROMPT_TIMEOUT_MS) : timeoutMs;
       decision.mayPrompt = false;
-      return runViaHelper(cli, args, childEnv(), callTimeout, binDir);
+      return runViaHelperImpl(cli, args, childEnv(), callTimeout, binDir);
     }
-    return runDirect(join(binDir, cli), args, childEnv(), timeoutMs);
+    return runDirectImpl(join(binDir, cli), args, childEnv(), timeoutMs);
   }
   return { runCLI: runCLI2 };
 }
