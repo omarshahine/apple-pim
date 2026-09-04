@@ -8,7 +8,7 @@
 # shell (e.g. an embedded agent runtime) having its own TCC entry.
 #
 # Args: <cli-name> <out-file> <err-file> [cli-args...]
-#   cli-name : one of calendar-cli, reminder-cli, contacts-cli
+#   cli-name : one of calendar-cli, reminder-cli, contacts-cli, mail-cli
 #   out-file : absolute path to write the CLI's stdout to
 #   err-file : absolute path to write the CLI's stderr to
 #   cli-args : forwarded verbatim to the CLI
@@ -26,7 +26,7 @@ ERR="$3"
 shift 3
 
 case "$CLI" in
-    calendar-cli|reminder-cli|contacts-cli) ;;
+    calendar-cli|reminder-cli|contacts-cli|mail-cli) ;;
     *)
         echo "pim-helper: unsupported cli '$CLI'" >"$ERR"
         : >"$OUT"

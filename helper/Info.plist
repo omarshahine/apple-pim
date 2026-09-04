@@ -20,6 +20,8 @@
     <true/>
     <key>LSBackgroundOnly</key>
     <false/>
+    <key>NSAppleEventsUsageDescription</key>
+    <string>Apple PIM Helper controls Mail.app to read and manage messages on behalf of the Apple PIM plugin.</string>
     <key>NSCalendarsFullAccessUsageDescription</key>
     <string>Apple PIM Helper needs full Calendar access to read and manage events on behalf of the Apple PIM plugin.</string>
     <key>NSCalendarsUsageDescription</key>
