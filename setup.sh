@@ -6,6 +6,7 @@
 #   ./setup.sh                     # Build only
 #   ./setup.sh --install           # Build and install CLIs to ~/.local/bin (copies)
 #   ./setup.sh --install --link    # Dev mode: symlink into ~/.local/bin instead
+#   ./setup.sh --install --build   # Force a local build (skip signed release binaries)
 #
 # Why copies are the default: a symlinked install points into this checkout,
 # so renaming, moving, or cleaning the repo silently bricks every consumer
@@ -21,16 +22,43 @@ CLIS=(calendar-cli reminder-cli contacts-cli mail-cli)
 
 INSTALL=false
 LINK_MODE=false
+NO_FETCH=false
 for arg in "$@"; do
     case "$arg" in
         --install) INSTALL=true ;;
         --link) LINK_MODE=true ;;
+        --build) NO_FETCH=true ;;
     esac
 done
 
-echo "Building Swift CLI tools..."
-cd "$SCRIPT_DIR/swift"
-swift build -c release
+# Prefer the signed release binaries over building locally.
+#
+# Locally built CLIs are ad-hoc signed, which means macOS records their TCC
+# grants as a bare content-hash pin: every rebuild silently revokes Calendar,
+# Reminders, and Contacts access and the permission dialogs come back. The
+# released binaries are Developer ID signed, so a grant given once survives
+# every future upgrade.
+#
+# Skipped for --link (dev mode wants the local build wired in place) and for
+# --build (explicit opt out). Failure here is not fatal: no network, no
+# release for this version, or a failed signature check all fall through to
+# building from source.
+SIGNED_INSTALL=false
+if [ "$INSTALL" = true ] && [ "$LINK_MODE" = false ] && [ "$NO_FETCH" = false ]; then
+    echo "Checking for signed release binaries..."
+    if "$SCRIPT_DIR/scripts/fetch-signed-clis.sh" "$INSTALL_DIR"; then
+        SIGNED_INSTALL=true
+    fi
+    echo ""
+fi
+
+if [ "$SIGNED_INSTALL" = true ]; then
+    echo "Using signed release binaries; skipping the local Swift build."
+else
+    echo "Building Swift CLI tools..."
+    cd "$SCRIPT_DIR/swift"
+    swift build -c release
+fi
 
 echo ""
 echo "Installing shared dependencies..."
@@ -42,7 +70,22 @@ echo "Installing MCP server dependencies..."
 cd "$SCRIPT_DIR/mcp-server"
 npm install
 
-if [ "$INSTALL" = true ]; then
+if [ "$INSTALL" = true ] && [ "$SIGNED_INSTALL" = true ]; then
+    # fetch-signed-clis.sh already installed verified binaries into
+    # INSTALL_DIR; copying the local build over them would replace signed
+    # binaries with ad-hoc ones and undo the grant stability we just gained.
+    echo ""
+    echo "Signed CLIs are installed in $INSTALL_DIR."
+    if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then
+        echo ""
+        echo "Add this to your ~/.zshrc (or ~/.bashrc) to put CLIs on your PATH:"
+        echo ""
+        echo "  export PATH=\"\$HOME/.local/bin:\$PATH\""
+    fi
+    echo ""
+    echo "Installing PIMHelper.app (TCC bridge for embedded shells)..."
+    "$SCRIPT_DIR/scripts/build-helper-app.sh"
+elif [ "$INSTALL" = true ]; then
     echo ""
     mkdir -p "$INSTALL_DIR"
     if [ "$LINK_MODE" = true ]; then

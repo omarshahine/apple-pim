@@ -238,6 +238,41 @@ Homebrew preserves the signature. Verified three ways:
 Homebrew users' binaries move from a compiled-in-place keg to
 `/opt/homebrew/bin`, a different path, so they re-grant once.
 
+**Prior art: `steipete/imsg`.** It ships a universal, Developer ID signed,
+notarized CLI as a release zip and points a tap formula at it — the same shape
+this design proposes, already working in production. Two details taken from it:
+
+- The formula declares `preserve_rpath`. Homebrew's `keg_relocate` rewrites
+  rpaths, and rewriting triggers `codesign_patched_binary`, which re-signs
+  ad-hoc and would put us straight back on cdhash pins.
+- The formula body is `bin.install` of prebuilt binaries with no
+  `depends_on xcode: :build`.
+
+Our binaries carry 3 `LC_RPATH` entries per slice (`/usr/lib/swift`,
+`@loader_path`, and the Xcode toolchain path). Critically they are 3 *per
+slice*, not duplicated within a slice, so Homebrew's "strip duplicate rpaths"
+path (`keg_relocate.rb:109-115`) does not fire — which is consistent with
+`bun`, `discrawl`, and `freeze` all keeping verifiable signatures after
+install. `preserve_rpath` is therefore insurance rather than a fix.
+
+Because that insurance is against a *silent* regression, the formula's
+`test do` block must assert the signature survives installation:
+
+```ruby
+test do
+  system "codesign", "--verify", "--strict", bin/"calendar-cli"
+  assert_match "N9DRSTM2U6", shell_output("codesign -dvvv #{bin}/calendar-cli 2>&1")
+end
+```
+
+Without that, a future Homebrew change that re-signs our binaries would
+reintroduce the original bug with no failing test anywhere.
+
+Note also that `imsg` installs to `libexec` and writes a `bin` exec script,
+because it ships a dylib. We must NOT copy that: TCC keys on the real binary
+path, so a wrapper would record grants against the `libexec` path. Install
+directly into `bin`.
+
 ### 5. `doctor.sh` signing check
 
 For each installed CLI and the helper, print the designated requirement and
