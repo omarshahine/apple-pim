@@ -140,6 +140,55 @@ Steps:
    workflow creates releases today; publishing notes stays a manual step, but
    the assets now have a home.
 
+#### Verified prerequisites
+
+Both of these were established by running the recipe end-to-end against the real
+certificate on 2026-09-04. Both fail in ways that are hard to diagnose from CI
+logs, so they are requirements, not suggestions.
+
+**The `.p12` must be produced by `/usr/bin/openssl` (LibreSSL), not OpenSSL 3.**
+Homebrew's OpenSSL 3.6.4 writes a PKCS12 that macOS refuses:
+
+```
+security import a.p12  ->  SecKeychainItemImport: MAC verification failed
+                           during PKCS12 import (wrong password?)
+```
+
+The password is correct — OpenSSL reads the file back fine. macOS cannot verify
+OpenSSL 3's default SHA-256 PKCS12 MAC. Forcing legacy algorithms
+(`-macalg sha1 -descert`) does not fix it either; the import then fails with
+`Unknown format in import`. The system LibreSSL binary at `/usr/bin/openssl`
+works with default options and is present on GitHub's macOS runners.
+
+**The signing keychain must be added to the search list.** `codesign --keychain`
+alone is insufficient — it resolves identities through the search list and fails
+with `no identity found`. The job must run
+`security list-keychains -d user -s "$KC" "$LOGIN"` before signing and restore
+the original list afterwards, in a step that runs even on failure.
+
+The validated sequence, which produced a correctly signed universal-ready binary:
+
+```
+security create-keychain -p "$KCPASS" "$KC"
+security unlock-keychain -p "$KCPASS" "$KC"
+security import devid.p12 -k "$KC" -P "$P12PASS" -T /usr/bin/codesign
+security set-key-partition-list -S apple-tool:,apple: -s -k "$KCPASS" "$KC"
+security list-keychains -d user -s "$KC" "$LOGIN"
+codesign --force --timestamp --options runtime -i <identifier> \
+         --sign "Developer ID Application: OmarKnows LLC (N9DRSTM2U6)" <binary>
+```
+
+Confirmed output: `TeamIdentifier=N9DRSTM2U6`, `Runtime Version` set,
+`Timestamp` present, `codesign --verify --strict` passes, and the designated
+requirement is
+
+```
+identifier "com.omarshahine.apple-pim.calendar-cli" and anchor apple generic
+and certificate 1[field.1.2.840.113635.100.6.2.6] and
+certificate leaf[field.1.2.840.113635.100.6.1.13] and
+certificate leaf[subject.OU] = N9DRSTM2U6
+```
+
 Not stapled. `stapler` cannot staple a bare Mach-O — only bundles, `.dmg`, or
 `.pkg`. A zip fetched with `curl` carries no `com.apple.quarantine` attribute, so
 Gatekeeper never performs the check that stapling would satisfy offline.
@@ -256,7 +305,9 @@ a release asset that does not exist yet.
 
 ## Rollout order
 
-1. Recover the Developer ID Application cert and store the four repo secrets.
+1. ~~Recover the Developer ID Application cert and store the p12 repo secrets.~~ Done
+   2026-09-04: cert regenerated (valid to 2031-09-05), `APPLE_DEVELOPER_ID_P12_BASE64`
+   and `APPLE_DEVELOPER_ID_P12_PASSWORD` set. Notary key secrets still outstanding.
 2. Land the signing job and cut one tag. Confirm assets are produced, verify, and
    are universal. Do not touch the formula yet.
 3. Land `verify-signed-clis.sh`, the `setup.sh` fetch path, and the `doctor.sh`
