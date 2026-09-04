@@ -119,13 +119,16 @@ mkdir -p "$(dirname "$APP_PATH")"
 
 # Clean any previous install. Use python unlink to tolerate File Provider
 # (OneDrive / iCloud) volumes that reject `trash` and `rm`.
-if [[ -e "$APP_PATH" ]]; then
+remove_app_path() {
+    [[ -e "$APP_PATH" ]] || return 0
     if command -v trash >/dev/null 2>&1; then
         trash "$APP_PATH" 2>/dev/null || rm -rf "$APP_PATH"
     else
         rm -rf "$APP_PATH"
     fi
-fi
+}
+
+remove_app_path
 
 mkdir -p "$APP_PATH/Contents/MacOS" "$APP_PATH/Contents/Resources"
 cp "$SRC_DIR/Info.plist" "$APP_PATH/Contents/Info.plist"
@@ -180,16 +183,47 @@ else
     # Assert rather than trust: the failure this guards against is invisible to
     # every other check in the pipeline, and only shows up as a user unable to
     # grant Contacts weeks later.
+    #
+    # A rejected bundle must never be left at $APP_PATH. The working helper was
+    # already removed and the source stamps already written, so an installed
+    # reject would satisfy the freshness check on the next run and be treated as
+    # current forever -- a permanently broken helper that no rebuild repairs.
+    # Removing it costs the user one rebuild; leaving it costs them Contacts.
+    reject_bundle() {
+        echo "build-helper-app: $1" >&2
+        echo "build-helper-app: TCC would deny that resource with no prompt; refusing to ship" >&2
+        remove_app_path
+        echo "build-helper-app: removed the rejected bundle at $APP_PATH; re-run after fixing" >&2
+        exit 1
+    }
+
     if codesign -dvvv "$APP_PATH" 2>&1 | grep -qE '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'; then
+        signed_entitlements="$(codesign -d --entitlements - --xml "$APP_PATH" 2>/dev/null)"
         for required in \
             com.apple.security.personal-information.addressbook \
             com.apple.security.personal-information.calendars \
             com.apple.security.automation.apple-events; do
-            if ! codesign -d --entitlements - --xml "$APP_PATH" 2>/dev/null | grep -q "$required"; then
-                echo "build-helper-app: hardened runtime is set but $required is missing" >&2
-                echo "build-helper-app: TCC would deny that resource with no prompt; refusing to ship" >&2
-                exit 1
-            fi
+            # Presence is not enough: a key present with <false/> reads as
+            # declared while granting nothing, so require the boolean value.
+            #
+            # plutil -extract is not usable here: it treats "." as a key-path
+            # separator, and every entitlement key is dotted, so it reports
+            # "No value at that key path" for all of them and would reject
+            # every valid bundle.
+            value="$(printf '%s' "$signed_entitlements" | python3 -c '
+import plistlib, sys
+key = sys.argv[1]
+try:
+    declared = plistlib.loads(sys.stdin.buffer.read())
+except Exception:
+    sys.exit(0)
+value = declared.get(key)
+if value is None:
+    sys.exit(0)
+print("true" if value is True else str(value))
+' "$required" 2>/dev/null || true)"
+            [[ -n "$value" ]] || reject_bundle "hardened runtime is set but $required is missing"
+            [[ "$value" == "true" ]] || reject_bundle "$required is present but set to '$value', not true"
         done
     fi
 fi
