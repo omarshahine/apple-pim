@@ -1,26 +1,38 @@
 name: Publish to Homebrew Tap
 
+# Triggered by publishing a release, NOT by pushing a tag.
+#
+# The formula now points at the signed release asset rather than the source
+# tarball. That asset is produced by release-signed-artifacts.yml, which runs
+# in parallel on the same tag and takes several minutes (notarization), and it
+# lands in a DRAFT release whose assets are not anonymously downloadable. A
+# tag-triggered run would therefore race the signing job and, even after it,
+# point the formula at a URL nobody can fetch.
+#
+# Keying on `release: published` removes the race entirely: the assets exist
+# and are public by definition.
 on:
-  push:
-    tags:
-      - "v*"
+  release:
+    types: [published]
 
 permissions:
   contents: read
 
-# Bumps the apple-pim-cli formula in omarshahine/homebrew-tap to the tag that
-# triggered this run. The formula builds from the GitHub source tarball, so we
-# only need to update `url` and `sha256` — no bottle upload.
+# Bumps the apple-pim-cli formula in omarshahine/homebrew-tap to the published
+# release. The formula installs the Developer ID signed, notarized, universal
+# binaries from the release asset -- building from source produced ad-hoc
+# signed binaries, which macOS pins TCC grants to by content hash, so every
+# `brew upgrade` silently revoked the user's Calendar/Reminders/Contacts
+# access.
 #
 # Requires a repo secret HOMEBREW_TAP_TOKEN: a fine-grained PAT scoped to
 # omarshahine/homebrew-tap with Contents: read & write. The default GITHUB_TOKEN
 # cannot push to a different repository.
 jobs:
-  # Publishing is gated on the SDK actually shipping what the mail channel calls,
-  # because the three publish workflows fire independently on the same tag. Without
-  # this, a premature tag fails the two npm-installing workflows and SUCCEEDS on
-  # Homebrew, which builds the Swift CLI from the source tarball and never touches
-  # openclaw/. That leaves the tap pointing at a version npm and ClawHub never got,
+  # Publishing is gated on the SDK actually shipping what the mail channel calls.
+  # The npm and ClawHub workflows fire on the tag and would fail on a premature
+  # one; this job never touches openclaw/, so without the gate it could still
+  # succeed and leave the tap pointing at a version those registries never got,
   # which is worse than nothing publishing at all.
   preflight:
     name: SDK contract preflight
@@ -68,24 +80,32 @@ jobs:
       TAP_REPO: omarshahine/homebrew-tap
       FORMULA_PATH: Formula/apple-pim-cli.rb
     steps:
-      - name: Resolve version and tarball checksum
+      - name: Resolve the signed asset and its checksum
         id: meta
+        env:
+          TAG: ${{ github.event.release.tag_name }}
         run: |
-          VERSION="${GITHUB_REF_NAME#v}"
-          TARBALL="https://github.com/${GITHUB_REPOSITORY}/archive/refs/tags/${GITHUB_REF_NAME}.tar.gz"
-          echo "Fetching $TARBALL"
-          # Retry to absorb the brief delay before GitHub serves a fresh tag tarball.
+          VERSION="${TAG#v}"
+          ASSET="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/apple-pim-clis-${VERSION}-universal.zip"
+          echo "Fetching $ASSET"
           for attempt in 1 2 3 4 5; do
-            if curl -fsSL "$TARBALL" -o source.tar.gz; then
+            if curl -fsSL "$ASSET" -o signed.zip; then
               break
             fi
             echo "Attempt $attempt failed; retrying in 10s..."
             sleep 10
           done
-          SHA256=$(sha256sum source.tar.gz | awk '{print $1}')
-          echo "version=$VERSION"   >> "$GITHUB_OUTPUT"
-          echo "tarball=$TARBALL"   >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256"     >> "$GITHUB_OUTPUT"
+          # Fail loudly rather than shipping a formula pointing at nothing. A
+          # release published without the signed asset (an older tag, or a
+          # signing run that failed) must not silently update the tap.
+          if [ ! -s signed.zip ]; then
+            echo "::error::no signed asset at $ASSET — refusing to update the formula"
+            exit 1
+          fi
+          SHA256=$(sha256sum signed.zip | awk '{print $1}')
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "asset=$ASSET"     >> "$GITHUB_OUTPUT"
+          echo "sha256=$SHA256"   >> "$GITHUB_OUTPUT"
           echo "Resolved v$VERSION -> $SHA256"
 
       - name: Checkout tap
@@ -99,15 +119,16 @@ jobs:
         run: |
           cd tap
           FILE="${FORMULA_PATH}"
-          NEW_URL="${{ steps.meta.outputs.tarball }}"
+          NEW_URL="${{ steps.meta.outputs.asset }}"
           NEW_SHA="${{ steps.meta.outputs.sha256 }}"
 
-          # Replace the archive url and the sha256 that immediately follows it.
-          # The url match is deliberately NOT anchored on GITHUB_REPOSITORY:
-          # after the 2026 repo rename the old anchor no-op'd against the
-          # formula's stale url while the sha256 replace ran anyway, shipping
-          # a url/sha mismatch that broke `brew install` (tap commit 88537d0).
-          perl -0pi -e "s{url \"https://github\.com/[^\"]+/archive/refs/tags/v[^\"]+\.tar\.gz\"}{url \"$NEW_URL\"}" "$FILE"
+          # Replace the asset url and the sha256 that immediately follows it.
+          # Deliberately NOT anchored on GITHUB_REPOSITORY: after the 2026 repo
+          # rename the old anchor no-op'd against the formula's stale url while
+          # the sha256 replace ran anyway, shipping a url/sha mismatch that
+          # broke `brew install` (tap commit 88537d0). Anchored at two-space
+          # indent so it only ever matches the formula-level url.
+          perl -0pi -e "s{^  url \"[^\"]+\"}{  url \"$NEW_URL\"}m" "$FILE"
           perl -0pi -e "s{^(\s*)sha256 \"[0-9a-f]{64}\"}{\${1}sha256 \"$NEW_SHA\"}m" "$FILE"
 
           # Fail loudly if either replacement missed — a partial update is

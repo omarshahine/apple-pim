@@ -36,6 +36,29 @@ if ! command -v jq >/dev/null 2>&1; then
   exit 2
 fi
 
+# Check the bundle can actually be rebuilt BEFORE writing any version file.
+#
+# The five JSON files are written first and mcp-server/dist/server.js is
+# rebuilt last. Without this, a missing build dependency leaves a half-applied
+# bump: every JSON file reads as the new version while the artifact that
+# actually ships still carries the old one. The script does exit non-zero in
+# that case, but the damage is already on disk, and it is easy to miss when the
+# output is piped. scripts/check-versions.sh now also compares the built bundle
+# so the drift cannot ship silently, but failing here first is cheaper.
+missing=""
+[ -x mcp-server/node_modules/.bin/esbuild ] || missing="$missing mcp-server/node_modules (esbuild)"
+# lib/ pulls these from the repo root; esbuild cannot resolve them otherwise.
+for dep in mailparser turndown; do
+  [ -d "node_modules/$dep" ] || missing="$missing node_modules/$dep"
+done
+if [ -n "$missing" ]; then
+  echo "error: cannot rebuild mcp-server/dist/server.js; missing:$missing" >&2
+  echo "  run: npm install && npm install --prefix mcp-server" >&2
+  echo "  (refusing to bump: a failed rebuild would leave the version files" >&2
+  echo "   updated and the shipped bundle stale)" >&2
+  exit 2
+fi
+
 set_json_field() {
   local file="$1" jq_expr="$2" tmp
   tmp=$(mktemp)
