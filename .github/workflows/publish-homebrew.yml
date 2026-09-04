@@ -88,8 +88,12 @@ jobs:
           VERSION="${TAG#v}"
           ASSET="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/apple-pim-clis-${VERSION}-universal.zip"
           echo "Fetching $ASSET"
+          # --remove-on-error: without it an aborted transfer leaves the
+          # partial bytes on disk, and a non-empty check would accept that
+          # truncated archive, publish its checksum, and make `brew install`
+          # reject the real asset for a checksum mismatch.
           for attempt in 1 2 3 4 5; do
-            if curl -fsSL "$ASSET" -o signed.zip; then
+            if curl -fsSL --remove-on-error "$ASSET" -o signed.zip; then
               break
             fi
             echo "Attempt $attempt failed; retrying in 10s..."
@@ -102,7 +106,24 @@ jobs:
             echo "::error::no signed asset at $ASSET — refusing to update the formula"
             exit 1
           fi
+
+          # Verify against the checksums the signing job published alongside
+          # the asset, so a silently corrupted or truncated download cannot
+          # become the formula's sha256. Size alone proves nothing.
+          SUMS="https://github.com/${GITHUB_REPOSITORY}/releases/download/${TAG}/SHA256SUMS"
+          if ! curl -fsSL --remove-on-error "$SUMS" -o SHA256SUMS; then
+            echo "::error::release $TAG has no SHA256SUMS — refusing to update the formula"
+            exit 1
+          fi
+          EXPECTED=$(awk -v f="./apple-pim-clis-${VERSION}-universal.zip" \
+            '$2 == f || $2 == substr(f,3) {print $1}' SHA256SUMS | head -1)
           SHA256=$(sha256sum signed.zip | awk '{print $1}')
+          if [ -z "$EXPECTED" ] || [ "$EXPECTED" != "$SHA256" ]; then
+            echo "::error::downloaded asset does not match the published SHA256SUMS"
+            echo "::error::expected=${EXPECTED:-<absent>} actual=$SHA256"
+            exit 1
+          fi
+          echo "Checksum matches the published SHA256SUMS."
           echo "version=$VERSION" >> "$GITHUB_OUTPUT"
           echo "asset=$ASSET"     >> "$GITHUB_OUTPUT"
           echo "sha256=$SHA256"   >> "$GITHUB_OUTPUT"
@@ -121,6 +142,23 @@ jobs:
           FILE="${FORMULA_PATH}"
           NEW_URL="${{ steps.meta.outputs.asset }}"
           NEW_SHA="${{ steps.meta.outputs.sha256 }}"
+          NEW_VER="${{ steps.meta.outputs.version }}"
+
+          # Refuse to move the tap backwards. Draft releases accumulate, and
+          # publishing an old one later is an ordinary mistake -- this event
+          # says "a release was published", not "the newest release". Without
+          # this, doing so downgrades every `brew upgrade` user.
+          CUR_VER=$(sed -n 's|^  url ".*apple-pim-clis-\([0-9][0-9.]*\)-universal.*|\1|p' "$FILE" | head -1)
+          if [ -n "$CUR_VER" ]; then
+            NEWEST=$(printf '%s\n%s\n' "$CUR_VER" "$NEW_VER" | sort -V | tail -1)
+            if [ "$NEWEST" != "$NEW_VER" ]; then
+              echo "::error::refusing to downgrade the tap: formula is at $CUR_VER, this release is $NEW_VER"
+              exit 1
+            fi
+            echo "Formula at $CUR_VER -> $NEW_VER"
+          else
+            echo "Formula has no signed-asset url yet; treating as first switch."
+          fi
 
           # Replace the asset url and the sha256 that immediately follows it.
           # Deliberately NOT anchored on GITHUB_REPOSITORY: after the 2026 repo

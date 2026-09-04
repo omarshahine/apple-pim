@@ -33,17 +33,25 @@ read -r v_mcp           < <(jq -r '.version'             mcp-server/package.json
 read -r v_openclaw_pkg  < <(jq -r '.version'             openclaw/package.json)
 read -r v_openclaw_man  < <(jq -r '.version'             openclaw/openclaw.plugin.json)
 
-# Generated artifact: absent in a fresh checkout that has not built yet, which
-# is not a version mismatch. Only compared when it exists.
+# The bundle is a TRACKED shipping artifact, so its absence is a problem in its
+# own right, not a "not built yet" state: a checkout always has it, and deleting
+# it would otherwise sail through this check whenever the JSON files agree.
 #
 # Anchored on the package identity, not position: the bundle inlines its
 # dependencies' package.json objects too, and one of those (encoding-japanese)
 # appears first. Matching the first `version:` literal would compare the wrong
 # package and fail for the wrong reason.
-v_bundle=""
-if [ -f mcp-server/dist/server.js ]; then
-  v_bundle=$(grep -A1 '"apple-pim-mcp"' mcp-server/dist/server.js \
-    | sed -n 's/.*version:[[:space:]]*"\([0-9][^"]*\)".*/\1/p' | head -1)
+if [ ! -f mcp-server/dist/server.js ]; then
+  echo "error: mcp-server/dist/server.js is missing." >&2
+  echo "  It is a tracked, generated artifact and is what actually ships." >&2
+  echo "  Rebuild it: (cd mcp-server && npm run build)" >&2
+  exit 1
+fi
+v_bundle=$(grep -A1 '"apple-pim-mcp"' mcp-server/dist/server.js \
+  | sed -n 's/.*version:[[:space:]]*"\([0-9][^"]*\)".*/\1/p' | head -1)
+if [ -z "$v_bundle" ]; then
+  echo "error: could not read the version out of mcp-server/dist/server.js." >&2
+  exit 1
 fi
 
 printf "%-40s %s\n" "File" "Version"
@@ -53,14 +61,10 @@ printf "%-40s %s\n" ".claude-plugin/marketplace.json"   "$v_marketplace"
 printf "%-40s %s\n" "mcp-server/package.json"           "$v_mcp"
 printf "%-40s %s\n" "openclaw/package.json"             "$v_openclaw_pkg"
 printf "%-40s %s\n" "openclaw/openclaw.plugin.json"     "$v_openclaw_man"
-if [ -n "$v_bundle" ]; then
-  printf "%-40s %s\n" "mcp-server/dist/server.js (built)" "$v_bundle"
-else
-  printf "%-40s %s\n" "mcp-server/dist/server.js (built)" "(not built)"
-fi
+printf "%-40s %s\n" "mcp-server/dist/server.js (built)" "$v_bundle"
 
 all="$v_plugin $v_marketplace $v_mcp $v_openclaw_pkg $v_openclaw_man"
-[ -n "$v_bundle" ] && all="$all $v_bundle"
+all="$all $v_bundle"
 uniq=$(printf '%s\n' $all | sort -u | wc -l | tr -d ' ')
 
 if [ "$uniq" != "1" ]; then
