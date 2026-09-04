@@ -40,6 +40,27 @@ APPLE_PIM_SIGNED_CLIS="calendar-cli reminder-cli contacts-cli mail-cli"
 # Map a binary name to its permanent signing identifier. Returns non-zero for
 # anything not shipped by this repo, so a typo fails loudly instead of
 # silently signing under an identifier nobody has ever granted.
+# The requirement a genuine release binary must SATISFY, for `codesign -R`.
+#
+# This is the trust boundary. It must never be confused with the requirement a
+# binary *advertises* via `codesign -d -r-`: that string is chosen by whoever
+# signed the binary, so an attacker can embed one naming our identifier and our
+# team OU on a binary carrying no certificate at all. Reading the advertised
+# text and comparing strings therefore proves nothing. `codesign --verify -R`
+# evaluates this expression against the actual certificate chain instead.
+#
+# The two OIDs are what make it Developer ID specifically rather than any
+# Apple-issued certificate:
+#   1.2.840.113635.100.6.2.6   Developer ID intermediate CA marker
+#   1.2.840.113635.100.6.1.13  Developer ID Application leaf marker
+# `anchor apple generic` requires the chain to terminate at Apple's root, which
+# is the part no attacker can forge.
+pim_requirement_for() {
+    _pim_id="$(pim_signing_identifier "$1")" || return 1
+    printf 'anchor apple generic and identifier "%s" and certificate 1[field.1.2.840.113635.100.6.2.6] and certificate leaf[field.1.2.840.113635.100.6.1.13] and certificate leaf[subject.OU] = "%s"' \
+        "$_pim_id" "$APPLE_PIM_TEAM_ID"
+}
+
 pim_signing_identifier() {
     case "$1" in
         calendar-cli|reminder-cli|contacts-cli|mail-cli)

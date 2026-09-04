@@ -17,6 +17,20 @@
 # on the identifier and the team OU, which survives both rebuilds and
 # certificate renewal.
 #
+# THIS FILE IS DIAGNOSTIC, NOT A TRUST BOUNDARY.
+#
+# It reads the requirement a binary ADVERTISES (`codesign -d -r-`). That text
+# is chosen by whoever signed the binary: an ad-hoc binary with no certificate
+# at all can advertise our identifier and our team OU, and it will also pass
+# `codesign --verify --strict`, because --verify only checks the seal against
+# the bytes. So a verdict of "ok" here means "claims to be ours and is
+# self-consistent", never "is provably ours".
+#
+# Anything deciding whether to TRUST a binary must instead evaluate a
+# requirement against the real certificate chain with `codesign --verify -R`.
+# See pim_signature_trusted in scripts/verify-signed-clis.sh and
+# pim_requirement_for in scripts/lib/signing-identities.sh.
+#
 # Usage:
 #   scripts/check-signing.sh [--bin-dir DIR] [--quiet]
 #

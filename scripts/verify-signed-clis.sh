@@ -36,10 +36,22 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=check-signing.sh
 . "$SCRIPT_DIR/check-signing.sh"
 
-# Seams. Both are overridden by scripts/test/verify-signed-clis.test.sh so the
-# accept path can be exercised without a Developer ID certificate on hand.
-if ! declare -f pim_signature_valid >/dev/null 2>&1; then
-    pim_signature_valid() { codesign --verify --strict "$1" >/dev/null 2>&1; }
+# THE trust gate.
+#
+# `-R` makes codesign evaluate the supplied requirement against the binary's
+# actual certificate chain. This is categorically different from reading the
+# requirement the binary advertises via `codesign -d -r-`: that text is chosen
+# by whoever signed it. An ad-hoc binary carrying no certificate at all can
+# advertise `... and certificate leaf[subject.OU] = N9DRSTM2U6` and pass
+# `codesign --verify --strict`, because --verify only checks that the seal
+# matches the bytes. Comparing advertised text is not provenance.
+#
+# Overridden by the test suite so the accept path can be exercised without a
+# Developer ID certificate on hand.
+if ! declare -f pim_signature_trusted >/dev/null 2>&1; then
+    pim_signature_trusted() {
+        codesign --verify --strict -R="$2" "$1" >/dev/null 2>&1
+    }
 fi
 
 # Verify every expected CLI in DIR. Echoes one line per binary; returns
@@ -59,8 +71,27 @@ pim_verify_dir() {
             continue
         fi
 
-        if ! pim_signature_valid "$_path"; then
-            printf 'REFUSE %s: signature does not verify (tampered or truncated download)\n' "$_cli"
+        # Evaluated against the real chain. Everything below this point is
+        # only about producing a useful message; the accept/reject decision
+        # has already been made here.
+        if ! pim_signature_trusted "$_path" "$(pim_requirement_for "$_cli")"; then
+            case "$(pim_classify_requirement "$(pim_designated_requirement "$_path")" "$_expected")" in
+                adhoc)
+                    printf 'REFUSE %s: ad-hoc signed; a release artifact must never be ad-hoc\n' "$_cli" ;;
+                unsigned)
+                    printf 'REFUSE %s: unsigned\n' "$_cli" ;;
+                wrong-team)
+                    printf 'REFUSE %s: signed by a different team (expected %s)\n' "$_cli" "$APPLE_PIM_TEAM_ID" ;;
+                wrong-identifier)
+                    printf 'REFUSE %s: unexpected identifier (expected %s)\n' "$_cli" "$_expected" ;;
+                ok)
+                    # The advertised requirement says the right things but the
+                    # certificate chain does not back it up: either a forged
+                    # requirement on an untrusted binary, or a damaged download.
+                    printf 'REFUSE %s: claims our identity but does not chain to Apple'"'"'s Developer ID anchor\n' "$_cli" ;;
+                *)
+                    printf 'REFUSE %s: does not satisfy the Developer ID requirement\n' "$_cli" ;;
+            esac
             _bad=$((_bad + 1))
             continue
         fi

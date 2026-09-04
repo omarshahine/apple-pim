@@ -10,7 +10,7 @@
 # indistinguishable from correct unless the team pin actually works.
 #
 # The accept path is exercised through the two injectable seams
-# (pim_signature_valid, pim_designated_requirement) since producing a genuine
+# (pim_signature_trusted, pim_designated_requirement) since producing a genuine
 # Developer ID signature requires a certificate that is deliberately not kept
 # on developer machines. The requirement string fed through that seam is real
 # output captured from a binary signed with the production certificate.
@@ -46,11 +46,14 @@ check() {
     fi
 }
 
+ok()  { printf '  ok   %s\n' "$1"; PASS=$((PASS + 1)); }
+bad() { printf '  FAIL %s\n' "$1"; FAIL=$((FAIL + 1)); }
+
 # --------------------------------------------------------- accept path
 # Both seams overridden: signatures "valid", requirement is the real captured
 # Developer ID string with the per-binary identifier substituted in.
 (
-    pim_signature_valid() { return 0; }
+    pim_signature_trusted() { return 0; }
     . "$REPO_ROOT/scripts/verify-signed-clis.sh"
     pim_designated_requirement() {
         _name="$(basename "$1")"
@@ -65,7 +68,7 @@ check "correctly signed set is accepted" 0 "$rc" "$(head -2 "$TMPROOT/good.out" 
 
 # --------------------------------------------------------- missing binary
 (
-    pim_signature_valid() { return 0; }
+    pim_signature_trusted() { return 0; }
     . "$REPO_ROOT/scripts/verify-signed-clis.sh"
     pim_designated_requirement() {
         _name="$(basename "$1")"
@@ -79,7 +82,7 @@ check "an incomplete artifact is refused" 1 $?
 
 # --------------------------------------------- signature fails to verify
 (
-    pim_signature_valid() { return 1; }   # simulates a tampered/truncated download
+    pim_signature_trusted() { return 1; }  # chain does not satisfy the requirement
     . "$REPO_ROOT/scripts/verify-signed-clis.sh"
     pim_designated_requirement() {
         _name="$(basename "$1")"
@@ -127,7 +130,7 @@ fi
 # -- a genuinely valid, notarized, foreign-team Developer ID signature -- so
 # the most security-relevant refusal is covered on every platform.
 (
-    pim_signature_valid() { return 0; }
+    pim_signature_trusted() { return 0; }
     . "$REPO_ROOT/scripts/verify-signed-clis.sh"
     pim_designated_requirement() {
         printf '%s' 'identifier "org.openclaw.discrawl" and anchor apple generic and certificate 1[field.1.2.840.113635.100.6.2.6] /* exists */ and certificate leaf[field.1.2.840.113635.100.6.1.13] /* exists */ and certificate leaf[subject.OU] = FWJYW4S8P8'
@@ -146,7 +149,7 @@ fi
 
 # ------------------------------------------------------ wrong identifier
 (
-    pim_signature_valid() { return 0; }
+    pim_signature_trusted() { return 0; }
     . "$REPO_ROOT/scripts/verify-signed-clis.sh"
     # Right team, but every binary claims to be calendar-cli.
     pim_designated_requirement() {
@@ -157,6 +160,46 @@ fi
     pim_verify_dir "$d" false >/dev/null 2>&1
 )
 check "our team under the wrong identifier is refused" 1 $?
+
+# ---------------------------- forged designated requirement (the real one)
+# Regression test for a vulnerability this suite originally missed: the
+# verifier read the requirement a binary ADVERTISES and compared strings. That
+# text is chosen by whoever signs the binary, so a binary with no certificate
+# at all can claim our identifier and our team OU -- and `codesign --verify
+# --strict` still passes, because it only checks the seal against the bytes.
+#
+# This builds that exact artifact and asserts it is refused. No seams: the real
+# verifier, a real forged binary. macOS only, since it needs codesign.
+if command -v codesign >/dev/null 2>&1 && [[ -f "$ADHOC_SOURCE" ]]; then
+    d="$TMPROOT/forged"; mkdir -p "$d"
+    for c in calendar-cli reminder-cli contacts-cli mail-cli; do
+        cp "$ADHOC_SOURCE" "$d/$c"
+        codesign --force --sign - -i "com.omarshahine.apple-pim.$c" \
+            -r="designated => identifier \"com.omarshahine.apple-pim.$c\" and anchor apple generic and certificate leaf[subject.OU] = N9DRSTM2U6" \
+            "$d/$c" 2>/dev/null
+    done
+
+    # Precondition: the forgery must actually look convincing, or the test is
+    # vacuous. It must be ad-hoc, pass --verify, and advertise our team.
+    sig="$(codesign -dvvv "$d/calendar-cli" 2>&1 | grep -c '^Signature=adhoc')"
+    adv="$(codesign -d -r- "$d/calendar-cli" 2>&1 | grep -c 'N9DRSTM2U6')"
+    if [[ "$sig" == "1" ]] && [[ "$adv" == "1" ]] && codesign --verify --strict "$d/calendar-cli" 2>/dev/null; then
+        ok "forged fixture is convincing (ad-hoc, passes --verify, advertises our team)"
+    else
+        bad "could not build a convincing forged fixture; the next assertion is vacuous"
+    fi
+
+    /bin/bash "$REPO_ROOT/scripts/verify-signed-clis.sh" "$d" >"$TMPROOT/forged.out" 2>&1
+    rc=$?
+    check "a forged designated requirement is refused" 1 "$rc" "$(head -1 "$TMPROOT/forged.out")"
+    if grep -q "does not chain to Apple" "$TMPROOT/forged.out"; then
+        ok "refusal names the missing Apple anchor"
+    else
+        bad "refusal did not name the missing Apple anchor"
+    fi
+else
+    printf '  skip forged-requirement case (codesign or fixture unavailable)\n'
+fi
 
 printf '\n%d passed, %d failed\n' "$PASS" "$FAIL"
 [[ "$FAIL" -eq 0 ]]
