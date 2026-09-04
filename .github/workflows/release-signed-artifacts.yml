@@ -4,6 +4,17 @@ on:
   push:
     tags:
       - "v*"
+  # Dry run. Signs and notarizes for real, but creates no release and
+  # publishes nothing -- the artifacts are uploaded to the run instead.
+  # This exists so the pipeline can be proven without coupling its first
+  # execution to an irreversible npm/ClawHub publish, which a v* tag also
+  # triggers.
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version to stamp on the artifacts (defaults to plugin.json)"
+        required: false
+        type: string
 
 # Needed to create the draft release that carries the signed assets.
 permissions:
@@ -74,9 +85,22 @@ jobs:
       - name: Select latest Xcode
         run: sudo xcode-select -s /Applications/Xcode.app/Contents/Developer
 
-      - name: Resolve version from tag
+      - name: Resolve version
         id: meta
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+        run: |
+          if [ "${GITHUB_REF_TYPE:-}" = "tag" ]; then
+            V="${GITHUB_REF_NAME#v}"
+          elif [ -n "$INPUT_VERSION" ]; then
+            V="$INPUT_VERSION"
+          else
+            V="$(sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' \
+                 .claude-plugin/plugin.json | head -1)"
+          fi
+          [ -n "$V" ] || { echo "::error::could not resolve a version"; exit 1; }
+          echo "version=$V" >> "$GITHUB_OUTPUT"
+          echo "Resolved version: $V"
 
       # SwiftPM builds a universal binary directly; no lipo step is needed.
       # The package targets macOS 13, which still includes Intel.
@@ -209,9 +233,20 @@ jobs:
       - name: Checksums
         run: cd dist && shasum -a 256 ./*.zip > SHA256SUMS && cat SHA256SUMS
 
+      # Dry runs stop here: the proof is that signing, verification, and
+      # notarization all succeeded and produced inspectable artifacts.
+      - name: Upload artifacts (dry run)
+        if: github.ref_type != 'tag'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: signed-artifacts-${{ steps.meta.outputs.version }}
+          path: dist/
+          retention-days: 7
+
       # Draft, not published: release notes stay a deliberate human step, as
       # they are today. This only gives the signed assets somewhere to live.
       - name: Create draft release
+        if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
