@@ -51,7 +51,8 @@ while [[ $# -gt 0 ]]; do
     esac
 done
 
-if [[ ! -f "$SRC_DIR/Info.plist" || ! -f "$SRC_DIR/pim-helper" || ! -f "$SRC_DIR/launcher.c" ]]; then
+if [[ ! -f "$SRC_DIR/Info.plist" || ! -f "$SRC_DIR/pim-helper" || ! -f "$SRC_DIR/launcher.c" \
+    || ! -f "$SRC_DIR/PIMHelper.entitlements" ]]; then
     echo "build-helper-app: missing helper sources at $SRC_DIR" >&2
     exit 1
 fi
@@ -62,6 +63,13 @@ fi
 # is a binary, so they cannot be compared with cmp.
 LAUNCHER_STAMP_REL="Contents/Resources/.launcher-source-sha256"
 launcher_source_hash() { shasum -a 256 "$SRC_DIR/launcher.c" | awk '{print $1}'; }
+
+# Same problem for the entitlements: they are baked into the signature, not
+# copied into the bundle, so nothing in the installed tree reflects a change to
+# them. Without this stamp an entitlements edit would be silently skipped by the
+# freshness check on every machine that already has a bundle installed.
+ENTITLEMENTS_STAMP_REL="Contents/Resources/.entitlements-source-sha256"
+entitlements_source_hash() { shasum -a 256 "$SRC_DIR/PIMHelper.entitlements" | awk '{print $1}'; }
 
 # True when the installed bundle's signature matches the requested identity.
 # Ad-hoc shows as `Signature=adhoc` (no Authority line); a certificate shows
@@ -85,6 +93,7 @@ installed_identity_matches() {
 if [[ "$FORCE" != true && -d "$APP_PATH" ]] \
     && cmp -s "$SRC_DIR/Info.plist" "$APP_PATH/Contents/Info.plist" \
     && cmp -s "$SRC_DIR/pim-helper" "$APP_PATH/Contents/Resources/pim-helper.sh" \
+    && [[ "$(cat "$APP_PATH/$ENTITLEMENTS_STAMP_REL" 2>/dev/null)" == "$(entitlements_source_hash)" ]] \
     && [[ "$(cat "$APP_PATH/$LAUNCHER_STAMP_REL" 2>/dev/null)" == "$(launcher_source_hash)" ]] \
     && codesign --verify "$APP_PATH" >/dev/null 2>&1 \
     && { [[ -z "${APPLE_PIM_SIGN_IDENTITY:-}" ]] || installed_identity_matches; }; then
@@ -144,6 +153,7 @@ chmod +x "$APP_PATH/Contents/MacOS/pim-helper"
 # Record which launcher source built this binary so the freshness check above
 # can detect launcher.c changes on a later run.
 launcher_source_hash > "$APP_PATH/$LAUNCHER_STAMP_REL"
+entitlements_source_hash > "$APP_PATH/$ENTITLEMENTS_STAMP_REL"
 
 # Sign the bundle. --force overwrites any prior signature; --deep walks
 # contents (the bundle is shallow but this future-proofs nested files).
@@ -157,8 +167,31 @@ launcher_source_hash > "$APP_PATH/$LAUNCHER_STAMP_REL"
 if [[ "$SIGN_IDENTITY" == "-" ]]; then
     codesign --force --deep --sign - "$APP_PATH" >/dev/null
 else
+    # --entitlements is not optional here. Notarization requires the hardened
+    # runtime, and a hardened-runtime bundle without the matching entitlement is
+    # denied protected resources with no consent dialog at all -- the user is
+    # left with nothing to grant. v3.17.0 shipped exactly that for Contacts
+    # (issue #159); codesign --verify, spctl and notarization all pass on the
+    # broken bundle, so nothing upstream catches it.
     codesign --force --deep --timestamp --options runtime \
+        --entitlements "$SRC_DIR/PIMHelper.entitlements" \
         --sign "$SIGN_IDENTITY" "$APP_PATH" >/dev/null
+
+    # Assert rather than trust: the failure this guards against is invisible to
+    # every other check in the pipeline, and only shows up as a user unable to
+    # grant Contacts weeks later.
+    if codesign -dvvv "$APP_PATH" 2>&1 | grep -qE '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'; then
+        for required in \
+            com.apple.security.personal-information.addressbook \
+            com.apple.security.personal-information.calendars \
+            com.apple.security.automation.apple-events; do
+            if ! codesign -d --entitlements - --xml "$APP_PATH" 2>/dev/null | grep -q "$required"; then
+                echo "build-helper-app: hardened runtime is set but $required is missing" >&2
+                echo "build-helper-app: TCC would deny that resource with no prompt; refusing to ship" >&2
+                exit 1
+            fi
+        done
+    fi
 fi
 
 # Register with Launch Services so `open -a` resolves the bundle id. Skipped
