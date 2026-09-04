@@ -228,3 +228,12 @@ jobs:
                 - mcp-server/package.json:.version
                 - openclaw/package.json:.version
                 - openclaw/openclaw.plugin.json:.version
+
+      # The action above compares JSON paths, so it structurally cannot see the
+      # version baked into the committed mcp-server/dist/server.js bundle --
+      # which is the artifact that actually ships. bump-version.sh writes the
+      # JSON files first and rebuilds the bundle last, so a failed rebuild
+      # leaves them disagreeing while every JSON path still reads as correct.
+      # scripts/check-versions.sh compares the bundle too.
+      - name: Built bundle agrees with the manifests
+        run: bash scripts/check-versions.sh
