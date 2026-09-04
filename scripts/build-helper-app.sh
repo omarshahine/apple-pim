@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build and install PIMHelper.app.
+# Build and install the Apple PIM Helper.app TCC bridge.
 #
 # Why this exists: macOS TCC attributes Calendar / Reminders / Contacts
 # permissions to the responsible process (the LaunchServices-launched app),
@@ -27,10 +27,72 @@ set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SRC_DIR="$REPO_ROOT/helper"
-APP_PATH="${APPLE_PIM_HELPER_APP:-$HOME/Applications/PIMHelper.app}"
+
+# APPLE_PIM_HELPER_APP_NAME / _LEGACY_NAME. Sourced rather than duplicated so
+# the installer, the doctor, and the release workflow can never disagree about
+# what the bundle is called.
+# shellcheck source=lib/signing-identities.sh
+. "$REPO_ROOT/scripts/lib/signing-identities.sh"
+
+APP_PATH="${APPLE_PIM_HELPER_APP:-$HOME/Applications/$APPLE_PIM_HELPER_APP_NAME}"
 SIGN_IDENTITY="${APPLE_PIM_SIGN_IDENTITY:--}"
 FORCE=false
 STAGE_DIR=""
+LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
+
+legacy_bundle_path() { printf '%s/%s' "$(dirname "$APP_PATH")" "$APPLE_PIM_HELPER_APP_LEGACY_NAME"; }
+
+# Move a pre-rename bundle to the current name instead of rebuilding it.
+#
+# The bundle was renamed (PIMHelper.app -> Apple PIM Helper.app) purely so the
+# TCC prompt and the Privacy pane read as English: LaunchServices takes that
+# label from the bundle's FILENAME and ignores a CFBundleDisplayName that
+# disagrees with it. Nothing about the bundle's IDENTITY changes, and a rename
+# is the migration that proves it — `mv` leaves the code signature byte-identical
+# (same CDHash), and the designated requirement TCC recorded names only the
+# identifier, the Apple anchor, and the team OU, never a path. So an existing
+# Calendar / Reminders / Contacts grant survives this.
+#
+# Rebuilding instead would NOT be safe: the new path has no bundle, so the
+# freshness check below would miss and sign a fresh one. On the default ad-hoc
+# identity that yields a new CDHash and silently drops every grant, and it would
+# downgrade a Developer ID install (the shipped one) to ad-hoc in the process.
+migrate_legacy_bundle() {
+    [[ -z "$STAGE_DIR" ]] || return 0
+    local legacy
+    legacy="$(legacy_bundle_path)"
+    [[ "$legacy" != "$APP_PATH" && -d "$legacy" && ! -e "$APP_PATH" ]] || return 0
+
+    echo "Renaming $APPLE_PIM_HELPER_APP_LEGACY_NAME -> $APPLE_PIM_HELPER_APP_NAME (signature and TCC grants are preserved)"
+    mkdir -p "$(dirname "$APP_PATH")"
+    mv "$legacy" "$APP_PATH"
+    if [[ -x "$LSREGISTER" ]]; then
+        "$LSREGISTER" -u "$legacy" >/dev/null 2>&1 || true
+        "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
+    fi
+}
+
+# Sweep a legacy bundle that outlived the migration — the case where both names
+# exist at once, so migrate_legacy_bundle declined to move anything. Launch
+# Services and the Privacy pane key their ROW on the bundle on disk, so leaving
+# the old one behind shows the user two entries, one of which is dead, and the
+# dead one is the name they already recognize.
+remove_legacy_bundle() {
+    [[ -z "$STAGE_DIR" ]] || return 0
+    local legacy
+    legacy="$(legacy_bundle_path)"
+    [[ "$legacy" != "$APP_PATH" && -d "$legacy" ]] || return 0
+
+    echo "Removing superseded $APPLE_PIM_HELPER_APP_LEGACY_NAME at: $legacy"
+    if [[ -x "$LSREGISTER" ]]; then
+        "$LSREGISTER" -u "$legacy" >/dev/null 2>&1 || true
+    fi
+    if command -v trash >/dev/null 2>&1; then
+        trash "$legacy" 2>/dev/null || rm -rf "$legacy"
+    else
+        rm -rf "$legacy"
+    fi
+}
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -43,7 +105,7 @@ while [[ $# -gt 0 ]]; do
         # check would happily no-op a release build.
         --stage)
             STAGE_DIR="$2"
-            APP_PATH="$2/PIMHelper.app"
+            APP_PATH="$2/$APPLE_PIM_HELPER_APP_NAME"
             FORCE=true
             shift 2
             ;;
@@ -55,6 +117,10 @@ if [[ ! -f "$SRC_DIR/Info.plist" || ! -f "$SRC_DIR/pim-helper" || ! -f "$SRC_DIR
     echo "build-helper-app: missing helper sources at $SRC_DIR" >&2
     exit 1
 fi
+
+# Must run before the freshness check, which is what makes the migration a
+# no-op rename rather than a re-sign.
+migrate_legacy_bundle
 
 # Hash of the launcher source that produced the installed binary. Written into
 # the bundle at build time so the freshness check below can tell whether the
@@ -88,7 +154,8 @@ if [[ "$FORCE" != true && -d "$APP_PATH" ]] \
     && [[ "$(cat "$APP_PATH/$LAUNCHER_STAMP_REL" 2>/dev/null)" == "$(launcher_source_hash)" ]] \
     && codesign --verify "$APP_PATH" >/dev/null 2>&1 \
     && { [[ -z "${APPLE_PIM_SIGN_IDENTITY:-}" ]] || installed_identity_matches; }; then
-    echo "PIMHelper.app is up to date at: $APP_PATH (leaving untouched to preserve TCC grants)"
+    echo "$(basename "$APP_PATH") is up to date at: $APP_PATH (leaving untouched to preserve TCC grants)"
+    remove_legacy_bundle
     exit 0
 fi
 
@@ -102,7 +169,7 @@ if ! command -v cc >/dev/null 2>&1; then
 fi
 
 if [[ -d "$APP_PATH" ]]; then
-    echo "warning: replacing PIMHelper.app re-signs it — macOS will drop existing" >&2
+    echo "warning: replacing $(basename "$APP_PATH") re-signs it — macOS will drop existing" >&2
     echo "warning: Calendar/Reminders/Contacts grants and re-prompt on next use." >&2
 fi
 
@@ -164,10 +231,11 @@ fi
 # Register with Launch Services so `open -a` resolves the bundle id. Skipped
 # when staging: a release artifact must not be registered on the build runner,
 # and registration is the installing machine's job.
-LSREGISTER="/System/Library/Frameworks/CoreServices.framework/Versions/A/Frameworks/LaunchServices.framework/Versions/A/Support/lsregister"
 if [[ -z "$STAGE_DIR" && -x "$LSREGISTER" ]]; then
     "$LSREGISTER" -f "$APP_PATH" >/dev/null 2>&1 || true
 fi
 
-echo "Installed PIMHelper.app at: $APP_PATH"
+remove_legacy_bundle
+
+echo "Installed $(basename "$APP_PATH") at: $APP_PATH"
 codesign -dvvv "$APP_PATH" 2>&1 | grep -E '^(Identifier|Format|Signature|Info\.plist|Sealed Resources)' | sed 's/^/  /'
