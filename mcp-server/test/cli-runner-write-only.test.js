@@ -11,7 +11,7 @@ describe("Calendar helper routing", () => {
     if (binDir) rmSync(binDir, { recursive: true, force: true });
   });
 
-  it("routes writeOnly calendar access through the helper without a direct read", async () => {
+  it.each(["writeOnly", "restricted", "unknown", "futureAuthorizationState"])("routes %s calendar access through the helper without a direct read", async (authorization) => {
     binDir = mkdtempSync(join(tmpdir(), "apple-pim-write-only-"));
     const calendarCLI = join(binDir, "calendar-cli");
     writeFileSync(calendarCLI, "#!/bin/sh\n");
@@ -26,7 +26,7 @@ describe("Calendar helper routing", () => {
         if (args[0] !== "auth-status") {
           throw new Error("calendar read attempted directly");
         }
-        return { authorization: "writeOnly" };
+        return { authorization };
       },
       runViaHelperImpl: async (cli, args) => {
         helperCalls.push({ cli, args });
@@ -38,4 +38,23 @@ describe("Calendar helper routing", () => {
     expect(directCalls).toEqual([{ cliPath: calendarCLI, args: ["auth-status"] }]);
     expect(helperCalls).toEqual([{ cli: "calendar-cli", args: ["events"] }]);
   });
+
+  it.each(["authorized", "fullAccess"])("keeps %s calendar reads direct", async (authorization) => {
+    binDir = mkdtempSync(join(tmpdir(), "apple-pim-full-access-"));
+    const calendarCLI = join(binDir, "calendar-cli");
+    writeFileSync(calendarCLI, "#!/bin/sh\n");
+    chmodSync(calendarCLI, 0o755);
+    const directCalls = [];
+    const { runCLI } = createCLIRunner(binDir, {}, {
+      helperExists: () => true,
+      runDirectImpl: async (cliPath, args) => {
+        directCalls.push(args);
+        return args[0] === "auth-status" ? { authorization } : { events: [] };
+      },
+      runViaHelperImpl: async () => { throw new Error("authorized read attempted through helper"); },
+    });
+    await expect(runCLI("calendar-cli", ["events"])).resolves.toEqual({ events: [] });
+    expect(directCalls).toEqual([["auth-status"], ["events"]]);
+  });
+
 });

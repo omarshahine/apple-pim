@@ -72573,7 +72573,7 @@ ${describeBinDirProblem(probeSwiftBinDirs([binDir]))}`;
       if (auth === "notDetermined") {
         return { route: "helper", mayPrompt: true };
       }
-      if (auth === "denied" || auth === "writeOnly") {
+      if (auth !== "authorized" && auth !== "fullAccess") {
         return { route: "helper", mayPrompt: false };
       }
       return { route: "direct", mayPrompt: false };
