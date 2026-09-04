@@ -126,17 +126,30 @@ jobs:
       # SwiftPM builds a universal binary directly; no lipo step is needed.
       # The package targets macOS 13, which still includes Intel.
       - name: Build universal Swift CLIs
+        id: build
         working-directory: swift
         run: |
           swift build -c release --arch arm64 --arch x86_64
+
+          # Ask SwiftPM where the products landed rather than assuming
+          # .build/release. That path is a convenience symlink which exists on
+          # a developer machine that has done a plain `swift build`, but is
+          # absent on a clean checkout doing only a multi-arch build -- which
+          # is exactly the CI case, and how this step first failed.
+          BIN="$(swift build -c release --arch arm64 --arch x86_64 --show-bin-path)"
+          [ -d "$BIN" ] || { echo "::error::products directory not found: $BIN"; exit 1; }
+          echo "Products: $BIN"
+
           for c in calendar-cli reminder-cli contacts-cli mail-cli; do
-            archs="$(lipo -archs ".build/release/$c")"
+            [ -f "$BIN/$c" ] || { echo "::error::$c missing from $BIN"; exit 1; }
+            archs="$(lipo -archs "$BIN/$c")"
             echo "$c: $archs"
             case "$archs" in
               *arm64*x86_64*|*x86_64*arm64*) ;;
               *) echo "::error::$c is not universal ($archs)"; exit 1 ;;
             esac
           done
+          echo "bin=$BIN" >> "$GITHUB_OUTPUT"
 
       - name: Import signing certificate
         env:
@@ -171,7 +184,7 @@ jobs:
           mkdir -p "$STAGE/clis"
           for c in $APPLE_PIM_SIGNED_CLIS; do
             id="$(pim_signing_identifier "$c")"
-            cp "swift/.build/release/$c" "$STAGE/clis/$c"
+            cp "${{ steps.build.outputs.bin }}/$c" "$STAGE/clis/$c"
             # --options runtime and --timestamp are both notarization
             # prerequisites; -i pins the permanent identifier that TCC records.
             codesign --force --timestamp --options runtime \
