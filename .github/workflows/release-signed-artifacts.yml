@@ -149,6 +149,24 @@ jobs:
           scripts/verify-signed-clis.sh "$STAGE/clis" --require-universal
           codesign --verify --strict --deep "$STAGE/helper/PIMHelper.app"
 
+          # Notarization rejects anything without the hardened runtime, and it
+          # does so several minutes later at the submit step with an opaque
+          # error. Assert the flag here, where the failure names itself.
+          for target in "$STAGE/helper/PIMHelper.app" $APPLE_PIM_SIGNED_CLIS; do
+            case "$target" in
+              *PIMHelper.app) path="$target" ;;
+              *)              path="$STAGE/clis/$target" ;;
+            esac
+            if ! codesign -dvvv "$path" 2>&1 | grep -qE '^CodeDirectory .*flags=0x[0-9a-f]+\([^)]*runtime'; then
+              echo "::error::$path is not signed with the hardened runtime; notarization would reject it"
+              codesign -dvvv "$path" 2>&1 | grep '^CodeDirectory' || true
+              exit 1
+            fi
+          done
+          echo "Hardened runtime present on the helper and all CLIs."
+        env:
+          APPLE_PIM_SIGNED_CLIS: calendar-cli reminder-cli contacts-cli mail-cli
+
       - name: Package
         id: pkg
         run: |

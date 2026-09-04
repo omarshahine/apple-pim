@@ -57,6 +57,9 @@ jobs:
       - name: Install-time verifier
         run: bash scripts/test/verify-signed-clis.test.sh
 
+      - name: Install atomicity
+        run: bash scripts/test/fetch-signed-clis.test.sh
+
   mcp-server-tests:
     name: MCP Server (Node)
     needs: changes

@@ -147,7 +147,19 @@ launcher_source_hash > "$APP_PATH/$LAUNCHER_STAMP_REL"
 
 # Sign the bundle. --force overwrites any prior signature; --deep walks
 # contents (the bundle is shallow but this future-proofs nested files).
-codesign --force --deep --sign "$SIGN_IDENTITY" "$APP_PATH" >/dev/null
+#
+# When signing with a real certificate, the hardened runtime and a secure
+# timestamp are added: both are hard prerequisites for Developer ID
+# notarization, and without them `notarytool submit` rejects the bundle and
+# the whole release fails. They are deliberately NOT applied to the ad-hoc
+# path, which is never notarized and where a timestamp server round-trip
+# would just make a local install slower and network-dependent.
+if [[ "$SIGN_IDENTITY" == "-" ]]; then
+    codesign --force --deep --sign - "$APP_PATH" >/dev/null
+else
+    codesign --force --deep --timestamp --options runtime \
+        --sign "$SIGN_IDENTITY" "$APP_PATH" >/dev/null
+fi
 
 # Register with Launch Services so `open -a` resolves the bundle id. Skipped
 # when staging: a release artifact must not be registered on the build runner,

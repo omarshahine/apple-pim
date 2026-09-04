@@ -26,11 +26,65 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 # shellcheck source=check-signing.sh
 . "$SCRIPT_DIR/check-signing.sh"
 
-INSTALL_DIR="${1:-$HOME/.local/bin}"
-REPO_SLUG="${APPLE_PIM_RELEASE_REPO:-omarshahine/apple-pim}"
-
 note() { printf '  %s\n' "$1"; }
 give_up() { note "$1"; note "Falling back to building from source."; exit 1; }
+
+# Install every verified CLI from SRC into DEST, or change nothing.
+#
+# Staged, not in-place. The obvious loop -- remove the old binary, copy the new
+# one -- turns a failed copy (no disk space, no write permission, an I/O
+# error) into a machine with no calendar-cli at all. Worse, if the caller does
+# not check the status, setup.sh skips its build-from-source fallback and
+# reports success over a half-installed set.
+#
+# So: copy everything into place under temporary names first, and only once
+# all of them are staged, move them over the originals. `mv` within one
+# directory is a rename, so each replacement is atomic and the failure-prone
+# work has already happened by then.
+#
+# Returns non-zero on any failure, having cleaned up its staged files.
+pim_install_verified() {
+    _src="$1"
+    _dest="$2"
+    _staged=""
+
+    mkdir -p "$_dest" || { note "Cannot create $_dest"; return 1; }
+
+    for _cli in $APPLE_PIM_SIGNED_CLIS; do
+        _incoming="$_dest/.$_cli.incoming.$$"
+        if ! cp -f "$_src/$_cli" "$_incoming" 2>/dev/null; then
+            note "Failed to stage $_cli into $_dest (permissions or disk space?)"
+            for _s in $_staged; do /bin/rm -f "$_s"; done
+            return 1
+        fi
+        if ! chmod +x "$_incoming" 2>/dev/null; then
+            note "Failed to make $_cli executable"
+            /bin/rm -f "$_incoming"
+            for _s in $_staged; do /bin/rm -f "$_s"; done
+            return 1
+        fi
+        _staged="$_staged $_incoming"
+    done
+
+    for _cli in $APPLE_PIM_SIGNED_CLIS; do
+        if ! mv -f "$_dest/.$_cli.incoming.$$" "$_dest/$_cli" 2>/dev/null; then
+            note "Failed to move $_cli into place."
+            for _s in $_staged; do /bin/rm -f "$_s"; done
+            return 1
+        fi
+        note "Installed signed $_cli"
+    done
+
+    return 0
+}
+
+case "${BASH_SOURCE[0]}" in
+    "$0") ;;
+    *)    return 0 2>/dev/null || true ;;
+esac
+
+INSTALL_DIR="${1:-$HOME/.local/bin}"
+REPO_SLUG="${APPLE_PIM_RELEASE_REPO:-omarshahine/apple-pim}"
 
 # The plugin manifest is the canonical version source (scripts/check-versions.sh
 # enforces that all five agree, so any of them would do).
@@ -95,13 +149,11 @@ for cli in $APPLE_PIM_SIGNED_CLIS; do
     fi
 done
 
-mkdir -p "$INSTALL_DIR"
-for cli in $APPLE_PIM_SIGNED_CLIS; do
-    /bin/rm -f "$INSTALL_DIR/$cli"
-    cp -f "$TMP/extract/$cli" "$INSTALL_DIR/$cli"
-    chmod +x "$INSTALL_DIR/$cli"
-    note "Installed signed $cli"
-done
+if ! pim_install_verified "$TMP/extract" "$INSTALL_DIR"; then
+    note "No files were changed."
+    note "Falling back to building from source."
+    exit 1
+fi
 
 if [[ "$had_adhoc" == true ]]; then
     echo ""
