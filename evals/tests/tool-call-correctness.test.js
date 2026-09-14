@@ -10,6 +10,7 @@ import { handleReminder } from "../../lib/handlers/reminder.js";
 import { handleContact } from "../../lib/handlers/contact.js";
 import { handleMail } from "../../lib/handlers/mail.js";
 import { buildDryRunResponse } from "../../lib/dry-run.js";
+import { relativeDateString } from "../../lib/cli-runner.js";
 import {
   buildCalendarCreateArgs,
   buildCalendarUpdateArgs,
@@ -141,6 +142,38 @@ describe("Category 1: Tool Call Correctness", () => {
       const fromIdx = callArgs.indexOf("--from");
       // Should be a YYYY-MM-DD date string
       expect(callArgs[fromIdx + 1]).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    });
+
+    it("prefers explicit date bounds over synthetic zero relative defaults", async () => {
+      const mockCLI = createMockCLI({ "calendar-cli:events": { events: [] } });
+      await handleCalendar({
+        action: "events",
+        from: "2026-09-13T00:00:00-07:00",
+        to: "2026-09-21T00:00:00-07:00",
+        lastDays: 0,
+        nextDays: 0,
+      }, mockCLI);
+
+      expect(mockCLI.mock.calls[0][1]).toEqual([
+        "events",
+        "--from", "2026-09-13T00:00:00-07:00",
+        "--to", "2026-09-21T00:00:00-07:00",
+      ]);
+    });
+
+    it("resolves relative dates in the host timezone rather than UTC", () => {
+      const previousTZ = process.env.TZ;
+      process.env.TZ = "America/Los_Angeles";
+      vi.useFakeTimers();
+      vi.setSystemTime(new Date("2026-09-14T00:30:00Z"));
+
+      try {
+        expect(relativeDateString(0)).toBe("2026-09-13");
+      } finally {
+        vi.useRealTimers();
+        if (previousTZ === undefined) delete process.env.TZ;
+        else process.env.TZ = previousTZ;
+      }
     });
   });
 
