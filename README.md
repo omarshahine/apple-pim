@@ -581,6 +581,12 @@ mail-cli secrets set smtp.icloud.password --store openclaw
 | `mail` / `apple_pim_mail` | `accounts`, `mailboxes`, `messages`, `get`, `search`, `send`, `reply`, `save_attachment`, `update`, `move`, `delete`, `batch_update`, `batch_delete`, `auth_check` | Mail.app via JXA/AppleScript |
 | `apple-pim` / `apple_pim_system` | `status`, `authorize`, `config_show`, `config_init` | Authorization & configuration |
 
+The system `status` action returns each domain's OS permission state in
+`status.<domain>.permissionStatus`. Use this field when checking access: hosts
+may redact the legacy `authorization` field as a credential. That legacy field
+remains available for existing consumers. `unavailable` (for example, Mail.app
+closed) and `error` do not confirm authorized access.
+
 ### Recurrence Rules
 
 ```json
