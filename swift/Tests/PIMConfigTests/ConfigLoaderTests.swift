@@ -292,3 +292,48 @@ struct ConfigLoaderEnvTests {
         #expect(result == nil)
     }
 }
+
+@Suite("ConfigLoader - fail closed")
+struct ConfigLoaderFailClosedTests {
+    @Test("Only absent configuration permits defaults")
+    func missingFile() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pim-missing-\(UUID().uuidString)/config.json")
+        let result: PIMConfiguration? = try ConfigLoader.readJSON(from: path)
+        #expect(result == nil)
+    }
+
+    @Test("Malformed and wrong-type policy cannot become all-access defaults",
+          arguments: ["{", "[]", "{\"mail\":{\"enabled\":\"false\"}}"])
+    func malformedFile(content: String) throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pim-invalid-\(UUID().uuidString).json")
+        try Data(content.utf8).write(to: path)
+        defer { try? FileManager.default.removeItem(at: path) }
+        #expect(throws: ConfigError.self) {
+            let _: PIMConfiguration? = try ConfigLoader.readJSON(from: path)
+        }
+    }
+
+    @Test("Unreadable configuration is not treated as missing")
+    func directoryInsteadOfFile() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pim-directory-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: path, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: path) }
+        #expect(throws: ConfigError.self) {
+            let _: PIMConfiguration? = try ConfigLoader.readJSON(from: path)
+        }
+    }
+
+    @Test("Valid restrictions survive loading")
+    func validFile() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pim-valid-\(UUID().uuidString).json")
+        let restricted = PIMConfiguration(mail: DomainConfig(enabled: false))
+        try JSONEncoder().encode(restricted).write(to: path)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let config: PIMConfiguration? = try ConfigLoader.readJSON(from: path)
+        #expect(config?.mail.enabled == false)
+    }
+}

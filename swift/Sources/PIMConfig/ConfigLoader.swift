@@ -79,12 +79,12 @@ public struct ConfigLoader {
         return merge(base: base, profile: override)
     }
 
-    /// Load just the base config (no profile). Returns all-access defaults if file is missing or invalid.
+    /// Load just the base config (no profile). Returns all-access defaults only if the file is missing; invalid files fail closed.
     public static func loadBaseConfig() -> PIMConfiguration {
         return loadJSON(from: defaultConfigPath) ?? PIMConfiguration()
     }
 
-    /// Load a named profile override. Returns nil if file is missing or invalid.
+    /// Load a named profile override. Returns nil if the file is missing; invalid files fail closed.
     public static func loadProfile(named name: String) -> PIMProfileOverride? {
         return loadJSON(from: profilePath(for: name))
     }
@@ -130,16 +130,32 @@ public struct ConfigLoader {
     // MARK: - Private
 
     private static func loadJSON<T: Decodable>(from url: URL) -> T? {
-        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
-
         do {
-            let data = try Data(contentsOf: url)
-            return try JSONDecoder().decode(T.self, from: data)
+            return try readJSON(from: url)
         } catch {
             FileHandle.standardError.write(
-                Data("[apple-pim] Warning: failed to parse \(url.path): \(error.localizedDescription). Using defaults.\n".utf8)
+                Data("[apple-pim] Error: \(error). Refusing to fall back to defaults.\n".utf8)
             )
+            Foundation.exit(1)
+        }
+    }
+
+    /// Missing files retain first-run defaults. Existing unreadable or invalid
+    /// policy must never widen access. Kept throwing for permission-free tests.
+    static func readJSON<T: Decodable>(from url: URL) throws -> T? {
+        let data: Data
+        do {
+            data = try Data(contentsOf: url)
+        } catch let error as NSError where error.domain == NSCocoaErrorDomain
+            && error.code == NSFileReadNoSuchFileError {
             return nil
+        } catch {
+            throw ConfigError.malformedConfig(path: url.path, underlying: error)
+        }
+        do {
+            return try JSONDecoder().decode(T.self, from: data)
+        } catch {
+            throw ConfigError.malformedConfig(path: url.path, underlying: error)
         }
     }
 }
