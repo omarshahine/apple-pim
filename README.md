@@ -11,7 +11,7 @@ Native macOS integration for Calendar, Reminders, Contacts, and Mail using Event
 
 ## Features
 
-- **Calendar Management**: List calendars, create/read/update/delete events, search by date/title, attendee support (add/replace attendees via CalDAV invitation emails)
+- **Calendar Management**: List calendars, create/read/update/delete events, search by date/title, attendee support (add/replace attendees via CalDAV invitation emails), event availability including subscribed calendars. See [Calendar store read path](#calendar-store-read-path---engine-sqlite)
 - **Reminder Management**: List reminder lists, create/complete/update/delete reminders, search
 - **Contact Management**: List groups, create/read/update/delete contacts, search by name/email/phone, birthday support (with or without year)
 - **Mail Integration**: List accounts/mailboxes, read/search/send/reply/move/delete messages, update flags, attachment support (metadata, save-to-disk, send/reply with attachments), verify sender authentication
@@ -114,7 +114,8 @@ the missing grant as an error. `update`, `move`, `delete`, `batch-update` and
 `batch-delete` consult that same index for the message's row-id before
 writing — the write itself always goes through Mail.app either way — so the
 grant governs their lookup on the same terms, with Mail.app's
-mailbox-by-mailbox scan as the `auto` fallback.
+mailbox-by-mailbox scan as the `auto` fallback. Calendar uses the same grant to
+read subscribed calendars' availability (see "Calendar store read path" below).
 
 ### Development Installation
 
@@ -569,6 +570,36 @@ mail-cli secrets set smtp.icloud.password --store openclaw
 | **App-specific password required for iCloud** | The regular Apple ID password will return `535 5.7.8 Authentication failed`. Generate one at [appleid.apple.com](https://appleid.apple.com) → Sign-In and Security → App-Specific Passwords. |
 | **`--from` must match the authenticated account** | iCloud (and most relays) will silently rewrite or reject messages whose `From:` doesn't match the authenticating user. |
 
+### Calendar store read path (`--engine sqlite`)
+
+Every event includes `availability`, EventKit's `EKEventAvailability`: `busy`,
+`free`, `tentative`, `unavailable`, or `notSupported`. EventKit returns
+`notSupported` for a subscribed (ICS) calendar that does not support
+availability, even when the feed publishes a busy status. For those events,
+`events`, `get` and `search` default to `--engine auto`: they read the value
+from the local Calendar store
+(`~/Library/Group Containers/group.com.apple.calendar/Calendar.sqlitedb`) — the
+feed's `X-MICROSOFT-CDO-BUSYSTATUS` or `X-MICROSOFT-MSNCALENDAR-BUSYSTATUS`
+(`FREE`, `TENTATIVE`, `BUSY`, `OOF` map to `free`, `tentative`, `busy`,
+`unavailable`), else the store's own availability value, else `notSupported`.
+EventKit still finds and expands every event.
+
+- The store is only ever opened **read-only** (`SQLITE_OPEN_READONLY` +
+  `PRAGMA query_only`).
+- Requires **Full Disk Access** for the invoking process (Terminal or the MCP
+  host) — check `calendar-cli auth-status` (`calendarStore.readable`). On a host
+  without it, `events`, `get` and `search` use Apple PIM Helper when it is
+  installed and has both Calendar access and Full Disk Access; every other
+  command keeps its usual route.
+- The helper's answer is kept for the life of the MCP server or OpenClaw process,
+  so a Full Disk Access grant made to the helper later takes effect after a
+  restart; the host's own check runs once per MCP server process and on every
+  OpenClaw tool call.
+- Under `auto`, an unreadable store or an unexpected layout keeps EventKit's
+  value; `--engine sqlite` reports it as an error.
+- Force a specific path with `--engine sqlite` or `--engine eventkit`; responses
+  that read the store include `"engine": "sqlite"`. The flag is CLI-only.
+
 ## Tools Reference
 
 5 domain-level tools, each with an `action` parameter:
@@ -674,6 +705,7 @@ Check System Settings > Privacy & Security:
 - **Calendars**: Ensure Terminal/Claude Code has access
 - **Reminders**: Ensure Terminal/Claude Code has access
 - **Contacts**: Ensure Terminal/Claude Code has access
+- **Full Disk Access** (subscribed calendars' availability): grant it to Terminal/Claude Code, or to Apple PIM Helper.app; a grant made to the helper is seen after the MCP server or gateway restarts
 
 You may need to restart your app after granting permissions.
 

@@ -21,11 +21,13 @@ Use `calendar` with action `events` to list events within a date range:
 - Default: today through next 7 days
 - Parameters: `calendar` (filter by calendar), `from` (start date), `to` (end date), `limit`
 - Convenience parameters: `lastDays` (N days ago), `nextDays` (N days ahead)
+- Each event includes `availability`: `busy`, `free`, `tentative`, `unavailable`, or `notSupported`
+- Subscribed calendars' availability is read from the local Calendar store, which needs Full Disk Access
 
 ### Get Event
 Use `calendar` with action `get` to get full details for a specific event:
 - Required: `id` (event ID)
-- Returns complete event with recurrence rules, alarms, attendees
+- Returns complete event with recurrence rules, alarms, attendees, availability
 
 ### Search Events
 Use `calendar` with action `search` to find events by title, notes, or location:

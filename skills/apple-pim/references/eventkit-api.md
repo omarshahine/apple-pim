@@ -18,6 +18,17 @@ Events are represented by `EKEvent` with these key properties:
 | `recurrenceRules` | [EKRecurrenceRule]? | Repeat rules |
 | `alarms` | [EKAlarm]? | Reminders/alerts |
 | `attendees` | [EKParticipant]? | Invitees (read-only) |
+| `availability` | EKEventAvailability | busy, free, tentative, unavailable, notSupported |
+
+## Availability engines
+
+`events`, `get` and `search` default to `--engine auto`: for an event in a subscribed
+calendar that EventKit reports as `notSupported`, they read the availability macOS stored in
+the local Calendar store (opened read-only), which requires Full Disk Access. When the store
+isn't readable, the command keeps EventKit's value. Check `auth-status` →
+`calendarStore.readable` to see whether this process can read the store; a response that
+read the store carries `"engine": "sqlite"`. `--engine sqlite` makes an unreadable store an
+error; `--engine eventkit` skips the store. Writes never read the store.
 
 ## Reminders
 
@@ -64,6 +75,7 @@ Results are sorted by due date (earliest first), with undated items last.
 | `type` | EKCalendarType | local, caldav, exchange, etc. |
 | `source` | EKSource | Account (iCloud, Exchange, etc.) |
 | `allowsContentModifications` | Bool | Read-only check |
+| `isSubscribed` | Bool | Subscribed (ICS) calendar |
 | `cgColor` | CGColor? | Calendar color |
 
 ## Recurrence Rules

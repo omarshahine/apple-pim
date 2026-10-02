@@ -45,6 +45,7 @@ Each PIM domain requires separate macOS authorization:
 | Contacts | Contacts | Privacy & Security > Contacts |
 | Mail (mutations) | Automation (JXA) | Privacy & Security > Automation |
 | Mail (fast reads) | Full Disk Access | Privacy & Security > Full Disk Access |
+| Calendars (subscribed availability) | Full Disk Access | Privacy & Security > Full Disk Access |
 
 ### Authorization States
 
@@ -138,6 +139,7 @@ Override path with `trustedSenders` parameter: `apple_pim_mail({ action: "auth_c
 2. **Preserve recurrence rules** when updating recurring events
 3. **Handle `.thisEvent` vs `.futureEvents`** span for recurring event edits
 4. **Use `batch_create`** when creating multiple events for efficiency
+5. **Read `availability`** for free/busy: `busy`, `free`, `tentative`, `unavailable`, or `notSupported`
 
 ### EKSpan for Recurring Events
 
@@ -200,6 +202,7 @@ Paths are normalized via `realpath` before checking, so symlinks and `..` traver
 - Use `apple_pim_system` with action `status` to check all domains
 - Use `apple_pim_system` with action `authorize` to trigger prompts
 - Check System Settings > Privacy & Security
+- Subscribed calendars' `availability` stays `notSupported` without Full Disk Access; after granting it to the helper, restart the gateway
 
 ### Binary Not Found
 - Run `./setup.sh --install` to build and install CLIs to `~/.local/bin/`

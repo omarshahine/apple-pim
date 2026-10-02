@@ -54,6 +54,50 @@ describe("Category 2: Response Interpretation", () => {
     });
   });
 
+  describe("event availability", () => {
+    // calendar-cli emits EventKit's availability on every event (busy, free, tentative,
+    // unavailable, notSupported) and adds `engine: "sqlite"` when it read a subscribed
+    // calendar's availability from the local Calendar store. Agents decide conflicts from it.
+    const runEvents = async (args = {}) => {
+      const fixture = loadFixture("calendar", "events-availability");
+      const mockCLI = createMockCLI({ "calendar-cli:events": fixture });
+      const wrapped = withAgentDX("calendar", handleCalendar);
+      return { fixture, result: await wrapped({ action: "events", ...args }, mockCLI) };
+    };
+
+    it("covers every value the CLI emits", () => {
+      const fixture = loadFixture("calendar", "events-availability");
+      expect(new Set(fixture.events.map((e) => e.availability))).toEqual(
+        new Set(["busy", "free", "tentative", "unavailable", "notSupported"]),
+      );
+    });
+
+    it("reaches the agent unchanged through the calendar tool layer", async () => {
+      const { fixture, result } = await runEvents();
+      expect(result.events.map((e) => e.availability)).toEqual(
+        fixture.events.map((e) => e.availability),
+      );
+      expect(result.engine).toBe("sqlite");
+    });
+
+    it("survives field selection", async () => {
+      const { result } = await runEvents({ fields: ["title", "availability"] });
+      for (const event of result.events) {
+        // Field selection always keeps `id`.
+        expect(Object.keys(event).sort()).toEqual(["availability", "id", "title"]);
+      }
+    });
+
+    it("is not datamarked as untrusted content", () => {
+      const fixture = loadFixture("calendar", "events-availability");
+      const marked = markToolResult(fixture, "calendar");
+      expect(marked.events.map((e) => e.availability)).toEqual(
+        fixture.events.map((e) => e.availability),
+      );
+      expect(marked.events[0].title).toMatch(/\[UNTRUSTED_CALENDAR_DATA_/);
+    });
+  });
+
   describe("batch partial failure structure", () => {
     it("has both created and errors arrays", () => {
       const fixture = loadFixture("calendar", "batch-partial-failure");

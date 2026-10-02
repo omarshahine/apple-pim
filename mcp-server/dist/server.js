@@ -72357,6 +72357,7 @@ var HELPER_ELIGIBLE_CLIS = /* @__PURE__ */ new Set([
   "contacts-cli",
   "mail-cli"
 ]);
+var CALENDAR_STORE_READS = /* @__PURE__ */ new Set(["events", "get", "search"]);
 var HELPER_APP_NAME = "Apple PIM Helper.app";
 var LEGACY_HELPER_APP_NAME = "PIMHelper.app";
 function helperAppPath() {
@@ -72432,6 +72433,7 @@ async function reapStaleHelpers() {
   return reaped;
 }
 var helperChain = Promise.resolve();
+var helperReadsCalendarStore = /* @__PURE__ */ new Map();
 function runViaHelper(cli, args, env, timeoutMs, binDir) {
   const invoke = () => launchHelper(cli, args, env, timeoutMs, binDir);
   const chained = helperChain.then(invoke, invoke);
@@ -72525,6 +72527,10 @@ function mailRouteFromAuthStatus(status) {
   }
   return { route: "helper", mayPrompt: auth === "notDetermined" };
 }
+function canReadCalendarStore(status) {
+  const auth = status?.authorization;
+  return (auth === "authorized" || auth === "fullAccess") && status?.calendarStore?.readable === true;
+}
 function createCLIRunner(binDir, envOverrides = {}, {
   timeoutMs = DEFAULT_TIMEOUT_MS,
   runDirectImpl = runDirect,
@@ -72584,21 +72590,45 @@ ${describeBinDirProblem(probeSwiftBinDirs([binDir]))}`;
       if (auth !== "authorized" && auth !== "fullAccess") {
         return { route: "helper", mayPrompt: false };
       }
+      if (cli === "calendar-cli") {
+        return { route: "direct", mayPrompt: false, storeReadable: canReadCalendarStore(result) };
+      }
       return { route: "direct", mayPrompt: false };
     } catch {
       return { route: "helper", mayPrompt: false };
     }
+  }
+  function helperCanReadCalendarStore() {
+    let probe = helperReadsCalendarStore.get(binDir);
+    if (!probe) {
+      probe = (async () => canReadCalendarStore(
+        await runViaHelperImpl("calendar-cli", ["auth-status"], childEnv(), timeoutMs, binDir)
+      ))();
+      helperReadsCalendarStore.set(binDir, probe);
+      probe.catch(() => {
+        if (helperReadsCalendarStore.get(binDir) === probe) helperReadsCalendarStore.delete(binDir);
+      });
+    }
+    return probe;
   }
   async function runCLI2(cli, args) {
     assertCLIUsable(cli);
     if (!route.has(cli)) {
       route.set(cli, probeRoute(cli));
     }
-    const decision = await route.get(cli);
+    const base = await route.get(cli);
+    let decision = base;
+    if (cli === "calendar-cli" && base.storeReadable === false && CALENDAR_STORE_READS.has(args[0])) {
+      if (await helperCanReadCalendarStore().catch(() => false)) {
+        decision = { route: "helper", mayPrompt: false };
+      }
+    }
     if (decision.route === "helper") {
       const callTimeout = decision.mayPrompt ? Math.max(timeoutMs, PROMPT_TIMEOUT_MS) : timeoutMs;
       decision.mayPrompt = false;
-      return runViaHelperImpl(cli, args, childEnv(), callTimeout, binDir);
+      const viaHelper = runViaHelperImpl(cli, args, childEnv(), callTimeout, binDir);
+      if (decision === base) return viaHelper;
+      return viaHelper.catch(() => runDirectImpl(join(binDir, cli), args, childEnv(), timeoutMs));
     }
     return runDirectImpl(join(binDir, cli), args, childEnv(), timeoutMs);
   }
