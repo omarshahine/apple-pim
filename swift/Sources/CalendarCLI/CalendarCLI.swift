@@ -1320,8 +1320,11 @@ struct ConfigInit: AsyncParsableCommand {
     func run() async throws {
         try await requestCalendarAccess()
         let ctx = pimOptions.outputContext
+        // A disabled domain lists nothing; config show still reports it as disabled.
+        let config = pimOptions.loadConfig()
 
-        let calendars = eventStore.calendars(for: .event).map { calendarToDict($0) }
+        let calendars = config.calendars.enabled
+            ? eventStore.calendars(for: .event).map { calendarToDict($0) } : []
 
         // Also request reminder access to list those
         if #available(macOS 14.0, *) {
@@ -1329,10 +1332,11 @@ struct ConfigInit: AsyncParsableCommand {
         } else {
             let _ = try? await eventStore.requestAccess(to: .reminder)
         }
-        let lists = eventStore.calendars(for: .reminder).map { listToDict($0) }
+        let lists = config.reminders.enabled
+            ? eventStore.calendars(for: .reminder).map { listToDict($0) } : []
 
-        let defaultCal = eventStore.defaultCalendarForNewEvents?.title ?? ""
-        let defaultRem = eventStore.defaultCalendarForNewReminders()?.title ?? ""
+        let defaultCal = config.calendars.enabled ? eventStore.defaultCalendarForNewEvents?.title ?? "" : ""
+        let defaultRem = config.reminders.enabled ? eventStore.defaultCalendarForNewReminders()?.title ?? "" : ""
 
         pimOutput(
             [

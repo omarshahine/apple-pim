@@ -1724,6 +1724,7 @@ struct ConfigInit: AsyncParsableCommand {
     func run() async throws {
         try await requestReminderAccess()
         let ctx = pimOptions.outputContext
+        try checkRemindersEnabled(config: pimOptions.loadConfig())
 
         let lists = eventStore.calendars(for: .reminder).map { listToDict($0) }
         let defaultRem = eventStore.defaultCalendarForNewReminders()?.title ?? ""
