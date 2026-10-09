@@ -152,6 +152,13 @@ const base = {
       return ids.length > 0 ? ids : ["default"];
     },
     resolveAccount,
+    // The reply sender is also the self-reply loop guard. Missing identity is an
+    // unconfigured channel, including tools-only installs, not a retryable crash.
+    isConfigured: (account) => Boolean(account.config.selfAddresses?.[0]),
+    unconfiguredReason: () =>
+      "channels.apple-mail.selfAddresses must list at least one address; it is " +
+      "the reply sender and the self-reply loop guard, and the channel cannot answer mail " +
+      "safely without it.",
   },
 } satisfies Omit<
   ChannelPlugin<ResolvedAppleMailAccount>,
@@ -188,18 +195,12 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
   startAccount: async (ctx) => {
     const config = ctx.account.config;
 
-    // `selfAddresses[0]` is load-bearing twice: it is the loop guard (a reply must be
-    // recognizable as the channel's own on the way back in) and, since replies now compose
-    // their own MIME, the envelope sender. Empty is not a soft warning here: without it the
-    // channel would answer every allowlisted message and then have `smtp-send` reject the
-    // reply for a missing `--from`, i.e. dispatch that always fails. Refuse to start instead
-    // of failing every reply after the fact.
+    // The gateway checks isConfigured before starting this account, so this only fires
+    // on a host path that skips that check. Kept so a reply can never leave without a sender.
     const replyFrom = config.selfAddresses?.[0];
     if (!replyFrom) {
       throw new Error(
-        "apple-mail: channels.apple-mail.selfAddresses must list at least one address; it is " +
-          "the reply sender and the self-reply loop guard, and the channel cannot answer mail " +
-          "safely without it.",
+        "apple-mail: channels.apple-mail.selfAddresses must list at least one address.",
       );
     }
 
@@ -347,7 +348,7 @@ const gateway: NonNullable<ChannelPlugin<ResolvedAppleMailAccount>["gateway"]> =
                 dispatchReply: dispatchReplyWithBufferedBlockDispatcher,
                 // Replies leave as the channel's own address, which is also what
                 // `selfAddresses` marks as ours on the way back in, so a reply cannot be
-                // read as a new inbound message from a stranger. Required at startup above.
+                // read as a new inbound message from a stranger. Required by isConfigured.
                 sendReply: createMailCliSender({
                   fromAddress: replyFrom,
                   // The sender reads the message it is answering so it can quote it, and

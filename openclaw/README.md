@@ -44,7 +44,8 @@ Requires macOS 13+ and Swift 5.9+ (Xcode 15+).
 
 The plugin also registers an inbound mail **channel** (`apple-mail`). It polls the local
 Mail.app store, authenticates each sender, and admits messages by authentication strength.
-It is inert until `channels.apple-mail` exists in `openclaw.json`.
+It remains unconfigured until `channels.apple-mail.selfAddresses` supplies a reply sender
+in `openclaw.json`. Installing the plugin for its tools alone does not start Mail polling.
 
 ```jsonc
 {
@@ -99,9 +100,10 @@ apple-mail [allowlisted_not_enrolled]: lora@shahine.com is in channels.apple-mai
 but has no expectedDkimDomains entry in ~/.config/lobster/trusted-senders.json. ...
 ```
 
-It also warns when `selfAddresses` is empty (the loop guard cannot fire), when no
-`trustedAuthservIds` covers the account (nothing authenticates, everything drops), and when
-an enrolled sender names no signing domains (that address can never reach `verified`).
+Without a reply sender in `selfAddresses`, channel status reports the missing configuration
+and polling does not start. Startup also warns when no `trustedAuthservIds` covers the
+account (nothing authenticates, everything drops), and when an enrolled sender names no
+signing domains (that address can never reach `verified`).
 
 Scenario-by-scenario behavior, inbound and outbound, is in
 [`docs/mail-channel-scenarios.md`](../docs/mail-channel-scenarios.md).
