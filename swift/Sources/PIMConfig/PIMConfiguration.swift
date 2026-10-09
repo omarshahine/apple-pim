@@ -37,6 +37,20 @@ public struct PIMConfiguration: Codable, Equatable, Sendable {
         case defaultCalendar = "default_calendar"
         case defaultReminderList = "default_reminder_list"
     }
+
+    /// An omitted domain keeps its all-access default, as an absent file does. A domain
+    /// that is present but has the wrong shape still fails to decode.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        calendars = try c.decodeIfPresent(DomainFilterConfig.self, forKey: .calendars) ?? DomainFilterConfig()
+        reminders = try c.decodeIfPresent(DomainFilterConfig.self, forKey: .reminders) ?? DomainFilterConfig()
+        contacts = try c.decodeIfPresent(DomainFilterConfig.self, forKey: .contacts) ?? DomainFilterConfig()
+        mail = try c.decodeIfPresent(DomainConfig.self, forKey: .mail) ?? DomainConfig()
+        defaultCalendar = try c.decodeIfPresent(String.self, forKey: .defaultCalendar)
+        defaultReminderList = try c.decodeIfPresent(String.self, forKey: .defaultReminderList)
+        smtp = try c.decodeIfPresent(SMTPDefaults.self, forKey: .smtp)
+        imap = try c.decodeIfPresent(IMAPDefaults.self, forKey: .imap)
+    }
 }
 
 /// Non-secret SMTP connection defaults.
@@ -120,6 +134,27 @@ public struct DomainFilterConfig: Codable, Equatable, Sendable {
         self.mode = mode
         self.items = items
     }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled, mode, items
+    }
+
+    /// `{"enabled": false}` and `{"enabled": true}` are complete sections. A list of items
+    /// without a `mode` is rejected rather than read as `all`, which would ignore the list.
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
+        items = try c.decodeIfPresent([String].self, forKey: .items) ?? []
+        if let mode = try c.decodeIfPresent(FilterMode.self, forKey: .mode) {
+            self.mode = mode
+        } else if items.isEmpty {
+            mode = .all
+        } else {
+            throw DecodingError.keyNotFound(CodingKeys.mode, DecodingError.Context(
+                codingPath: c.codingPath,
+                debugDescription: "'mode' is required when 'items' is not empty"))
+        }
+    }
 }
 
 /// Configuration for a domain with only an enabled flag (mail).
@@ -128,6 +163,15 @@ public struct DomainConfig: Codable, Equatable, Sendable {
 
     public init(enabled: Bool = true) {
         self.enabled = enabled
+    }
+
+    enum CodingKeys: String, CodingKey {
+        case enabled
+    }
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
     }
 }
 
