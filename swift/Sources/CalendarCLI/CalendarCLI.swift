@@ -512,6 +512,12 @@ private func setAttendeesOnEvent(_ event: EKEvent, attendees attendeeInputs: [At
 
 // MARK: - Config Helpers
 
+func checkCalendarsEnabled(config: PIMConfiguration) throws {
+    guard config.calendars.enabled else {
+        throw CLIError.accessDenied("Calendar access is disabled by PIM configuration")
+    }
+}
+
 /// Get only the calendars allowed by the current PIM config.
 func allowedCalendars(config: PIMConfiguration) -> [EKCalendar] {
     let all = eventStore.calendars(for: .event)
@@ -669,6 +675,7 @@ struct ListCalendars: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
         let calendars = allowedCalendars(config: config)
         let result = calendars.map { calendarToDict($0) }
 
@@ -703,6 +710,7 @@ struct ListEvents: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
 
         guard let startDate = parseDate(from) else {
             throw CLIError.invalidInput("Invalid start date: \(from)")
@@ -760,6 +768,7 @@ struct GetEvent: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
 
         guard let event = eventStore.event(withIdentifier: id) else {
             throw CLIError.notFound("Event not found: \(id)")
@@ -801,6 +810,7 @@ struct SearchEvents: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
 
         let startDate = from.flatMap { parseDate($0) } ?? Calendar.current.date(byAdding: .day, value: -30, to: Date())!
         let endDate: Date
@@ -888,6 +898,7 @@ struct CreateEvent: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
 
         guard let startDate = parseDate(start) else {
             throw CLIError.invalidInput("Invalid start date: \(start)")
@@ -995,6 +1006,7 @@ struct UpdateEvent: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
 
         guard let event = eventStore.event(withIdentifier: id) else {
             throw CLIError.notFound("Event not found: \(id)")
@@ -1088,6 +1100,7 @@ struct DeleteEvent: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
 
         guard let event = eventStore.event(withIdentifier: id) else {
             throw CLIError.notFound("Event not found: \(id)")
@@ -1172,6 +1185,7 @@ struct BatchCreateEvent: AsyncParsableCommand {
         try await requestCalendarAccess()
 
         let config = pimOptions.loadConfig()
+        try checkCalendarsEnabled(config: config)
         let events = try decodeBatchEvents(json)
 
         var createdEvents: [[String: Any]] = []
@@ -1306,8 +1320,11 @@ struct ConfigInit: AsyncParsableCommand {
     func run() async throws {
         try await requestCalendarAccess()
         let ctx = pimOptions.outputContext
+        // A disabled domain lists nothing; config show still reports it as disabled.
+        let config = pimOptions.loadConfig()
 
-        let calendars = eventStore.calendars(for: .event).map { calendarToDict($0) }
+        let calendars = config.calendars.enabled
+            ? eventStore.calendars(for: .event).map { calendarToDict($0) } : []
 
         // Also request reminder access to list those
         if #available(macOS 14.0, *) {
@@ -1315,10 +1332,11 @@ struct ConfigInit: AsyncParsableCommand {
         } else {
             let _ = try? await eventStore.requestAccess(to: .reminder)
         }
-        let lists = eventStore.calendars(for: .reminder).map { listToDict($0) }
+        let lists = config.reminders.enabled
+            ? eventStore.calendars(for: .reminder).map { listToDict($0) } : []
 
-        let defaultCal = eventStore.defaultCalendarForNewEvents?.title ?? ""
-        let defaultRem = eventStore.defaultCalendarForNewReminders()?.title ?? ""
+        let defaultCal = config.calendars.enabled ? eventStore.defaultCalendarForNewEvents?.title ?? "" : ""
+        let defaultRem = config.reminders.enabled ? eventStore.defaultCalendarForNewReminders()?.title ?? "" : ""
 
         pimOutput(
             [
