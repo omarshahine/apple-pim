@@ -326,6 +326,31 @@ struct ConfigLoaderFailClosedTests {
         }
     }
 
+    @Test("Documented partial sections decode, omitted domains keep defaults")
+    func partialSections() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pim-partial-\(UUID().uuidString).json")
+        let json = #"{"calendars": {"enabled": false}, "contacts": {"enabled": true}, "mail": {"enabled": false}}"#
+        try Data(json.utf8).write(to: path)
+        defer { try? FileManager.default.removeItem(at: path) }
+        let config: PIMConfiguration? = try ConfigLoader.readJSON(from: path)
+        #expect(config?.calendars.enabled == false)
+        #expect(config?.contacts == DomainFilterConfig())
+        #expect(config?.reminders == DomainFilterConfig())
+        #expect(config?.mail.enabled == false)
+    }
+
+    @Test("Items without a mode are rejected, not read as all")
+    func itemsWithoutMode() throws {
+        let path = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pim-nomode-\(UUID().uuidString).json")
+        try Data(#"{"calendars": {"enabled": true, "items": ["Work"]}}"#.utf8).write(to: path)
+        defer { try? FileManager.default.removeItem(at: path) }
+        #expect(throws: ConfigError.self) {
+            let _: PIMConfiguration? = try ConfigLoader.readJSON(from: path)
+        }
+    }
+
     @Test("Valid restrictions survive loading")
     func validFile() throws {
         let path = FileManager.default.temporaryDirectory

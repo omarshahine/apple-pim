@@ -352,6 +352,7 @@ No env var = `utc` (current behavior, fully backwards compatible). CalendarCLI o
 - Config is read fresh on each CLI invocation — changes take effect immediately
 - No config file = all domains enabled, all items accessible (backwards compatible)
 - Existing malformed or unreadable config files cause an error; they never fall back to all-access defaults
+- A domain left out of the base config keeps its default (enabled, mode `all`); a section such as `{"enabled": false}` is complete, but `items` without a `mode` is an error
 - Write operations to blocked calendars/lists fail with a descriptive error message
 - Profile names are validated — path traversal attempts are rejected
 
