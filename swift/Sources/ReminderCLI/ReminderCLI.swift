@@ -479,6 +479,12 @@ func alarmToDict(_ alarm: EKAlarm) -> [String: Any] {
 
 // MARK: - Config Helpers
 
+func checkRemindersEnabled(config: PIMConfiguration) throws {
+    guard config.reminders.enabled else {
+        throw CLIError.accessDenied("Reminders access is disabled by PIM configuration")
+    }
+}
+
 /// Get only the reminder lists allowed by the current PIM config.
 func allowedLists(config: PIMConfiguration) -> [EKCalendar] {
     let all = eventStore.calendars(for: .reminder)
@@ -662,6 +668,7 @@ struct ListLists: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
         let lists = allowedLists(config: config)
         let result = lists.map { listToDict($0) }
 
@@ -696,6 +703,7 @@ struct ListReminders: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         // Resolve lists: explicit filter > all allowed lists
         var calendars: [EKCalendar]?
@@ -807,6 +815,7 @@ struct GetReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
             throw CLIError.notFound("Reminder not found: \(id)")
@@ -845,6 +854,7 @@ struct SearchReminders: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         // Resolve lists: explicit filter > all allowed lists
         var calendars: [EKCalendar]?
@@ -935,6 +945,7 @@ struct CreateReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         let reminder = EKReminder(eventStore: eventStore)
         reminder.title = title
@@ -1011,6 +1022,7 @@ struct CompleteReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
             throw CLIError.notFound("Reminder not found: \(id)")
@@ -1079,6 +1091,7 @@ struct UpdateReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
             throw CLIError.notFound("Reminder not found: \(id)")
@@ -1189,6 +1202,7 @@ struct DeleteReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
             throw CLIError.notFound("Reminder not found: \(id)")
@@ -1259,6 +1273,7 @@ struct BatchCreateReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
         let reminders = try decodeBatchReminders(json)
 
         var createdReminders: [[String: Any]] = []
@@ -1371,6 +1386,7 @@ struct BatchCompleteReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         guard let data = json.data(using: .utf8),
               let ids = try? JSONDecoder().decode([String].self, from: data) else {
@@ -1452,6 +1468,7 @@ struct BatchDeleteReminder: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
 
         guard let data = json.data(using: .utf8),
               let ids = try? JSONDecoder().decode([String].self, from: data) else {
@@ -1574,6 +1591,7 @@ struct RepairDates: AsyncParsableCommand {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
+        try checkRemindersEnabled(config: config)
         var calendars: [EKCalendar]?
         if config.reminders.mode != .all {
             calendars = allowedLists(config: config)
