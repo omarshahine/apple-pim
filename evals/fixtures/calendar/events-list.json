@@ -6,7 +6,8 @@
       "start": "2026-03-15T09:00:00-07:00",
       "end": "2026-03-15T09:30:00-07:00",
       "calendar": "Work",
-      "allDay": false
+      "allDay": false,
+      "availability": "busy"
     },
     {
       "id": "E002",
@@ -14,7 +15,8 @@
       "start": "2026-03-15T12:00:00-07:00",
       "end": "2026-03-15T13:00:00-07:00",
       "calendar": "Personal",
-      "allDay": false
+      "allDay": false,
+      "availability": "busy"
     },
     {
       "id": "E003",
@@ -22,7 +24,8 @@
       "start": "2026-03-15T15:00:00-07:00",
       "end": "2026-03-15T16:00:00-07:00",
       "calendar": "Work",
-      "allDay": false
+      "allDay": false,
+      "availability": "busy"
     }
   ]
 }

@@ -1,0 +1,83 @@
+{
+  "success": true,
+  "count": 6,
+  "engine": "sqlite",
+  "dateRange": {
+    "from": "2026-03-16T07:00:00Z",
+    "to": "2026-03-17T06:59:59Z"
+  },
+  "events": [
+    {
+      "id": "E101",
+      "title": "Company Holiday",
+      "startDate": "2026-03-16T07:00:00Z",
+      "endDate": "2026-03-17T07:00:00Z",
+      "localStart": "2026-03-16 12:00 AM",
+      "localEnd": "2026-03-17 12:00 AM",
+      "isAllDay": true,
+      "calendar": "Work",
+      "calendarId": "CAL-WORK-0001",
+      "availability": "free"
+    },
+    {
+      "id": "E102",
+      "title": "Design Review",
+      "startDate": "2026-03-16T16:00:00Z",
+      "endDate": "2026-03-16T17:00:00Z",
+      "localStart": "2026-03-16 9:00 AM",
+      "localEnd": "2026-03-16 10:00 AM",
+      "isAllDay": false,
+      "calendar": "Work",
+      "calendarId": "CAL-WORK-0001",
+      "availability": "busy"
+    },
+    {
+      "id": "E103",
+      "title": "Hold: Vendor Call",
+      "startDate": "2026-03-16T18:00:00Z",
+      "endDate": "2026-03-16T18:30:00Z",
+      "localStart": "2026-03-16 11:00 AM",
+      "localEnd": "2026-03-16 11:30 AM",
+      "isAllDay": false,
+      "calendar": "Work",
+      "calendarId": "CAL-WORK-0001",
+      "availability": "tentative"
+    },
+    {
+      "id": "E104",
+      "title": "Out of Office",
+      "startDate": "2026-03-16T20:00:00Z",
+      "endDate": "2026-03-16T23:00:00Z",
+      "localStart": "2026-03-16 1:00 PM",
+      "localEnd": "2026-03-16 4:00 PM",
+      "isAllDay": false,
+      "calendar": "Team Feed",
+      "calendarId": "CAL-FEED-0002",
+      "availability": "unavailable"
+    },
+    {
+      "id": "E105",
+      "title": "Feed Event (availability unknown)",
+      "startDate": "2026-03-16T23:00:00Z",
+      "endDate": "2026-03-16T23:30:00Z",
+      "localStart": "2026-03-16 4:00 PM",
+      "localEnd": "2026-03-16 4:30 PM",
+      "isAllDay": false,
+      "calendar": "Team Feed",
+      "calendarId": "CAL-FEED-0002",
+      "availability": "notSupported"
+    },
+    {
+      "id": "E106",
+      "title": "Focus Block",
+      "startDate": "2026-03-16T23:30:00Z",
+      "endDate": "2026-03-17T00:00:00Z",
+      "localStart": "2026-03-16 4:30 PM",
+      "localEnd": "2026-03-16 5:00 PM",
+      "isAllDay": false,
+      "calendar": "Team Feed",
+      "calendarId": "CAL-FEED-0002",
+      "availability": "busy"
+    }
+  ]
+}

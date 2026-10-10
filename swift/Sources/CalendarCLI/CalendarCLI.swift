@@ -51,10 +51,19 @@ struct AuthStatus: ParsableCommand {
             default: status = "unknown"
             }
         }
-        let result: [String: Any] = ["authorization": status]
+        let result = authStatusPayload(authorization: status)
         let data = try JSONSerialization.data(withJSONObject: result)
         print(String(data: data, encoding: .utf8)!)
     }
+}
+
+/// `authorization` is Calendar (EventKit) access. `calendarStore.readable` says whether this
+/// process can read the local Calendar store that supplies subscribed events' availability; it
+/// is probed by opening it, independent of `authorization`, and reflects Full Disk Access.
+func authStatusPayload(authorization: String,
+                       storePath: URL = CalendarStore.defaultPath()) -> [String: Any] {
+    let calendarStore = (try? CalendarStore(path: storePath))?.authStatusInfo() ?? ["readable": false]
+    return ["authorization": authorization, "calendarStore": calendarStore]
 }
 
 // MARK: - Shared Utilities
@@ -249,7 +258,9 @@ private let localDateFormatter: DateFormatter = {
     return f
 }()
 
-func eventToDict(_ event: EKEvent) -> [String: Any] {
+/// `availability` is EventKit's value unless the caller resolved one for an event EventKit
+/// cannot answer (see `AvailabilityResolver`).
+func eventToDict(_ event: EKEvent, availability: String? = nil) -> [String: Any] {
     var dict: [String: Any] = [
         "id": event.eventIdentifier ?? "",
         "title": event.title ?? "",
@@ -259,7 +270,8 @@ func eventToDict(_ event: EKEvent) -> [String: Any] {
         "localEnd": localDateFormatter.string(from: event.endDate),
         "isAllDay": event.isAllDay,
         "calendar": event.calendar?.title ?? "",
-        "calendarId": event.calendar?.calendarIdentifier ?? ""
+        "calendarId": event.calendar?.calendarIdentifier ?? "",
+        "availability": availability ?? availabilityString(event.availability)
     ]
 
     if let location = event.location, !location.isEmpty {
@@ -328,6 +340,18 @@ func attendeeToDict(_ attendee: EKParticipant) -> [String: Any] {
         "status": participantStatusString(attendee.participantStatus),
         "role": participantRoleString(attendee.participantRole)
     ]
+}
+
+/// A future EventKit value reads as notSupported: the vocabulary stays closed.
+func availabilityString(_ availability: EKEventAvailability) -> String {
+    switch availability {
+    case .notSupported: return "notSupported"
+    case .busy: return "busy"
+    case .free: return "free"
+    case .tentative: return "tentative"
+    case .unavailable: return "unavailable"
+    @unknown default: return "notSupported"
+    }
 }
 
 func participantStatusString(_ status: EKParticipantStatus) -> String {
@@ -663,6 +687,9 @@ func parseRecurrenceRule(_ json: String) -> EKRecurrenceRule? {
 
 // MARK: - Commands
 
+let availabilityEngineHelp: ArgumentHelp =
+    "Availability engine: auto (EventKit, Calendar store for subscriptions), sqlite, or eventkit"
+
 struct ListCalendars: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "list",
@@ -706,6 +733,9 @@ struct ListEvents: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum number of events to return")
     var limit: Int = 100
 
+    @Option(name: .long, help: availabilityEngineHelp)
+    var engine: EngineChoice = .auto
+
     func run() async throws {
         try await requestCalendarAccess()
 
@@ -737,11 +767,12 @@ struct ListEvents: AsyncParsableCommand {
         }
 
         let predicate = eventStore.predicateForEvents(withStart: startDate, end: endDate, calendars: calendars)
-        let events = eventStore.events(matching: predicate)
+        let resolver = try AvailabilityResolver(engine: engine)
+        let events = try eventStore.events(matching: predicate)
             .prefix(limit)
-            .map { eventToDict($0) }
+            .map { eventToDict($0, availability: try resolver.availability(for: $0)) }
 
-        outputJSON([
+        var result: [String: Any] = [
             "success": true,
             "events": Array(events),
             "count": events.count,
@@ -749,7 +780,9 @@ struct ListEvents: AsyncParsableCommand {
                 "from": formatDate(startDate),
                 "to": formatDate(endDate)
             ]
-        ])
+        ]
+        if resolver.openedStore { result["engine"] = "sqlite" }
+        outputJSON(result)
     }
 }
 
@@ -764,6 +797,9 @@ struct GetEvent: AsyncParsableCommand {
     @Option(name: .long, help: "Event ID")
     var id: String
 
+    @Option(name: .long, help: availabilityEngineHelp)
+    var engine: EngineChoice = .auto
+
     func run() async throws {
         try await requestCalendarAccess()
 
@@ -776,10 +812,13 @@ struct GetEvent: AsyncParsableCommand {
 
         try validateEventAccess(event, config: config)
 
-        outputJSON([
+        let resolver = try AvailabilityResolver(engine: engine)
+        var result: [String: Any] = [
             "success": true,
-            "event": eventToDict(event)
-        ])
+            "event": eventToDict(event, availability: try resolver.availability(for: event))
+        ]
+        if resolver.openedStore { result["engine"] = "sqlite" }
+        outputJSON(result)
     }
 }
 
@@ -806,6 +845,9 @@ struct SearchEvents: AsyncParsableCommand {
     @Option(name: .long, help: "Maximum results")
     var limit: Int = 50
 
+    @Option(name: .long, help: availabilityEngineHelp)
+    var engine: EngineChoice = .auto
+
     func run() async throws {
         try await requestCalendarAccess()
 
@@ -830,7 +872,8 @@ struct SearchEvents: AsyncParsableCommand {
         }
 
         let predicate = eventStore.predicateForEvents(withStart: startDate, end: endDate, calendars: calendars)
-        let events = eventStore.events(matching: predicate)
+        let resolver = try AvailabilityResolver(engine: engine)
+        let events = try eventStore.events(matching: predicate)
             .filter { event in
                 let title = event.title?.lowercased() ?? ""
                 let notes = event.notes?.lowercased() ?? ""
@@ -839,14 +882,16 @@ struct SearchEvents: AsyncParsableCommand {
                 return title.contains(queryLower) || notes.contains(queryLower) || location.contains(queryLower)
             }
             .prefix(limit)
-            .map { eventToDict($0) }
+            .map { eventToDict($0, availability: try resolver.availability(for: $0)) }
 
-        outputJSON([
+        var result: [String: Any] = [
             "success": true,
             "query": query,
             "events": Array(events),
             "count": events.count
-        ])
+        ]
+        if resolver.openedStore { result["engine"] = "sqlite" }
+        outputJSON(result)
     }
 }
 
