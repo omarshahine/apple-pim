@@ -66,3 +66,6 @@ openclaw/dist/
 
 # cf build output
 .cloudflare/
+
+# Astro build output (CI builds it on deploy)
+site/dist/
