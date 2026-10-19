@@ -1889,13 +1889,13 @@ var require_keyword = __commonJS({
             modifyData(cxt);
           reportErrs(() => cxt.error());
         } else {
-          const ruleErrs = def.async ? validateAsync2() : validateSync();
+          const ruleErrs = def.async ? validateAsync3() : validateSync();
           if (def.modifying)
             modifyData(cxt);
           reportErrs(() => addErrs(cxt, ruleErrs));
         }
       }
-      function validateAsync2() {
+      function validateAsync3() {
         const ruleErrs = gen.let("ruleErrs", null);
         gen.try(() => assignValid((0, codegen_1._)`await `), (e) => gen.assign(valid, false).if((0, codegen_1._)`${e} instanceof ${it.ValidationError}`, () => gen.assign(ruleErrs, (0, codegen_1._)`${e}.errors`), () => gen.throw(e)));
         return ruleErrs;
@@ -4155,13 +4155,14 @@ var require_fast_uri = __commonJS({
         if (!malformedIPLiteral) {
           malformedHost = canonicalizeHost(parsed, options, schemeHandler, isIP);
         }
-        if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
-          if (uri.indexOf("%") !== -1) {
-            if (parsed.host !== void 0 && !malformedIPLiteral) {
-              const host = isIP ? parsed.host : normalizePercentEncoding(parsed.host, true);
-              parsed.host = reescapeHostDelimiters(host, isIP);
-            }
+        if (uri.indexOf("%") !== -1 && parsed.host !== void 0 && !malformedIPLiteral) {
+          let host = isIP ? parsed.host : normalizePercentEncoding(parsed.host, true);
+          if (!isIP) {
+            host = normalizePercentEncoding(host.toLowerCase());
           }
+          parsed.host = reescapeHostDelimiters(host, isIP);
+        }
+        if (!schemeHandler || schemeHandler && !schemeHandler.skipNormalize) {
           if (parsed.path) {
             parsed.path = normalizePathEncoding(parsed.path);
           }
@@ -7202,6 +7203,518 @@ var require_dist = __commonJS({
     module.exports = exports = formatsPlugin;
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.default = formatsPlugin;
+  }
+});
+
+// ../node_modules/libbase64/dist/cjs/libbase64.js
+var require_libbase64 = __commonJS({
+  "../node_modules/libbase64/dist/cjs/libbase64.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.Decoder = exports.Encoder = void 0;
+    exports.encode = encode3;
+    exports.decode = decode3;
+    exports.wrap = wrap;
+    var node_buffer_1 = __require("node:buffer");
+    var node_stream_1 = __require("node:stream");
+    function encode3(buffer) {
+      if (typeof buffer === "string") {
+        return node_buffer_1.Buffer.from(buffer, "utf-8").toString("base64");
+      }
+      if (!node_buffer_1.Buffer.isBuffer(buffer)) {
+        return node_buffer_1.Buffer.from(buffer.buffer, buffer.byteOffset, buffer.byteLength).toString("base64");
+      }
+      return buffer.toString("base64");
+    }
+    function decode3(str) {
+      str = str || "";
+      if (typeof str === "string") {
+        if (/[^\u0000-\u00ff]/.test(str)) {
+          str = str.replace(/[^\u0000-\u00ff]+/g, "");
+        }
+        let padPos = str.indexOf("=");
+        if (padPos >= 0 && /[a-zA-Z0-9+/\-_]/.test(str.slice(padPos))) {
+          let output = node_buffer_1.Buffer.alloc(Math.floor(str.length * 3 / 4));
+          let length = 0;
+          let start = 0;
+          while (start <= str.length) {
+            let end = str.indexOf("=", start);
+            if (end < 0) {
+              end = str.length;
+            }
+            if (end > start) {
+              length += output.write(str.substring(start, end), length, "base64");
+            }
+            start = end + 1;
+          }
+          return node_buffer_1.Buffer.from(output.subarray(0, length));
+        }
+      }
+      return node_buffer_1.Buffer.from(str, "base64");
+    }
+    function normalizeLineLength(lineLength) {
+      let length = Math.floor(Number(lineLength));
+      return Number.isFinite(length) && length >= 1 ? length : 76;
+    }
+    function wrapBuffer(src, lineLength, final) {
+      let lines = Math.ceil(src.length / lineLength);
+      let complete = Math.max(lines - 1, 0);
+      let rest = src.length - complete * lineLength;
+      let output = node_buffer_1.Buffer.allocUnsafe(complete * (lineLength + 2) + (final ? rest : 0));
+      let to = 0;
+      for (let from = 0; from < complete * lineLength; from += lineLength) {
+        src.copy(output, to, from, from + lineLength);
+        to += lineLength;
+        output[to++] = 13;
+        output[to++] = 10;
+      }
+      if (final) {
+        to += src.copy(output, to, complete * lineLength);
+        rest = 0;
+      }
+      if (to !== output.length) {
+        throw new Error("Unexpected wrapped length");
+      }
+      return { output, rest };
+    }
+    function wrap(str, lineLength) {
+      str = (str || "").toString();
+      let length = normalizeLineLength(lineLength);
+      if (str.length <= length) {
+        return str;
+      }
+      if (/[^\u0000-\u00ff]|[\r\n]/.test(str) || str.trim() !== str) {
+        return legacyWrap(str, length);
+      }
+      return wrapBuffer(node_buffer_1.Buffer.from(str, "latin1"), length, true).output.toString("latin1");
+    }
+    function legacyWrap(str, lineLength) {
+      let result = [];
+      let pos = 0;
+      let chunkLength = lineLength * 1024;
+      let wrapRegex = new RegExp(".{" + lineLength + "}", "g");
+      while (pos < str.length) {
+        let wrappedLines = str.slice(pos, pos + chunkLength).replace(wrapRegex, "$&\r\n").trim();
+        result.push(wrappedLines);
+        pos += chunkLength;
+      }
+      return result.join("\r\n").trim();
+    }
+    var Encoder = class extends node_stream_1.Transform {
+      constructor(options) {
+        super();
+        this.options = options || {};
+        if (this.options.lineLength !== false) {
+          this.options.lineLength = normalizeLineLength(this.options.lineLength);
+        }
+        this.skipStartBytes = Number(this.options.skipStartBytes) || 0;
+        this.limitOutputBytes = Number(this.options.limitOutputBytes || this.options.limitOutbutBytes) || 0;
+        this._curLine = this.options.startPadding || "";
+        this._remainingBytes = null;
+        this.inputBytes = 0;
+        this.outputBytes = 0;
+      }
+      /** @internal */
+      _writeChunk(chunk) {
+        if (this.skipStartBytes) {
+          if (chunk.length <= this.skipStartBytes) {
+            this.skipStartBytes -= chunk.length;
+            return;
+          }
+          chunk = chunk.subarray(this.skipStartBytes);
+          this.skipStartBytes = 0;
+        }
+        if (this.limitOutputBytes) {
+          if (this.outputBytes >= this.limitOutputBytes) {
+            return;
+          }
+          if (this.outputBytes + chunk.length > this.limitOutputBytes) {
+            chunk = chunk.subarray(0, this.limitOutputBytes - this.outputBytes);
+          }
+        }
+        this.outputBytes += chunk.length;
+        this.push(chunk);
+      }
+      /**
+       * Emits the encoded characters `b64` that follow the current line, keeping what can not be emitted
+       * yet as the new current line
+       *
+       * @internal
+       */
+      _emit(b64, final) {
+        let src = node_buffer_1.Buffer.from(this._curLine + b64, "latin1");
+        if (!src.length) {
+          return;
+        }
+        if (!this.options.lineLength) {
+          this._curLine = "";
+          return this._writeChunk(src);
+        }
+        let { output, rest } = wrapBuffer(src, this.options.lineLength, final);
+        this._curLine = rest ? src.toString("latin1", src.length - rest) : "";
+        if (output.length) {
+          this._writeChunk(output);
+        }
+      }
+      /** @internal */
+      _transform(chunk, encoding, done) {
+        let buf = encoding !== "buffer" ? node_buffer_1.Buffer.from(chunk, encoding) : chunk;
+        if (!buf.length) {
+          return done();
+        }
+        this.inputBytes += buf.length;
+        if (this._remainingBytes) {
+          buf = node_buffer_1.Buffer.concat([this._remainingBytes, buf], this._remainingBytes.length + buf.length);
+          this._remainingBytes = null;
+        }
+        let extra = buf.length % 3;
+        if (extra) {
+          this._remainingBytes = buf.subarray(buf.length - extra);
+          buf = buf.subarray(0, buf.length - extra);
+        }
+        this._emit(encode3(buf), false);
+        done();
+      }
+      /** @internal */
+      _flush(done) {
+        this._emit(this._remainingBytes ? encode3(this._remainingBytes) : "", true);
+        this._remainingBytes = null;
+        done();
+      }
+    };
+    exports.Encoder = Encoder;
+    var Decoder = class extends node_stream_1.Transform {
+      constructor(options) {
+        super();
+        this.options = options || {};
+        this._curLine = "";
+        this.inputBytes = 0;
+        this.outputBytes = 0;
+      }
+      /** @internal */
+      _transform(chunk, _encoding, done) {
+        if (!chunk || !chunk.length) {
+          return done();
+        }
+        this.inputBytes += chunk.length;
+        let b64 = this._curLine + chunk.toString("latin1");
+        this._curLine = "";
+        if (/[^a-zA-Z0-9+/=]/.test(b64)) {
+          b64 = b64.replace(/[^a-zA-Z0-9+/=]/g, "");
+        }
+        let padded = "";
+        let lastPad = b64.lastIndexOf("=");
+        if (lastPad >= 0) {
+          padded = b64.slice(0, lastPad + 1);
+          b64 = b64.slice(lastPad + 1);
+        }
+        if (b64.length < 4) {
+          this._curLine = b64;
+          b64 = "";
+        } else if (b64.length % 4) {
+          this._curLine = b64.slice(-(b64.length % 4));
+          b64 = b64.slice(0, b64.length - this._curLine.length);
+        }
+        b64 = padded + b64;
+        if (b64) {
+          let buf = decode3(b64);
+          this.outputBytes += buf.length;
+          this.push(buf);
+        }
+        done();
+      }
+      /** @internal */
+      _flush(done) {
+        if (this._curLine) {
+          let buf = decode3(this._curLine);
+          this.outputBytes += buf.length;
+          this.push(buf);
+          this._curLine = "";
+        }
+        done();
+      }
+    };
+    exports.Decoder = Decoder;
+    var libbase64 = {
+      encode: encode3,
+      decode: decode3,
+      wrap,
+      Encoder,
+      Decoder
+    };
+    exports.default = libbase64;
+    Object.defineProperty(exports, "default", { value: exports, enumerable: false, writable: true, configurable: true });
+  }
+});
+
+// ../node_modules/libqp/dist/cjs/libqp.js
+var require_libqp = __commonJS({
+  "../node_modules/libqp/dist/cjs/libqp.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.Decoder = exports.Encoder = void 0;
+    exports.encode = encode3;
+    exports.decode = decode3;
+    exports.wrap = wrap;
+    var node_stream_1 = __require("node:stream");
+    var MIN_LINE_LENGTH = 4;
+    var QP_LITERAL = new Uint8Array(256);
+    for (let i = 0; i < 256; i++) {
+      QP_LITERAL[i] = i === 9 || i === 10 || i === 13 || i >= 32 && i <= 126 && i !== 61 ? 1 : 0;
+    }
+    var HEX_DIGITS = Buffer.from("0123456789ABCDEF", "latin1");
+    var isWhitespace = (c) => c === 32 || c === 9;
+    function encode3(buffer) {
+      return encodeBytes(typeof buffer === "string" ? Buffer.from(buffer, "utf-8") : buffer);
+    }
+    function encodeBytes(buffer, next, binary, previous) {
+      const len = buffer.length;
+      const output = Buffer.allocUnsafe(len * 3);
+      let pos = 0;
+      for (let i = 0; i < len; i++) {
+        const ord = buffer[i];
+        const preceding = i > 0 ? buffer[i - 1] : previous;
+        const following = i + 1 < len ? buffer[i + 1] : next;
+        const loneLineBreak = binary && (ord === 13 ? following !== 10 : ord === 10 && preceding !== 13);
+        if (QP_LITERAL[ord] && !loneLineBreak && !(isWhitespace(ord) && (following === void 0 || following === 10 || following === 13)) && !(ord === 45 && (preceding === void 0 || preceding === 10 || preceding === 13))) {
+          output[pos++] = ord;
+          continue;
+        }
+        output[pos++] = 61;
+        output[pos++] = HEX_DIGITS[Math.floor(ord / 16)];
+        output[pos++] = HEX_DIGITS[ord % 16];
+      }
+      return output.toString("latin1", 0, pos);
+    }
+    function decode3(str) {
+      let input;
+      if (str instanceof Uint8Array) {
+        input = (Buffer.isBuffer(str) ? str : Buffer.from(str.buffer, str.byteOffset, str.byteLength)).toString("binary");
+      } else {
+        input = (str || "").toString();
+      }
+      input = input.replace(/(^|[^ \t])[ \t]+(?=[\n\r\u2028\u2029]|$)/g, "$1").replace(/[=](?:\r?\n|$)/g, "");
+      const len = input.length;
+      let encodedBytesCount = 0;
+      for (let i = input.indexOf("="); i >= 0 && i < len - 2; i = input.indexOf("=", i + 1)) {
+        if (hexValue(input.charCodeAt(i + 1)) >= 0 && hexValue(input.charCodeAt(i + 2)) >= 0) {
+          encodedBytesCount++;
+          i += 2;
+        }
+      }
+      const buffer = Buffer.alloc(len - encodedBytesCount * 2);
+      let bufferPos = 0;
+      for (let i = 0; i < len; i++) {
+        const code = input.charCodeAt(i);
+        if (code === 61 && i < len - 2) {
+          const hi = hexValue(input.charCodeAt(i + 1));
+          const lo = hexValue(input.charCodeAt(i + 2));
+          if (hi >= 0 && lo >= 0) {
+            buffer[bufferPos++] = hi * 16 + lo;
+            i += 2;
+            continue;
+          }
+        }
+        buffer[bufferPos++] = code;
+      }
+      return buffer;
+    }
+    function hexValue(code) {
+      if (code >= 48 && code <= 57) {
+        return code - 48;
+      }
+      if (code >= 65 && code <= 70) {
+        return code - 65 + 10;
+      }
+      if (code >= 97 && code <= 102) {
+        return code - 97 + 10;
+      }
+      return -1;
+    }
+    function wrap(str, lineLength) {
+      str = (str || "").toString();
+      lineLength = Math.max(Number(lineLength) || 76, MIN_LINE_LENGTH);
+      if (str.length <= lineLength) {
+        return str;
+      }
+      const parts = str.split(/(\r?\n)/);
+      for (let i = 0; i < parts.length; i += 2) {
+        parts[i] = wrapLine(parts[i], lineLength);
+      }
+      return parts.join("");
+    }
+    function wrapLine(str, lineLength) {
+      const len = str.length;
+      const lineMargin = Math.floor(lineLength / 3);
+      let pos = 0;
+      let result = "";
+      for (; ; ) {
+        const escapeHyphen = pos > 0 && str.charCodeAt(pos) === 45;
+        if (len - pos + (escapeHyphen ? 2 : 0) <= lineLength) {
+          result += escapeHyphen ? "=2D" + str.substr(pos + 1) : str.substr(pos);
+          break;
+        }
+        let line = escapeHyphen ? "=2D" + str.substr(pos + 1, lineLength - 3) : str.substr(pos, lineLength);
+        let match;
+        if (match = line.substr(-lineMargin).match(/[ \t.,!?][^ \t.,!?]*$/)) {
+          line = line.substr(0, line.length - (match[0].length - 1));
+        } else if (/[=][\da-f]{0,2}$/i.test(line)) {
+          line = trimUtf8Sequence(line.replace(/[=][\da-f]?$/i, ""));
+        }
+        if (line.length === lineLength) {
+          line = line.substr(0, line.length - (/[=][\da-f]{2}$/i.test(line) ? 3 : 1));
+        }
+        pos += escapeHyphen ? line.length - 2 : line.length;
+        result += line + "=\r\n";
+      }
+      return result;
+    }
+    function trimUtf8Sequence(line) {
+      let end = line.length;
+      while (end >= 3 && line.charCodeAt(end - 3) === 61) {
+        const hi = hexValue(line.charCodeAt(end - 2));
+        const lo = hexValue(line.charCodeAt(end - 1));
+        if (hi < 0 || lo < 0) {
+          break;
+        }
+        const code = hi * 16 + lo;
+        if (code < 128) {
+          break;
+        }
+        end -= 3;
+        if (code >= 192) {
+          break;
+        }
+      }
+      return end > (line.startsWith("=2D") ? 3 : 0) ? line.substr(0, end) : line;
+    }
+    var toBuffer = (chunk, encoding) => typeof chunk === "string" ? Buffer.from(chunk, encoding) : chunk;
+    var ENCODE_SLICE_SIZE = 64 * 1024;
+    var Encoder = class extends node_stream_1.Transform {
+      /**
+       * @param [options] Stream options
+       * @param [options.lineLength=76] Maximum length for lines, set to false to disable wrapping
+       * @param [options.binary=false] Encode every CR or LF that is not part of a CRLF pair
+       */
+      constructor(options) {
+        const opts = options || {};
+        super(opts);
+        this.options = opts;
+        if (this.options.lineLength !== false) {
+          this.options.lineLength = this.options.lineLength || 76;
+        }
+        this._curLine = "";
+        this._heldByte = void 0;
+        this._lastByte = void 0;
+        this.inputBytes = 0;
+        this.outputBytes = 0;
+      }
+      /** @internal */
+      _transform(chunk, encoding, done) {
+        let buf = toBuffer(chunk, encoding);
+        if (!buf || !buf.length) {
+          return done();
+        }
+        this.inputBytes += buf.length;
+        if (this._heldByte !== void 0) {
+          this._encodeSlices(Buffer.of(this._heldByte), buf[0]);
+          this._heldByte = void 0;
+        }
+        const last = buf[buf.length - 1];
+        if (isWhitespace(last) || this.options.binary && last === 13) {
+          this._heldByte = last;
+          buf = buf.subarray(0, buf.length - 1);
+        }
+        this._encodeSlices(buf, this._heldByte);
+        done();
+      }
+      /** @internal */
+      _flush(done) {
+        if (this._heldByte !== void 0) {
+          this._encodeSlices(Buffer.of(this._heldByte), void 0);
+          this._heldByte = void 0;
+        }
+        if (this._curLine) {
+          const qp = wrap(this._curLine, this.options.lineLength);
+          this.outputBytes += qp.length;
+          this.push(qp, "ascii");
+          this._curLine = "";
+        }
+        done();
+      }
+      /**
+       * Encodes the input in slices of ENCODE_SLICE_SIZE bytes. Each slice is told the bytes around
+       * it, so a slice is encoded as if the input was not split
+       *
+       * @param buf Bytes to encode
+       * @param next The byte that follows buf, undefined when it is not known
+       * @internal
+       */
+      _encodeSlices(buf, next) {
+        for (let start = 0; start < buf.length; start += ENCODE_SLICE_SIZE) {
+          const end = Math.min(start + ENCODE_SLICE_SIZE, buf.length);
+          let qp = encodeBytes(buf.subarray(start, end), end < buf.length ? buf[end] : next, this.options.binary, this._lastByte);
+          this._lastByte = buf[end - 1];
+          if (this.options.lineLength) {
+            qp = this._curLine + qp;
+            const cr = qp.endsWith("\r") ? "\r" : "";
+            qp = wrap(cr ? qp.slice(0, -1) : qp, this.options.lineLength);
+            const lastLF = qp.lastIndexOf("\n");
+            this._curLine = qp.substring(lastLF + 1) + cr;
+            qp = qp.substring(0, lastLF + 1);
+          }
+          if (qp) {
+            this.outputBytes += qp.length;
+            this.push(qp, "ascii");
+          }
+        }
+      }
+    };
+    exports.Encoder = Encoder;
+    var Decoder = class extends node_stream_1.Transform {
+      /**
+       * @param [options] Stream options
+       */
+      constructor(options) {
+        const opts = options || {};
+        super(opts);
+        this.options = opts;
+        this.inputBytes = 0;
+        this.outputBytes = 0;
+        this.qpChunks = [];
+      }
+      /** @internal */
+      _transform(chunk, encoding, done) {
+        if (!chunk || !chunk.length) {
+          return done();
+        }
+        const buf = toBuffer(chunk, encoding);
+        this.qpChunks.push(buf.toString("binary"));
+        this.inputBytes += buf.length;
+        done();
+      }
+      /** @internal */
+      _flush(done) {
+        if (this.inputBytes) {
+          const input = this.qpChunks.join("");
+          this.qpChunks = [];
+          const buf = decode3(input);
+          this.outputBytes += buf.length;
+          this.push(buf);
+        }
+        done();
+      }
+    };
+    exports.Decoder = Decoder;
+    var libqp = {
+      encode: encode3,
+      decode: decode3,
+      wrap,
+      Encoder,
+      Decoder
+    };
+    exports.default = libqp;
+    Object.defineProperty(exports, "default", { value: exports, enumerable: false, writable: true, configurable: true });
   }
 });
 
@@ -18841,10 +19354,28 @@ var require_utf8_to_jis_table = __commonJS({
       15712164: 31868,
       15711367: 31869,
       15711362: 31870,
-      //FIXME: mojibake
+      // Remaps Unicode characters that differ between CP932 and JIS X 0208 mappings
+      // (encode and decode) See also `utf8-to-jis-alias-table.js`
       14846117: 8514,
-      15712162: 8780,
-      14846098: 74077
+      // ∥ U+2225 PARALLEL TO        same cell as ‖ U+2016 (0xE28096) -> SJIS 0x8161
+      15712162: 8780
+      // ￢ U+FFE2 FULLWIDTH NOT SIGN same cell as ¬ U+00AC (0xC2AC)   -> SJIS 0x81CA
+    };
+  }
+});
+
+// ../node_modules/encoding-japanese/src/utf8-to-jis-alias-table.js
+var require_utf8_to_jis_alias_table = __commonJS({
+  "../node_modules/encoding-japanese/src/utf8-to-jis-alias-table.js"(exports, module) {
+    module.exports = {
+      14846098: 8541,
+      // − U+2212 MINUS SIGN same cell as － U+FF0D (0xEFBC8D) -> SJIS 0x817C
+      14909596: 8513,
+      // 〜 U+301C WAVE DASH same cell as ～ U+FF5E (0xEFBD9E) -> SJIS 0x8160
+      49826: 8561,
+      // ¢ U+00A2 CENT SIGN  same cell as ￠ U+FFE0 (0xEFBFA0) -> SJIS 0x8191
+      49827: 8562
+      // £ U+00A3 POUND SIGN same cell as ￡ U+FFE1 (0xEFBFA1) -> SJIS 0x8192
     };
   }
 });
@@ -24919,9 +25450,7 @@ var require_utf8_to_jisx0212_table = __commonJS({
       15318689: 28e3,
       15318690: 28001,
       15318691: 28002,
-      15318693: 28003,
-      //FIXME: mojibake
-      14909596: 8513
+      15318693: 28003
     };
   }
 });
@@ -24946,6 +25475,7 @@ var require_jisx0212_to_utf8_table = __commonJS({
 var require_encoding_table = __commonJS({
   "../node_modules/encoding-japanese/src/encoding-table.js"(exports) {
     exports.UTF8_TO_JIS_TABLE = require_utf8_to_jis_table();
+    exports.UTF8_TO_JIS_ALIAS_TABLE = require_utf8_to_jis_alias_table();
     exports.UTF8_TO_JISX0212_TABLE = require_utf8_to_jisx0212_table();
     exports.JIS_TO_UTF8_TABLE = require_jis_to_utf8_table();
     exports.JISX0212_TO_UTF8_TABLE = require_jisx0212_to_utf8_table();
@@ -25680,13 +26210,23 @@ var require_encoding_convert = __commonJS({
           }
           results[results.length] = b1 - 128 & 255;
         } else if (b1 >= 128) {
+          b2 = data[++i];
+          if (b2 === 127) {
+            if (index !== 0) {
+              index = 0;
+              results[results.length] = esc2[0];
+              results[results.length] = esc2[1];
+              results[results.length] = esc2[2];
+            }
+            results[results.length] = config2.FALLBACK_CHARACTER;
+            continue;
+          }
           if (index !== 1) {
             index = 1;
             results[results.length] = esc2[3];
             results[results.length] = esc2[4];
             results[results.length] = esc2[5];
           }
-          b2 = data[++i];
           if (sjisExt.hasCP932DuplicateCode(b1)) {
             remapped = sjisExt.remapCP932DuplicateCode(b1, b2);
             b1 = remapped >> 8;
@@ -25744,6 +26284,10 @@ var require_encoding_convert = __commonJS({
           results[results.length] = b1;
         } else if (b1 >= 129) {
           b2 = data[++i];
+          if (b2 === 127) {
+            results[results.length] = config2.FALLBACK_CHARACTER;
+            continue;
+          }
           if (sjisExt.hasCP932DuplicateCode(b1)) {
             remapped = sjisExt.remapCP932DuplicateCode(b1, b2);
             b1 = remapped >> 8;
@@ -25907,6 +26451,10 @@ var require_encoding_convert = __commonJS({
           results[results.length] = u3 & 255;
         } else if (b >= 128) {
           b2 = data[++i];
+          if (b2 === 127) {
+            results[results.length] = config2.FALLBACK_CHARACTER;
+            continue;
+          }
           if (sjisExt.hasCP932DuplicateCode(b)) {
             remapped = sjisExt.remapCP932DuplicateCode(b, b2);
             b = remapped >> 8;
@@ -26095,7 +26643,7 @@ var require_encoding_convert = __commonJS({
             bytes = [b, data[i + 1], data[i + 2], data[i + 3]];
             utf8 = (b << 24) + (data[++i] << 16) + (data[++i] << 8) + (data[++i] & 255);
           }
-          jis = EncodingTable.UTF8_TO_JIS_TABLE[utf8];
+          jis = EncodingTable.UTF8_TO_JIS_TABLE[utf8] || EncodingTable.UTF8_TO_JIS_ALIAS_TABLE[utf8];
           if (jis == null) {
             if (fallbackOption) {
               handleFallback(results, bytes, fallbackOption);
@@ -26106,9 +26654,6 @@ var require_encoding_convert = __commonJS({
             if (jis < 255) {
               results[results.length] = jis + 128;
             } else {
-              if (jis > 65536) {
-                jis -= 65536;
-              }
               b1 = jis >> 8;
               b2 = jis & 255;
               if (b1 & 1) {
@@ -26147,7 +26692,7 @@ var require_encoding_convert = __commonJS({
       var results = [];
       var i = 0;
       var len = data && data.length;
-      var b, bytes, utf8, jis;
+      var b, bytes, utf8, jis, isJISX0212;
       var fallbackOption = options && options.fallback;
       for (; i < len; i++) {
         b = data[i];
@@ -26162,31 +26707,25 @@ var require_encoding_convert = __commonJS({
             bytes = [b, data[i + 1], data[i + 2], data[i + 3]];
             utf8 = (b << 24) + (data[++i] << 16) + (data[++i] << 8) + (data[++i] & 255);
           }
-          jis = EncodingTable.UTF8_TO_JIS_TABLE[utf8];
-          if (jis != null && EncodingTable.UTF8_TO_JISX0212_TABLE[utf8] != null) {
-            jis = null;
+          jis = EncodingTable.UTF8_TO_JISX0212_TABLE[utf8];
+          isJISX0212 = jis != null;
+          if (jis == null) {
+            jis = EncodingTable.UTF8_TO_JIS_TABLE[utf8] || EncodingTable.UTF8_TO_JIS_ALIAS_TABLE[utf8];
           }
           if (jis == null) {
-            jis = EncodingTable.UTF8_TO_JISX0212_TABLE[utf8];
-            if (jis == null) {
-              if (fallbackOption) {
-                handleFallback(results, bytes, fallbackOption);
-              } else {
-                results[results.length] = config2.FALLBACK_CHARACTER;
-              }
+            if (fallbackOption) {
+              handleFallback(results, bytes, fallbackOption);
             } else {
-              results[results.length] = 143;
-              results[results.length] = (jis >> 8) - 128 & 255;
-              results[results.length] = (jis & 255) - 128 & 255;
+              results[results.length] = config2.FALLBACK_CHARACTER;
             }
           } else {
-            if (jis > 65536) {
-              jis -= 65536;
-            }
             if (jis < 255) {
               results[results.length] = 142;
               results[results.length] = jis - 128 & 255;
             } else {
+              if (isJISX0212) {
+                results[results.length] = 143;
+              }
               results[results.length] = (jis >> 8) - 128 & 255;
               results[results.length] = (jis & 255) - 128 & 255;
             }
@@ -26203,7 +26742,7 @@ var require_encoding_convert = __commonJS({
       var index = 0;
       var len = data && data.length;
       var i = 0;
-      var b, bytes, utf8, jis;
+      var b, bytes, utf8, jis, isJISX0212;
       var fallbackOption = options && options.fallback;
       var esc2 = [
         27,
@@ -26241,39 +26780,24 @@ var require_encoding_convert = __commonJS({
             bytes = [b, data[i + 1], data[i + 2], data[i + 3]];
             utf8 = (b << 24) + (data[++i] << 16) + (data[++i] << 8) + (data[++i] & 255);
           }
-          jis = EncodingTable.UTF8_TO_JIS_TABLE[utf8];
-          if (jis != null && EncodingTable.UTF8_TO_JISX0212_TABLE[utf8] != null) {
-            jis = null;
+          jis = EncodingTable.UTF8_TO_JISX0212_TABLE[utf8];
+          isJISX0212 = jis != null;
+          if (jis == null) {
+            jis = EncodingTable.UTF8_TO_JIS_TABLE[utf8] || EncodingTable.UTF8_TO_JIS_ALIAS_TABLE[utf8];
           }
           if (jis == null) {
-            jis = EncodingTable.UTF8_TO_JISX0212_TABLE[utf8];
-            if (jis == null) {
-              if (index !== 0) {
-                index = 0;
-                results[results.length] = esc2[0];
-                results[results.length] = esc2[1];
-                results[results.length] = esc2[2];
-              }
-              if (fallbackOption) {
-                handleFallback(results, bytes, fallbackOption);
-              } else {
-                results[results.length] = config2.FALLBACK_CHARACTER;
-              }
+            if (index !== 0) {
+              index = 0;
+              results[results.length] = esc2[0];
+              results[results.length] = esc2[1];
+              results[results.length] = esc2[2];
+            }
+            if (fallbackOption) {
+              handleFallback(results, bytes, fallbackOption);
             } else {
-              if (index !== 3) {
-                index = 3;
-                results[results.length] = esc2[9];
-                results[results.length] = esc2[10];
-                results[results.length] = esc2[11];
-                results[results.length] = esc2[12];
-              }
-              results[results.length] = jis >> 8 & 255;
-              results[results.length] = jis & 255;
+              results[results.length] = config2.FALLBACK_CHARACTER;
             }
           } else {
-            if (jis > 65536) {
-              jis -= 65536;
-            }
             if (jis < 255) {
               if (index !== 2) {
                 index = 2;
@@ -26283,7 +26807,15 @@ var require_encoding_convert = __commonJS({
               }
               results[results.length] = jis & 255;
             } else {
-              if (index !== 1) {
+              if (isJISX0212) {
+                if (index !== 3) {
+                  index = 3;
+                  results[results.length] = esc2[9];
+                  results[results.length] = esc2[10];
+                  results[results.length] = esc2[11];
+                  results[results.length] = esc2[12];
+                }
+              } else if (index !== 1) {
                 index = 1;
                 results[results.length] = esc2[3];
                 results[results.length] = esc2[4];
@@ -26341,7 +26873,7 @@ var require_encoding_convert = __commonJS({
       var i = 0;
       var len = data && data.length;
       var n, c, c2, c3, c4, code;
-      var ignoreSurrogatePair = options && options.ignoreSurrogatePair;
+      var asCodePoint = options && options.asCodePoint;
       while (i < len) {
         c = data[i++];
         n = c >> 4;
@@ -26360,7 +26892,7 @@ var require_encoding_convert = __commonJS({
           c4 = data[i++];
           code = (c & 7) << 18 | (c2 & 63) << 12 | (c3 & 63) << 6 | c4 & 63;
         }
-        if (code <= 65535 || ignoreSurrogatePair) {
+        if (code <= 65535 || asCodePoint) {
           results[results.length] = code;
         } else {
           code -= 65536;
@@ -26804,7 +27336,7 @@ var require_encoding_convert = __commonJS({
       switch (fallbackOption) {
         case "html-entity":
         case "html-entity-hex":
-          var unicode = UTF8ToUNICODE(bytes, { ignoreSurrogatePair: true })[0];
+          var unicode = UTF8ToUNICODE(bytes, { asCodePoint: true })[0];
           if (unicode) {
             results[results.length] = 38;
             results[results.length] = 35;
@@ -26975,19 +27507,23 @@ var require_package = __commonJS({
   "../node_modules/encoding-japanese/package.json"(exports, module) {
     module.exports = {
       name: "encoding-japanese",
-      version: "2.3.0",
-      description: "Convert and detect character encoding in JavaScript",
+      version: "2.4.0",
+      description: "Convert and detect character encodings in JavaScript",
       main: "src/index.js",
+      types: "index.d.ts",
       files: [
         "encoding.js",
         "encoding.min.js",
+        "index.d.ts",
         "src/*"
       ],
       scripts: {
         build: "npm run compile && npm run minify",
         compile: "browserify src/index.js -o encoding.js -s Encoding -p [ bannerify --file src/banner.js ] --no-bundle-external --bare",
         minify: "uglifyjs encoding.js -o encoding.min.js --comments -c -m -b ascii_only=true,beautify=false",
-        test: "eslint . && npm run build && mocha tests/test",
+        lint: "eslint .",
+        test: "npm run build && npm run test:types && mocha tests/test",
+        "test:types": "tsc --project tsconfig.types.json",
         watch: "watchify src/index.js -o encoding.js -s Encoding -p [ bannerify --file src/banner.js ] --no-bundle-external --bare --poll=300 -v"
       },
       engines: {
@@ -27004,33 +27540,38 @@ var require_package = __commonJS({
       },
       homepage: "https://github.com/polygonplanet/encoding.js",
       keywords: [
-        "base64",
+        "encoding",
         "charset",
         "convert",
         "detect",
-        "encoding",
-        "euc-jp",
-        "eucjp",
-        "iconv",
-        "iso-2022-jp",
         "japanese",
+        "iconv",
+        "shift-jis",
+        "cp932",
+        "euc-jp",
         "jis",
+        "utf-8",
+        "unicode",
+        "utf-16",
+        "base64",
+        "urlencode",
+        "urldecode",
+        "utf8",
         "shift_jis",
         "sjis",
-        "unicode",
-        "urldecode",
-        "urlencode",
-        "utf-16",
-        "utf-32",
-        "utf-8"
+        "eucjp"
       ],
-      dependencies: {},
       devDependencies: {
+        "@eslint/js": "^10.0.1",
+        "@stylistic/eslint-plugin": "^5.10.0",
+        "@types/node": "^26.5.0",
         bannerify: "^1.0.1",
         browserify: "^17.0.1",
-        eslint: "^8.57.0",
+        eslint: "^10.9.1",
+        globals: "^17.12.0",
         mocha: "^11.8.0",
         "package-json-versionify": "^1.0.4",
+        typescript: "^7.0.2",
         "uglify-js": "^3.19.3",
         watchify: "^4.0.0"
       },
@@ -27475,7 +28016,7 @@ var require_src = __commonJS({
         var len = data && data.length;
         var i = 0;
         var c, code, next;
-        for (i = 0; i < len; i++) {
+        for (; i < len; i++) {
           c = data[i];
           if (c > 65376 && c < 65440) {
             code = KanaCaseTable.ZENKANA_TABLE[c - 65377];
@@ -27559,11 +28100,12 @@ var require_src = __commonJS({
   }
 });
 
-// ../node_modules/libmime/lib/charsets.js
+// ../node_modules/libmime/dist/cjs/charsets.js
 var require_charsets = __commonJS({
-  "../node_modules/libmime/lib/charsets.js"(exports, module) {
+  "../node_modules/libmime/dist/cjs/charsets.js"(exports, module) {
     "use strict";
-    module.exports = {
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var charsets = {
       "866": "IBM866",
       "unicode-1-1-utf-8": "UTF-8",
       "utf-8": "UTF-8",
@@ -27771,2548 +28313,2221 @@ var require_charsets = __commonJS({
       "utf-16": "UTF-16LE",
       "utf-16le": "UTF-16LE"
     };
+    exports.default = charsets;
+    module.exports = exports.default;
   }
 });
 
-// ../node_modules/libmime/lib/charset.js
+// ../node_modules/libmime/dist/cjs/charset.js
 var require_charset = __commonJS({
-  "../node_modules/libmime/lib/charset.js"(exports, module) {
+  "../node_modules/libmime/dist/cjs/charset.js"(exports) {
     "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var iconv = require_lib();
-    var encodingJapanese = require_src();
-    var charsets = require_charsets();
-    var charset = module.exports = {
-      /**
-       * Encodes an unicode string into an Buffer object as UTF-8
-       *
-       * We force UTF-8 here, no strange encodings allowed.
-       *
-       * @param {String} str String to be encoded
-       * @return {Buffer} UTF-8 encoded typed array
-       */
-      encode(str) {
-        return Buffer2.from(str, "utf-8");
-      },
-      /**
-       * Decodes a string from Buffer to an unicode string using specified encoding
-       * NB! Throws if unknown charset is used
-       *
-       * @param {Buffer} buf Binary data to be decoded
-       * @param {String} [fromCharset='UTF-8'] Binary data is decoded into string using this charset
-       * @return {String} Decoded string
-       */
-      decode(buf, fromCharset) {
-        fromCharset = charset.normalizeCharset(fromCharset || "UTF-8");
-        if (/^(us-)?ascii|utf-8|7bit$/i.test(fromCharset)) {
-          return buf.toString("utf-8");
-        }
-        try {
-          if (/^jis|^iso-?2022-?jp|^EUCJP/i.test(fromCharset)) {
-            if (typeof buf === "string") {
-              buf = Buffer2.from(buf);
-            }
-            try {
-              let output = encodingJapanese.convert(buf, {
-                to: "UNICODE",
-                from: fromCharset,
-                type: "string"
-              });
-              if (typeof output === "string") {
-                return output;
-              }
-            } catch (err) {
-            }
-          }
-          return iconv.decode(buf, fromCharset);
-        } catch (err) {
-          return buf.toString();
-        }
-      },
-      /**
-       * Convert a string from specific encoding to UTF-8 Buffer
-       *
-       * @param {String|Buffer} data String or Buffer to be encoded
-       * @param {String} [fromCharset='UTF-8'] Source encoding for the string
-       * @return {Buffer} UTF-8 encoded typed array
-       */
-      convert(data, fromCharset) {
-        fromCharset = charset.normalizeCharset(fromCharset || "UTF-8");
-        let bufString;
-        if (typeof data !== "string") {
-          if (/^(us-)?ascii|utf-8|7bit$/i.test(fromCharset)) {
-            return data;
-          }
-          bufString = charset.decode(data, fromCharset);
-          return charset.encode(bufString);
-        }
-        return charset.encode(data);
-      },
-      /**
-       * Converts well known invalid character set names to proper names.
-       * eg. win-1257 will be converted to windows-1257. Missing or non-string
-       * input defaults to UTF-8.
-       *
-       * @param {String} charset Charset name to convert
-       * @return {String} Canonicalized charset name
-       */
-      normalizeCharset(charset2) {
-        charset2 = (charset2 || "UTF-8").toString().toLowerCase().trim();
-        if (charsets.hasOwnProperty(charset2) && charsets[charset2]) {
-          return charsets[charset2];
-        }
-        charset2 = charset2.replace(/^utf[-_]?(\d+)/, "utf-$1").replace(/^(?:us[-_]?)ascii/, "windows-1252").replace(/^win(?:dows)?[-_]?(\d+)/, "windows-$1").replace(/^(?:latin|iso[-_]?8859)?[-_]?(\d+)/, "iso-8859-$1").replace(/^l[-_]?(\d+)/, "iso-8859-$1");
-        if (charsets.hasOwnProperty(charset2) && charsets[charset2]) {
-          return charsets[charset2];
-        }
-        return charset2.toUpperCase();
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.encode = encode3;
+    exports.decode = decode3;
+    exports.convert = convert;
+    exports.normalizeCharset = normalizeCharset;
+    var node_buffer_1 = __require("node:buffer");
+    var iconv_lite_1 = __importDefault(require_lib());
+    var encoding_japanese_1 = __importDefault(require_src());
+    var charsets_js_1 = __importDefault(require_charsets());
+    var UTF8_COMPATIBLE = /^(?:(?:us-)?ascii|utf-8|7bit)$/i;
+    var UNSUPPORTED_CODECS = new Set(["utf7", "utf7imap", "base64", "hex"].map((name) => iconv_lite_1.default.getCodec(name)));
+    var isUnsupportedCodec = (name) => {
+      try {
+        return UNSUPPORTED_CODECS.has(iconv_lite_1.default.getCodec(name));
+      } catch (_err) {
+        return false;
       }
     };
+    var CHARSET_ALIASES = new Map(Object.entries(charsets_js_1.default));
+    function encode3(str) {
+      return node_buffer_1.Buffer.from(str, "utf-8");
+    }
+    function decode3(buf, fromCharset) {
+      fromCharset = normalizeCharset(fromCharset || "UTF-8");
+      if (UTF8_COMPATIBLE.test(fromCharset)) {
+        return buf.toString("utf-8");
+      }
+      if (isUnsupportedCodec(fromCharset)) {
+        return buf.toString();
+      }
+      try {
+        if (/^jis|^iso-?2022-?jp|^EUCJP/i.test(fromCharset)) {
+          if (typeof buf === "string") {
+            buf = node_buffer_1.Buffer.from(buf);
+          }
+          try {
+            let output = encoding_japanese_1.default.convert(buf, {
+              to: "UNICODE",
+              from: fromCharset,
+              type: "string"
+            });
+            if (typeof output === "string") {
+              return output;
+            }
+          } catch (_err) {
+          }
+        }
+        return iconv_lite_1.default.decode(buf, fromCharset);
+      } catch (_err) {
+        return buf.toString();
+      }
+    }
+    function convert(data, fromCharset) {
+      fromCharset = normalizeCharset(fromCharset || "UTF-8");
+      if (typeof data !== "string") {
+        if (UTF8_COMPATIBLE.test(fromCharset)) {
+          return data;
+        }
+        return encode3(decode3(data, fromCharset));
+      }
+      return encode3(data);
+    }
+    function normalizeCharset(charset) {
+      let name = (charset || "UTF-8").toString().toLowerCase().trim();
+      let canonical = CHARSET_ALIASES.get(name);
+      if (canonical) {
+        return canonical;
+      }
+      name = name.replace(/^utf[-_]?(\d+)/, "utf-$1").replace(/^(?:us[-_]?)ascii/, "windows-1252").replace(/^win(?:dows)?[-_]?(\d+)/, "windows-$1").replace(/^(?:latin|iso[-_]?8859)?[-_]?(\d+)/, "iso-8859-$1").replace(/^l[-_]?(\d+)/, "iso-8859-$1");
+      return CHARSET_ALIASES.get(name) || name.toUpperCase();
+    }
+    exports.default = { encode: encode3, decode: decode3, convert, normalizeCharset };
+    Object.defineProperty(exports, "default", { value: exports, enumerable: false, writable: true, configurable: true });
   }
 });
 
-// ../node_modules/libbase64/lib/libbase64.js
-var require_libbase64 = __commonJS({
-  "../node_modules/libbase64/lib/libbase64.js"(exports, module) {
-    "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var stream = __require("node:stream");
-    var Transform = stream.Transform;
-    function encode3(buffer) {
-      if (typeof buffer === "string") {
-        buffer = Buffer2.from(buffer, "utf-8");
-      }
-      return buffer.toString("base64");
-    }
-    function decode3(str) {
-      str = str || "";
-      return Buffer2.from(str, "base64");
-    }
-    function wrap(str, lineLength) {
-      str = (str || "").toString();
-      lineLength = lineLength || 76;
-      if (str.length <= lineLength) {
-        return str;
-      }
-      let result = [];
-      let pos = 0;
-      let chunkLength = lineLength * 1024;
-      while (pos < str.length) {
-        let wrappedLines = str.substr(pos, chunkLength).replace(new RegExp(".{" + lineLength + "}", "g"), "$&\r\n").trim();
-        result.push(wrappedLines);
-        pos += chunkLength;
-      }
-      return result.join("\r\n").trim();
-    }
-    var Encoder = class extends Transform {
-      constructor(options) {
-        super();
-        this.options = options || {};
-        if (this.options.lineLength !== false) {
-          this.options.lineLength = Number(this.options.lineLength) || 76;
-        }
-        this.skipStartBytes = Number(this.options.skipStartBytes) || 0;
-        this.limitOutbutBytes = Number(this.options.limitOutbutBytes) || 0;
-        this._curLine = this.options.startPadding || "";
-        this._remainingBytes = false;
-        this.inputBytes = 0;
-        this.outputBytes = 0;
-      }
-      _writeChunk(chunk) {
-        if (this.skipStartBytes) {
-          if (chunk.length <= this.skipStartBytes) {
-            this.skipStartBytes -= chunk.length;
-            return;
-          }
-          chunk = chunk.slice(this.skipStartBytes);
-          this.skipStartBytes = 0;
-        }
-        if (this.limitOutbutBytes) {
-          if (this.outputBytes + chunk.length <= this.limitOutbutBytes) {
-          } else if (this.outputBytes >= this.limitOutbutBytes) {
-            return;
-          } else {
-            chunk = chunk.slice(0, this.limitOutbutBytes - this.outputBytes);
-          }
-        }
-        this.outputBytes += chunk.length;
-        this.push(chunk);
-      }
-      _getWrapped(str, isFinal) {
-        str = wrap(str, this.options.lineLength);
-        if (!isFinal && str.length === this.options.lineLength) {
-          str += "\r\n";
-        }
-        return str;
-      }
-      _transform(chunk, encoding, done) {
-        if (encoding !== "buffer") {
-          chunk = Buffer2.from(chunk, encoding);
-        }
-        if (!chunk || !chunk.length) {
-          return setImmediate(done);
-        }
-        this.inputBytes += chunk.length;
-        if (this._remainingBytes && this._remainingBytes.length) {
-          chunk = Buffer2.concat([this._remainingBytes, chunk], this._remainingBytes.length + chunk.length);
-          this._remainingBytes = false;
-        }
-        if (chunk.length % 3) {
-          this._remainingBytes = chunk.slice(chunk.length - chunk.length % 3);
-          chunk = chunk.slice(0, chunk.length - chunk.length % 3);
-        } else {
-          this._remainingBytes = false;
-        }
-        let b64 = this._curLine + encode3(chunk);
-        if (this.options.lineLength) {
-          b64 = this._getWrapped(b64);
-          let lastLF = b64.lastIndexOf("\n");
-          if (lastLF < 0) {
-            this._curLine = b64;
-            b64 = "";
-          } else if (lastLF === b64.length - 1) {
-            this._curLine = "";
-          } else {
-            this._curLine = b64.substr(lastLF + 1);
-            b64 = b64.substr(0, lastLF + 1);
-          }
-        }
-        if (b64) {
-          this._writeChunk(Buffer2.from(b64, "ascii"), false);
-        }
-        setImmediate(done);
-      }
-      _flush(done) {
-        if (this._remainingBytes && this._remainingBytes.length) {
-          this._curLine += encode3(this._remainingBytes);
-        }
-        if (this._curLine) {
-          this._curLine = this._getWrapped(this._curLine, true);
-          this._writeChunk(Buffer2.from(this._curLine, "ascii"), true);
-          this._curLine = "";
-        }
-        done();
-      }
-    };
-    var Decoder = class extends Transform {
-      constructor(options) {
-        super();
-        this.options = options || {};
-        this._curLine = "";
-        this.inputBytes = 0;
-        this.outputBytes = 0;
-      }
-      _transform(chunk, encoding, done) {
-        if (!chunk || !chunk.length) {
-          return setImmediate(done);
-        }
-        this.inputBytes += chunk.length;
-        let b64 = this._curLine + chunk.toString("ascii");
-        this._curLine = "";
-        if (/[^a-zA-Z0-9+/=]/.test(b64)) {
-          b64 = b64.replace(/[^a-zA-Z0-9+/=]/g, "");
-        }
-        if (b64.length < 4) {
-          this._curLine = b64;
-          b64 = "";
-        } else if (b64.length % 4) {
-          this._curLine = b64.substr(-b64.length % 4);
-          b64 = b64.substr(0, b64.length - this._curLine.length);
-        }
-        if (b64) {
-          let buf = decode3(b64);
-          this.outputBytes += buf.length;
-          this.push(buf);
-        }
-        setImmediate(done);
-      }
-      _flush(done) {
-        if (this._curLine) {
-          let buf = decode3(this._curLine);
-          this.outputBytes += buf.length;
-          this.push(buf);
-          this._curLine = "";
-        }
-        setImmediate(done);
-      }
-    };
-    module.exports = {
-      encode: encode3,
-      decode: decode3,
-      wrap,
-      Encoder,
-      Decoder
-    };
-  }
-});
-
-// ../node_modules/libqp/lib/libqp.js
-var require_libqp = __commonJS({
-  "../node_modules/libqp/lib/libqp.js"(exports, module) {
-    "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var stream = __require("node:stream");
-    var Transform = stream.Transform;
-    function encode3(buffer) {
-      if (typeof buffer === "string") {
-        buffer = Buffer2.from(buffer, "utf-8");
-      }
-      let ranges = [
-        // https://tools.ietf.org/html/rfc2045#section-6.7
-        [9],
-        // <TAB>
-        [10],
-        // <LF>
-        [13],
-        // <CR>
-        [32, 60],
-        // <SP>!"#$%&'()*+,-./0123456789:;
-        [62, 126]
-        // >?@ABCDEFGHIJKLMNOPQRSTUVWXYZ[\]^_`abcdefghijklmnopqrstuvwxyz{|}
-      ];
-      let result = "";
-      let ord;
-      for (let i = 0, len = buffer.length; i < len; i++) {
-        ord = buffer[i];
-        if (checkRanges(ord, ranges) && !((ord === 32 || ord === 9) && (i === len - 1 || buffer[i + 1] === 10 || buffer[i + 1] === 13))) {
-          result += String.fromCharCode(ord);
-          continue;
-        }
-        result += "=" + (ord < 16 ? "0" : "") + ord.toString(16).toUpperCase();
-      }
-      return result;
-    }
-    function decode3(str) {
-      str = (str || "").toString().replace(/[\t ]+$/gm, "").replace(/\=(?:\r?\n|$)/g, "");
-      let encodedBytesCount = (str.match(/\=[\da-fA-F]{2}/g) || []).length, bufferLength = str.length - encodedBytesCount * 2, chr, hex, buffer = Buffer2.alloc(bufferLength), bufferPos = 0;
-      for (let i = 0, len = str.length; i < len; i++) {
-        chr = str.charAt(i);
-        if (chr === "=" && (hex = str.substr(i + 1, 2)) && /[\da-fA-F]{2}/.test(hex)) {
-          buffer[bufferPos++] = parseInt(hex, 16);
-          i += 2;
-          continue;
-        }
-        buffer[bufferPos++] = chr.charCodeAt(0);
-      }
-      return buffer;
-    }
-    function wrap(str, lineLength) {
-      str = (str || "").toString();
-      lineLength = lineLength || 76;
-      if (str.length <= lineLength) {
-        return str;
-      }
-      let pos = 0, len = str.length, match, code, line, lineMargin = Math.floor(lineLength / 3), result = "";
-      while (pos < len) {
-        line = str.substr(pos, lineLength);
-        if (match = line.match(/\r\n/)) {
-          line = line.substr(0, match.index + match[0].length);
-          result += line;
-          pos += line.length;
-          continue;
-        }
-        if (line.substr(-1) === "\n") {
-          result += line;
-          pos += line.length;
-          continue;
-        } else if (match = line.substr(-lineMargin).match(/\n.*?$/)) {
-          line = line.substr(0, line.length - (match[0].length - 1));
-          result += line;
-          pos += line.length;
-          continue;
-        } else if (line.length > lineLength - lineMargin && (match = line.substr(-lineMargin).match(/[ \t\.,!\?][^ \t\.,!\?]*$/))) {
-          line = line.substr(0, line.length - (match[0].length - 1));
-        } else if (line.match(/\=[\da-f]{0,2}$/i)) {
-          if (match = line.match(/\=[\da-f]{0,1}$/i)) {
-            line = line.substr(0, line.length - match[0].length);
-          }
-          while (line.length > 3 && line.length < len - pos && !line.match(/^(?:=[\da-f]{2}){1,4}$/i) && (match = line.match(/\=[\da-f]{2}$/gi))) {
-            code = parseInt(match[0].substr(1, 2), 16);
-            if (code < 128) {
-              break;
-            }
-            line = line.substr(0, line.length - 3);
-            if (code >= 192) {
-              break;
-            }
-          }
-        }
-        if (pos + line.length < len && line.substr(-1) !== "\n") {
-          if (line.length === lineLength && line.match(/\=[\da-f]{2}$/i)) {
-            line = line.substr(0, line.length - 3);
-          } else if (line.length === lineLength) {
-            line = line.substr(0, line.length - 1);
-          }
-          pos += line.length;
-          line += "=\r\n";
-        } else {
-          pos += line.length;
-        }
-        result += line;
-      }
-      return result;
-    }
-    function checkRanges(nr, ranges) {
-      for (let i = ranges.length - 1; i >= 0; i--) {
-        if (!ranges[i].length) {
-          continue;
-        }
-        if (ranges[i].length === 1 && nr === ranges[i][0]) {
-          return true;
-        }
-        if (ranges[i].length === 2 && nr >= ranges[i][0] && nr <= ranges[i][1]) {
-          return true;
-        }
-      }
-      return false;
-    }
-    var Encoder = class extends Transform {
-      constructor(options) {
-        super();
-        this.options = options || {};
-        if (this.options.lineLength !== false) {
-          this.options.lineLength = this.options.lineLength || 76;
-        }
-        this._curLine = "";
-        this.inputBytes = 0;
-        this.outputBytes = 0;
-        Transform.call(this, this.options);
-      }
-      _transform(chunk, encoding, done) {
-        let qp;
-        if (encoding !== "buffer") {
-          chunk = Buffer2.from(chunk, encoding);
-        }
-        if (!chunk || !chunk.length) {
-          return done();
-        }
-        this.inputBytes += chunk.length;
-        if (this.options.lineLength) {
-          qp = this._curLine + encode3(chunk);
-          qp = wrap(qp, this.options.lineLength);
-          qp = qp.replace(/(^|\n)([^\n]*)$/, (match, lineBreak, lastLine) => {
-            this._curLine = lastLine;
-            return lineBreak;
-          });
-          if (qp) {
-            this.outputBytes += qp.length;
-            this.push(qp);
-          }
-        } else {
-          qp = encode3(chunk);
-          this.outputBytes += qp.length;
-          this.push(qp, "ascii");
-        }
-        done();
-      }
-      _flush(done) {
-        if (this._curLine) {
-          this.outputBytes += this._curLine.length;
-          this.push(this._curLine, "ascii");
-        }
-        done();
-      }
-    };
-    var Decoder = class extends Transform {
-      constructor(options) {
-        options = options || {};
-        super(options);
-        this.options = options;
-        this._curLine = "";
-        this.inputBytes = 0;
-        this.outputBytes = 0;
-        this.qpChunks = [];
-      }
-      _transform(chunk, encoding, done) {
-        if (!chunk || !chunk.length) {
-          return done();
-        }
-        if (typeof chunk === "string") {
-          chunk = Buffer2.from(chunk, encoding);
-        }
-        this.qpChunks.push(chunk);
-        this.inputBytes += chunk.length;
-        done();
-      }
-      _flush(done) {
-        if (this.inputBytes) {
-          let buf = decode3(Buffer2.concat(this.qpChunks, this.inputBytes).toString());
-          this.outputBytes += buf.length;
-          this.push(buf);
-        }
-        done();
-      }
-    };
-    module.exports = {
-      encode: encode3,
-      decode: decode3,
-      wrap,
-      Encoder,
-      Decoder
-    };
-  }
-});
-
-// ../node_modules/libmime/lib/mimetypes.js
+// ../node_modules/libmime/dist/cjs/mimetypes.js
 var require_mimetypes = __commonJS({
-  "../node_modules/libmime/lib/mimetypes.js"(exports, module) {
+  "../node_modules/libmime/dist/cjs/mimetypes.js"(exports) {
     "use strict";
-    module.exports = {
-      list: {
-        "application/acad": "dwg",
-        "application/applixware": "aw",
-        "application/arj": "arj",
-        "application/atom+xml": "xml",
-        "application/atomcat+xml": "atomcat",
-        "application/atomsvc+xml": "atomsvc",
-        "application/base64": ["mm", "mme"],
-        "application/binhex": "hqx",
-        "application/binhex4": "hqx",
-        "application/book": ["book", "boo"],
-        "application/ccxml+xml,": "ccxml",
-        "application/cdf": "cdf",
-        "application/cdmi-capability": "cdmia",
-        "application/cdmi-container": "cdmic",
-        "application/cdmi-domain": "cdmid",
-        "application/cdmi-object": "cdmio",
-        "application/cdmi-queue": "cdmiq",
-        "application/clariscad": "ccad",
-        "application/commonground": "dp",
-        "application/cu-seeme": "cu",
-        "application/davmount+xml": "davmount",
-        "application/drafting": "drw",
-        "application/dsptype": "tsp",
-        "application/dssc+der": "dssc",
-        "application/dssc+xml": "xdssc",
-        "application/dxf": "dxf",
-        "application/ecmascript": ["js", "es"],
-        "application/emma+xml": "emma",
-        "application/envoy": "evy",
-        "application/epub+zip": "epub",
-        "application/excel": ["xls", "xl", "xla", "xlb", "xlc", "xld", "xlk", "xll", "xlm", "xlt", "xlv", "xlw"],
-        "application/exi": "exi",
-        "application/font-tdpfr": "pfr",
-        "application/fractals": "fif",
-        "application/freeloader": "frl",
-        "application/futuresplash": "spl",
-        "application/gnutar": "tgz",
-        "application/groupwise": "vew",
-        "application/hlp": "hlp",
-        "application/hta": "hta",
-        "application/hyperstudio": "stk",
-        "application/i-deas": "unv",
-        "application/iges": ["iges", "igs"],
-        "application/inf": "inf",
-        "application/internet-property-stream": "acx",
-        "application/ipfix": "ipfix",
-        "application/java": "class",
-        "application/java-archive": "jar",
-        "application/java-byte-code": "class",
-        "application/java-serialized-object": "ser",
-        "application/java-vm": "class",
-        "application/javascript": "js",
-        "application/json": "json",
-        "application/lha": "lha",
-        "application/lzx": "lzx",
-        "application/mac-binary": "bin",
-        "application/mac-binhex": "hqx",
-        "application/mac-binhex40": "hqx",
-        "application/mac-compactpro": "cpt",
-        "application/macbinary": "bin",
-        "application/mads+xml": "mads",
-        "application/marc": "mrc",
-        "application/marcxml+xml": "mrcx",
-        "application/mathematica": "ma",
-        "application/mathml+xml": "mathml",
-        "application/mbedlet": "mbd",
-        "application/mbox": "mbox",
-        "application/mcad": "mcd",
-        "application/mediaservercontrol+xml": "mscml",
-        "application/metalink4+xml": "meta4",
-        "application/mets+xml": "mets",
-        "application/mime": "aps",
-        "application/mods+xml": "mods",
-        "application/mp21": "m21",
-        "application/mp4": "mp4",
-        "application/mspowerpoint": ["ppt", "pot", "pps", "ppz"],
-        "application/msword": ["doc", "dot", "w6w", "wiz", "word"],
-        "application/mswrite": "wri",
-        "application/mxf": "mxf",
-        "application/netmc": "mcp",
-        "application/octet-stream": ["*"],
-        "application/oda": "oda",
-        "application/oebps-package+xml": "opf",
-        "application/ogg": "ogx",
-        "application/olescript": "axs",
-        "application/onenote": "onetoc",
-        "application/patch-ops-error+xml": "xer",
-        "application/pdf": "pdf",
-        "application/pgp-encrypted": "asc",
-        "application/pgp-signature": "pgp",
-        "application/pics-rules": "prf",
-        "application/pkcs-12": "p12",
-        "application/pkcs-crl": "crl",
-        "application/pkcs10": "p10",
-        "application/pkcs7-mime": ["p7c", "p7m"],
-        "application/pkcs7-signature": "p7s",
-        "application/pkcs8": "p8",
-        "application/pkix-attr-cert": "ac",
-        "application/pkix-cert": ["cer", "crt"],
-        "application/pkix-crl": "crl",
-        "application/pkix-pkipath": "pkipath",
-        "application/pkixcmp": "pki",
-        "application/plain": "text",
-        "application/pls+xml": "pls",
-        "application/postscript": ["ps", "ai", "eps"],
-        "application/powerpoint": "ppt",
-        "application/pro_eng": ["part", "prt"],
-        "application/prs.cww": "cww",
-        "application/pskc+xml": "pskcxml",
-        "application/rdf+xml": "rdf",
-        "application/reginfo+xml": "rif",
-        "application/relax-ng-compact-syntax": "rnc",
-        "application/resource-lists+xml": "rl",
-        "application/resource-lists-diff+xml": "rld",
-        "application/ringing-tones": "rng",
-        "application/rls-services+xml": "rs",
-        "application/rsd+xml": "rsd",
-        "application/rss+xml": "xml",
-        "application/rtf": ["rtf", "rtx"],
-        "application/sbml+xml": "sbml",
-        "application/scvp-cv-request": "scq",
-        "application/scvp-cv-response": "scs",
-        "application/scvp-vp-request": "spq",
-        "application/scvp-vp-response": "spp",
-        "application/sdp": "sdp",
-        "application/sea": "sea",
-        "application/set": "set",
-        "application/set-payment-initiation": "setpay",
-        "application/set-registration-initiation": "setreg",
-        "application/shf+xml": "shf",
-        "application/sla": "stl",
-        "application/smil": ["smi", "smil"],
-        "application/smil+xml": "smi",
-        "application/solids": "sol",
-        "application/sounder": "sdr",
-        "application/sparql-query": "rq",
-        "application/sparql-results+xml": "srx",
-        "application/srgs": "gram",
-        "application/srgs+xml": "grxml",
-        "application/sru+xml": "sru",
-        "application/ssml+xml": "ssml",
-        "application/step": ["step", "stp"],
-        "application/streamingmedia": "ssm",
-        "application/tei+xml": "tei",
-        "application/thraud+xml": "tfi",
-        "application/timestamped-data": "tsd",
-        "application/toolbook": "tbk",
-        "application/vda": "vda",
-        "application/vnd.3gpp.pic-bw-large": "plb",
-        "application/vnd.3gpp.pic-bw-small": "psb",
-        "application/vnd.3gpp.pic-bw-var": "pvb",
-        "application/vnd.3gpp2.tcap": "tcap",
-        "application/vnd.3m.post-it-notes": "pwn",
-        "application/vnd.accpac.simply.aso": "aso",
-        "application/vnd.accpac.simply.imp": "imp",
-        "application/vnd.acucobol": "acu",
-        "application/vnd.acucorp": "atc",
-        "application/vnd.adobe.air-application-installer-package+zip": "air",
-        "application/vnd.adobe.fxp": "fxp",
-        "application/vnd.adobe.xdp+xml": "xdp",
-        "application/vnd.adobe.xfdf": "xfdf",
-        "application/vnd.ahead.space": "ahead",
-        "application/vnd.airzip.filesecure.azf": "azf",
-        "application/vnd.airzip.filesecure.azs": "azs",
-        "application/vnd.amazon.ebook": "azw",
-        "application/vnd.americandynamics.acc": "acc",
-        "application/vnd.amiga.ami": "ami",
-        "application/vnd.android.package-archive": "apk",
-        "application/vnd.anser-web-certificate-issue-initiation": "cii",
-        "application/vnd.anser-web-funds-transfer-initiation": "fti",
-        "application/vnd.antix.game-component": "atx",
-        "application/vnd.apple.installer+xml": "mpkg",
-        "application/vnd.apple.mpegurl": "m3u8",
-        "application/vnd.aristanetworks.swi": "swi",
-        "application/vnd.audiograph": "aep",
-        "application/vnd.blueice.multipass": "mpm",
-        "application/vnd.bmi": "bmi",
-        "application/vnd.businessobjects": "rep",
-        "application/vnd.chemdraw+xml": "cdxml",
-        "application/vnd.chipnuts.karaoke-mmd": "mmd",
-        "application/vnd.cinderella": "cdy",
-        "application/vnd.claymore": "cla",
-        "application/vnd.cloanto.rp9": "rp9",
-        "application/vnd.clonk.c4group": "c4g",
-        "application/vnd.cluetrust.cartomobile-config": "c11amc",
-        "application/vnd.cluetrust.cartomobile-config-pkg": "c11amz",
-        "application/vnd.commonspace": "csp",
-        "application/vnd.contact.cmsg": "cdbcmsg",
-        "application/vnd.cosmocaller": "cmc",
-        "application/vnd.crick.clicker": "clkx",
-        "application/vnd.crick.clicker.keyboard": "clkk",
-        "application/vnd.crick.clicker.palette": "clkp",
-        "application/vnd.crick.clicker.template": "clkt",
-        "application/vnd.crick.clicker.wordbank": "clkw",
-        "application/vnd.criticaltools.wbs+xml": "wbs",
-        "application/vnd.ctc-posml": "pml",
-        "application/vnd.cups-ppd": "ppd",
-        "application/vnd.curl.car": "car",
-        "application/vnd.curl.pcurl": "pcurl",
-        "application/vnd.data-vision.rdz": "rdz",
-        "application/vnd.denovo.fcselayout-link": "fe_launch",
-        "application/vnd.dna": "dna",
-        "application/vnd.dolby.mlp": "mlp",
-        "application/vnd.dpgraph": "dpg",
-        "application/vnd.dreamfactory": "dfac",
-        "application/vnd.dvb.ait": "ait",
-        "application/vnd.dvb.service": "svc",
-        "application/vnd.dynageo": "geo",
-        "application/vnd.ecowin.chart": "mag",
-        "application/vnd.enliven": "nml",
-        "application/vnd.epson.esf": "esf",
-        "application/vnd.epson.msf": "msf",
-        "application/vnd.epson.quickanime": "qam",
-        "application/vnd.epson.salt": "slt",
-        "application/vnd.epson.ssf": "ssf",
-        "application/vnd.eszigno3+xml": "es3",
-        "application/vnd.ezpix-album": "ez2",
-        "application/vnd.ezpix-package": "ez3",
-        "application/vnd.fdf": "fdf",
-        "application/vnd.fdsn.seed": "seed",
-        "application/vnd.flographit": "gph",
-        "application/vnd.fluxtime.clip": "ftc",
-        "application/vnd.framemaker": "fm",
-        "application/vnd.frogans.fnc": "fnc",
-        "application/vnd.frogans.ltf": "ltf",
-        "application/vnd.fsc.weblaunch": "fsc",
-        "application/vnd.fujitsu.oasys": "oas",
-        "application/vnd.fujitsu.oasys2": "oa2",
-        "application/vnd.fujitsu.oasys3": "oa3",
-        "application/vnd.fujitsu.oasysgp": "fg5",
-        "application/vnd.fujitsu.oasysprs": "bh2",
-        "application/vnd.fujixerox.ddd": "ddd",
-        "application/vnd.fujixerox.docuworks": "xdw",
-        "application/vnd.fujixerox.docuworks.binder": "xbd",
-        "application/vnd.fuzzysheet": "fzs",
-        "application/vnd.genomatix.tuxedo": "txd",
-        "application/vnd.geogebra.file": "ggb",
-        "application/vnd.geogebra.tool": "ggt",
-        "application/vnd.geometry-explorer": "gex",
-        "application/vnd.geonext": "gxt",
-        "application/vnd.geoplan": "g2w",
-        "application/vnd.geospace": "g3w",
-        "application/vnd.gmx": "gmx",
-        "application/vnd.google-earth.kml+xml": "kml",
-        "application/vnd.google-earth.kmz": "kmz",
-        "application/vnd.grafeq": "gqf",
-        "application/vnd.groove-account": "gac",
-        "application/vnd.groove-help": "ghf",
-        "application/vnd.groove-identity-message": "gim",
-        "application/vnd.groove-injector": "grv",
-        "application/vnd.groove-tool-message": "gtm",
-        "application/vnd.groove-tool-template": "tpl",
-        "application/vnd.groove-vcard": "vcg",
-        "application/vnd.hal+xml": "hal",
-        "application/vnd.handheld-entertainment+xml": "zmm",
-        "application/vnd.hbci": "hbci",
-        "application/vnd.hhe.lesson-player": "les",
-        "application/vnd.hp-hpgl": ["hgl", "hpg", "hpgl"],
-        "application/vnd.hp-hpid": "hpid",
-        "application/vnd.hp-hps": "hps",
-        "application/vnd.hp-jlyt": "jlt",
-        "application/vnd.hp-pcl": "pcl",
-        "application/vnd.hp-pclxl": "pclxl",
-        "application/vnd.hydrostatix.sof-data": "sfd-hdstx",
-        "application/vnd.hzn-3d-crossword": "x3d",
-        "application/vnd.ibm.minipay": "mpy",
-        "application/vnd.ibm.modcap": "afp",
-        "application/vnd.ibm.rights-management": "irm",
-        "application/vnd.ibm.secure-container": "sc",
-        "application/vnd.iccprofile": "icc",
-        "application/vnd.igloader": "igl",
-        "application/vnd.immervision-ivp": "ivp",
-        "application/vnd.immervision-ivu": "ivu",
-        "application/vnd.insors.igm": "igm",
-        "application/vnd.intercon.formnet": "xpw",
-        "application/vnd.intergeo": "i2g",
-        "application/vnd.intu.qbo": "qbo",
-        "application/vnd.intu.qfx": "qfx",
-        "application/vnd.ipunplugged.rcprofile": "rcprofile",
-        "application/vnd.irepository.package+xml": "irp",
-        "application/vnd.is-xpr": "xpr",
-        "application/vnd.isac.fcs": "fcs",
-        "application/vnd.jam": "jam",
-        "application/vnd.jcp.javame.midlet-rms": "rms",
-        "application/vnd.jisp": "jisp",
-        "application/vnd.joost.joda-archive": "joda",
-        "application/vnd.kahootz": "ktz",
-        "application/vnd.kde.karbon": "karbon",
-        "application/vnd.kde.kchart": "chrt",
-        "application/vnd.kde.kformula": "kfo",
-        "application/vnd.kde.kivio": "flw",
-        "application/vnd.kde.kontour": "kon",
-        "application/vnd.kde.kpresenter": "kpr",
-        "application/vnd.kde.kspread": "ksp",
-        "application/vnd.kde.kword": "kwd",
-        "application/vnd.kenameaapp": "htke",
-        "application/vnd.kidspiration": "kia",
-        "application/vnd.kinar": "kne",
-        "application/vnd.koan": "skp",
-        "application/vnd.kodak-descriptor": "sse",
-        "application/vnd.las.las+xml": "lasxml",
-        "application/vnd.llamagraphics.life-balance.desktop": "lbd",
-        "application/vnd.llamagraphics.life-balance.exchange+xml": "lbe",
-        "application/vnd.lotus-1-2-3": "123",
-        "application/vnd.lotus-approach": "apr",
-        "application/vnd.lotus-freelance": "pre",
-        "application/vnd.lotus-notes": "nsf",
-        "application/vnd.lotus-organizer": "org",
-        "application/vnd.lotus-screencam": "scm",
-        "application/vnd.lotus-wordpro": "lwp",
-        "application/vnd.macports.portpkg": "portpkg",
-        "application/vnd.mcd": "mcd",
-        "application/vnd.medcalcdata": "mc1",
-        "application/vnd.mediastation.cdkey": "cdkey",
-        "application/vnd.mfer": "mwf",
-        "application/vnd.mfmp": "mfm",
-        "application/vnd.micrografx.flo": "flo",
-        "application/vnd.micrografx.igx": "igx",
-        "application/vnd.mif": "mif",
-        "application/vnd.mobius.daf": "daf",
-        "application/vnd.mobius.dis": "dis",
-        "application/vnd.mobius.mbk": "mbk",
-        "application/vnd.mobius.mqy": "mqy",
-        "application/vnd.mobius.msl": "msl",
-        "application/vnd.mobius.plc": "plc",
-        "application/vnd.mobius.txf": "txf",
-        "application/vnd.mophun.application": "mpn",
-        "application/vnd.mophun.certificate": "mpc",
-        "application/vnd.mozilla.xul+xml": "xul",
-        "application/vnd.ms-artgalry": "cil",
-        "application/vnd.ms-cab-compressed": "cab",
-        "application/vnd.ms-excel": ["xls", "xla", "xlc", "xlm", "xlt", "xlw", "xlb", "xll"],
-        "application/vnd.ms-excel.addin.macroenabled.12": "xlam",
-        "application/vnd.ms-excel.sheet.binary.macroenabled.12": "xlsb",
-        "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
-        "application/vnd.ms-excel.template.macroenabled.12": "xltm",
-        "application/vnd.ms-fontobject": "eot",
-        "application/vnd.ms-htmlhelp": "chm",
-        "application/vnd.ms-ims": "ims",
-        "application/vnd.ms-lrm": "lrm",
-        "application/vnd.ms-officetheme": "thmx",
-        "application/vnd.ms-outlook": "msg",
-        "application/vnd.ms-pki.certstore": "sst",
-        "application/vnd.ms-pki.pko": "pko",
-        "application/vnd.ms-pki.seccat": "cat",
-        "application/vnd.ms-pki.stl": "stl",
-        "application/vnd.ms-pkicertstore": "sst",
-        "application/vnd.ms-pkiseccat": "cat",
-        "application/vnd.ms-pkistl": "stl",
-        "application/vnd.ms-powerpoint": ["ppt", "pot", "pps", "ppa", "pwz"],
-        "application/vnd.ms-powerpoint.addin.macroenabled.12": "ppam",
-        "application/vnd.ms-powerpoint.presentation.macroenabled.12": "pptm",
-        "application/vnd.ms-powerpoint.slide.macroenabled.12": "sldm",
-        "application/vnd.ms-powerpoint.slideshow.macroenabled.12": "ppsm",
-        "application/vnd.ms-powerpoint.template.macroenabled.12": "potm",
-        "application/vnd.ms-project": "mpp",
-        "application/vnd.ms-word.document.macroenabled.12": "docm",
-        "application/vnd.ms-word.template.macroenabled.12": "dotm",
-        "application/vnd.ms-works": ["wks", "wcm", "wdb", "wps"],
-        "application/vnd.ms-wpl": "wpl",
-        "application/vnd.ms-xpsdocument": "xps",
-        "application/vnd.mseq": "mseq",
-        "application/vnd.musician": "mus",
-        "application/vnd.muvee.style": "msty",
-        "application/vnd.neurolanguage.nlu": "nlu",
-        "application/vnd.noblenet-directory": "nnd",
-        "application/vnd.noblenet-sealer": "nns",
-        "application/vnd.noblenet-web": "nnw",
-        "application/vnd.nokia.configuration-message": "ncm",
-        "application/vnd.nokia.n-gage.data": "ngdat",
-        "application/vnd.nokia.n-gage.symbian.install": "n-gage",
-        "application/vnd.nokia.radio-preset": "rpst",
-        "application/vnd.nokia.radio-presets": "rpss",
-        "application/vnd.nokia.ringing-tone": "rng",
-        "application/vnd.novadigm.edm": "edm",
-        "application/vnd.novadigm.edx": "edx",
-        "application/vnd.novadigm.ext": "ext",
-        "application/vnd.oasis.opendocument.chart": "odc",
-        "application/vnd.oasis.opendocument.chart-template": "otc",
-        "application/vnd.oasis.opendocument.database": "odb",
-        "application/vnd.oasis.opendocument.formula": "odf",
-        "application/vnd.oasis.opendocument.formula-template": "odft",
-        "application/vnd.oasis.opendocument.graphics": "odg",
-        "application/vnd.oasis.opendocument.graphics-template": "otg",
-        "application/vnd.oasis.opendocument.image": "odi",
-        "application/vnd.oasis.opendocument.image-template": "oti",
-        "application/vnd.oasis.opendocument.presentation": "odp",
-        "application/vnd.oasis.opendocument.presentation-template": "otp",
-        "application/vnd.oasis.opendocument.spreadsheet": "ods",
-        "application/vnd.oasis.opendocument.spreadsheet-template": "ots",
-        "application/vnd.oasis.opendocument.text": "odt",
-        "application/vnd.oasis.opendocument.text-master": "odm",
-        "application/vnd.oasis.opendocument.text-template": "ott",
-        "application/vnd.oasis.opendocument.text-web": "oth",
-        "application/vnd.olpc-sugar": "xo",
-        "application/vnd.oma.dd2+xml": "dd2",
-        "application/vnd.openofficeorg.extension": "oxt",
-        "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
-        "application/vnd.openxmlformats-officedocument.presentationml.slide": "sldx",
-        "application/vnd.openxmlformats-officedocument.presentationml.slideshow": "ppsx",
-        "application/vnd.openxmlformats-officedocument.presentationml.template": "potx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
-        "application/vnd.openxmlformats-officedocument.spreadsheetml.template": "xltx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
-        "application/vnd.openxmlformats-officedocument.wordprocessingml.template": "dotx",
-        "application/vnd.osgeo.mapguide.package": "mgp",
-        "application/vnd.osgi.dp": "dp",
-        "application/vnd.palm": "pdb",
-        "application/vnd.pawaafile": "paw",
-        "application/vnd.pg.format": "str",
-        "application/vnd.pg.osasli": "ei6",
-        "application/vnd.picsel": "efif",
-        "application/vnd.pmi.widget": "wg",
-        "application/vnd.pocketlearn": "plf",
-        "application/vnd.powerbuilder6": "pbd",
-        "application/vnd.previewsystems.box": "box",
-        "application/vnd.proteus.magazine": "mgz",
-        "application/vnd.publishare-delta-tree": "qps",
-        "application/vnd.pvi.ptid1": "ptid",
-        "application/vnd.quark.quarkxpress": "qxd",
-        "application/vnd.realvnc.bed": "bed",
-        "application/vnd.recordare.musicxml": "mxl",
-        "application/vnd.recordare.musicxml+xml": "musicxml",
-        "application/vnd.rig.cryptonote": "cryptonote",
-        "application/vnd.rim.cod": "cod",
-        "application/vnd.rn-realmedia": "rm",
-        "application/vnd.rn-realplayer": "rnx",
-        "application/vnd.route66.link66+xml": "link66",
-        "application/vnd.sailingtracker.track": "st",
-        "application/vnd.seemail": "see",
-        "application/vnd.sema": "sema",
-        "application/vnd.semd": "semd",
-        "application/vnd.semf": "semf",
-        "application/vnd.shana.informed.formdata": "ifm",
-        "application/vnd.shana.informed.formtemplate": "itp",
-        "application/vnd.shana.informed.interchange": "iif",
-        "application/vnd.shana.informed.package": "ipk",
-        "application/vnd.simtech-mindmapper": "twd",
-        "application/vnd.smaf": "mmf",
-        "application/vnd.smart.teacher": "teacher",
-        "application/vnd.solent.sdkm+xml": "sdkm",
-        "application/vnd.spotfire.dxp": "dxp",
-        "application/vnd.spotfire.sfs": "sfs",
-        "application/vnd.stardivision.calc": "sdc",
-        "application/vnd.stardivision.draw": "sda",
-        "application/vnd.stardivision.impress": "sdd",
-        "application/vnd.stardivision.math": "smf",
-        "application/vnd.stardivision.writer": "sdw",
-        "application/vnd.stardivision.writer-global": "sgl",
-        "application/vnd.stepmania.stepchart": "sm",
-        "application/vnd.sun.xml.calc": "sxc",
-        "application/vnd.sun.xml.calc.template": "stc",
-        "application/vnd.sun.xml.draw": "sxd",
-        "application/vnd.sun.xml.draw.template": "std",
-        "application/vnd.sun.xml.impress": "sxi",
-        "application/vnd.sun.xml.impress.template": "sti",
-        "application/vnd.sun.xml.math": "sxm",
-        "application/vnd.sun.xml.writer": "sxw",
-        "application/vnd.sun.xml.writer.global": "sxg",
-        "application/vnd.sun.xml.writer.template": "stw",
-        "application/vnd.sus-calendar": "sus",
-        "application/vnd.svd": "svd",
-        "application/vnd.symbian.install": "sis",
-        "application/vnd.syncml+xml": "xsm",
-        "application/vnd.syncml.dm+wbxml": "bdm",
-        "application/vnd.syncml.dm+xml": "xdm",
-        "application/vnd.tao.intent-module-archive": "tao",
-        "application/vnd.tmobile-livetv": "tmo",
-        "application/vnd.trid.tpt": "tpt",
-        "application/vnd.triscape.mxs": "mxs",
-        "application/vnd.trueapp": "tra",
-        "application/vnd.ufdl": "ufd",
-        "application/vnd.uiq.theme": "utz",
-        "application/vnd.umajin": "umj",
-        "application/vnd.unity": "unityweb",
-        "application/vnd.uoml+xml": "uoml",
-        "application/vnd.vcx": "vcx",
-        "application/vnd.visio": "vsd",
-        "application/vnd.visionary": "vis",
-        "application/vnd.vsf": "vsf",
-        "application/vnd.wap.wbxml": "wbxml",
-        "application/vnd.wap.wmlc": "wmlc",
-        "application/vnd.wap.wmlscriptc": "wmlsc",
-        "application/vnd.webturbo": "wtb",
-        "application/vnd.wolfram.player": "nbp",
-        "application/vnd.wordperfect": "wpd",
-        "application/vnd.wqd": "wqd",
-        "application/vnd.wt.stf": "stf",
-        "application/vnd.xara": ["web", "xar"],
-        "application/vnd.xfdl": "xfdl",
-        "application/vnd.yamaha.hv-dic": "hvd",
-        "application/vnd.yamaha.hv-script": "hvs",
-        "application/vnd.yamaha.hv-voice": "hvp",
-        "application/vnd.yamaha.openscoreformat": "osf",
-        "application/vnd.yamaha.openscoreformat.osfpvg+xml": "osfpvg",
-        "application/vnd.yamaha.smaf-audio": "saf",
-        "application/vnd.yamaha.smaf-phrase": "spf",
-        "application/vnd.yellowriver-custom-menu": "cmp",
-        "application/vnd.zul": "zir",
-        "application/vnd.zzazz.deck+xml": "zaz",
-        "application/vocaltec-media-desc": "vmd",
-        "application/vocaltec-media-file": "vmf",
-        "application/voicexml+xml": "vxml",
-        "application/widget": "wgt",
-        "application/winhlp": "hlp",
-        "application/wordperfect": ["wp", "wp5", "wp6", "wpd"],
-        "application/wordperfect6.0": ["w60", "wp5"],
-        "application/wordperfect6.1": "w61",
-        "application/wsdl+xml": "wsdl",
-        "application/wspolicy+xml": "wspolicy",
-        "application/x-123": "wk1",
-        "application/x-7z-compressed": "7z",
-        "application/x-abiword": "abw",
-        "application/x-ace-compressed": "ace",
-        "application/x-aim": "aim",
-        "application/x-authorware-bin": "aab",
-        "application/x-authorware-map": "aam",
-        "application/x-authorware-seg": "aas",
-        "application/x-bcpio": "bcpio",
-        "application/x-binary": "bin",
-        "application/x-binhex40": "hqx",
-        "application/x-bittorrent": "torrent",
-        "application/x-bsh": ["bsh", "sh", "shar"],
-        "application/x-bytecode.elisp": "elc",
-        "applicaiton/x-bytecode.python": "pyc",
-        "application/x-bzip": "bz",
-        "application/x-bzip2": ["boz", "bz2"],
-        "application/x-cdf": "cdf",
-        "application/x-cdlink": "vcd",
-        "application/x-chat": ["cha", "chat"],
-        "application/x-chess-pgn": "pgn",
-        "application/x-cmu-raster": "ras",
-        "application/x-cocoa": "cco",
-        "application/x-compactpro": "cpt",
-        "application/x-compress": "z",
-        "application/x-compressed": ["tgz", "gz", "z", "zip"],
-        "application/x-conference": "nsc",
-        "application/x-cpio": "cpio",
-        "application/x-cpt": "cpt",
-        "application/x-csh": "csh",
-        "application/x-debian-package": "deb",
-        "application/x-deepv": "deepv",
-        "application/x-director": ["dir", "dcr", "dxr"],
-        "application/x-doom": "wad",
-        "application/x-dtbncx+xml": "ncx",
-        "application/x-dtbook+xml": "dtb",
-        "application/x-dtbresource+xml": "res",
-        "application/x-dvi": "dvi",
-        "application/x-elc": "elc",
-        "application/x-envoy": ["env", "evy"],
-        "application/x-esrehber": "es",
-        "application/x-excel": ["xls", "xla", "xlb", "xlc", "xld", "xlk", "xll", "xlm", "xlt", "xlv", "xlw"],
-        "application/x-font-bdf": "bdf",
-        "application/x-font-ghostscript": "gsf",
-        "application/x-font-linux-psf": "psf",
-        "application/x-font-otf": "otf",
-        "application/x-font-pcf": "pcf",
-        "application/x-font-snf": "snf",
-        "application/x-font-ttf": "ttf",
-        "application/x-font-type1": "pfa",
-        "application/x-font-woff": "woff",
-        "application/x-frame": "mif",
-        "application/x-freelance": "pre",
-        "application/x-futuresplash": "spl",
-        "application/x-gnumeric": "gnumeric",
-        "application/x-gsp": "gsp",
-        "application/x-gss": "gss",
-        "application/x-gtar": "gtar",
-        "application/x-gzip": ["gz", "gzip"],
-        "application/x-hdf": "hdf",
-        "application/x-helpfile": ["help", "hlp"],
-        "application/x-httpd-imap": "imap",
-        "application/x-ima": "ima",
-        "application/x-internet-signup": ["ins", "isp"],
-        "application/x-internett-signup": "ins",
-        "application/x-inventor": "iv",
-        "application/x-ip2": "ip",
-        "application/x-iphone": "iii",
-        "application/x-java-class": "class",
-        "application/x-java-commerce": "jcm",
-        "application/x-java-jnlp-file": "jnlp",
-        "application/x-javascript": "js",
-        "application/x-koan": ["skd", "skm", "skp", "skt"],
-        "application/x-ksh": "ksh",
-        "application/x-latex": ["latex", "ltx"],
-        "application/x-lha": "lha",
-        "application/x-lisp": "lsp",
-        "application/x-livescreen": "ivy",
-        "application/x-lotus": "wq1",
-        "application/x-lotusscreencam": "scm",
-        "application/x-lzh": "lzh",
-        "application/x-lzx": "lzx",
-        "application/x-mac-binhex40": "hqx",
-        "application/x-macbinary": "bin",
-        "application/x-magic-cap-package-1.0": "mc$",
-        "application/x-mathcad": "mcd",
-        "application/x-meme": "mm",
-        "application/x-midi": ["mid", "midi"],
-        "application/x-mif": "mif",
-        "application/x-mix-transfer": "nix",
-        "application/x-mobipocket-ebook": "prc",
-        "application/x-mplayer2": "asx",
-        "application/x-ms-application": "application",
-        "application/x-ms-wmd": "wmd",
-        "application/x-ms-wmz": "wmz",
-        "application/x-ms-xbap": "xbap",
-        "application/x-msaccess": "mdb",
-        "application/x-msbinder": "obd",
-        "application/x-mscardfile": "crd",
-        "application/x-msclip": "clp",
-        "application/x-msdownload": ["exe", "dll"],
-        "application/x-msexcel": ["xls", "xla", "xlw"],
-        "application/x-msmediaview": ["mvb", "m13", "m14"],
-        "application/x-msmetafile": "wmf",
-        "application/x-msmoney": "mny",
-        "application/x-mspowerpoint": "ppt",
-        "application/x-mspublisher": "pub",
-        "application/x-msschedule": "scd",
-        "application/x-msterminal": "trm",
-        "application/x-mswrite": "wri",
-        "application/x-navi-animation": "ani",
-        "application/x-navidoc": "nvd",
-        "application/x-navimap": "map",
-        "application/x-navistyle": "stl",
-        "application/x-netcdf": ["cdf", "nc"],
-        "application/x-newton-compatible-pkg": "pkg",
-        "application/x-nokia-9000-communicator-add-on-software": "aos",
-        "application/x-omc": "omc",
-        "application/x-omcdatamaker": "omcd",
-        "application/x-omcregerator": "omcr",
-        "application/x-pagemaker": ["pm4", "pm5"],
-        "application/x-pcl": "pcl",
-        "application/x-perfmon": ["pma", "pmc", "pml", "pmr", "pmw"],
-        "application/x-pixclscript": "plx",
-        "application/x-pkcs10": "p10",
-        "application/x-pkcs12": ["p12", "pfx"],
-        "application/x-pkcs7-certificates": ["p7b", "spc"],
-        "application/x-pkcs7-certreqresp": "p7r",
-        "application/x-pkcs7-mime": ["p7m", "p7c"],
-        "application/x-pkcs7-signature": ["p7s", "p7a"],
-        "application/x-pointplus": "css",
-        "application/x-portable-anymap": "pnm",
-        "application/x-project": ["mpc", "mpt", "mpv", "mpx"],
-        "application/x-qpro": "wb1",
-        "application/x-rar-compressed": "rar",
-        "application/x-rtf": "rtf",
-        "application/x-sdp": "sdp",
-        "application/x-sea": "sea",
-        "application/x-seelogo": "sl",
-        "application/x-sh": "sh",
-        "application/x-shar": ["shar", "sh"],
-        "application/x-shockwave-flash": "swf",
-        "application/x-silverlight-app": "xap",
-        "application/x-sit": "sit",
-        "application/x-sprite": ["spr", "sprite"],
-        "application/x-stuffit": "sit",
-        "application/x-stuffitx": "sitx",
-        "application/x-sv4cpio": "sv4cpio",
-        "application/x-sv4crc": "sv4crc",
-        "application/x-tar": "tar",
-        "application/x-tbook": ["sbk", "tbk"],
-        "application/x-tcl": "tcl",
-        "application/x-tex": "tex",
-        "application/x-tex-tfm": "tfm",
-        "application/x-texinfo": ["texi", "texinfo"],
-        "application/x-troff": ["roff", "t", "tr"],
-        "application/x-troff-man": "man",
-        "application/x-troff-me": "me",
-        "application/x-troff-ms": "ms",
-        "application/x-troff-msvideo": "avi",
-        "application/x-ustar": "ustar",
-        "application/x-visio": ["vsd", "vst", "vsw"],
-        "application/x-vnd.audioexplosion.mzz": "mzz",
-        "application/x-vnd.ls-xpix": "xpix",
-        "application/x-vrml": "vrml",
-        "application/x-wais-source": ["src", "wsrc"],
-        "application/x-winhelp": "hlp",
-        "application/x-wintalk": "wtk",
-        "application/x-world": ["wrl", "svr"],
-        "application/x-wpwin": "wpd",
-        "application/x-wri": "wri",
-        "application/x-x509-ca-cert": ["cer", "crt", "der"],
-        "application/x-x509-user-cert": "crt",
-        "application/x-xfig": "fig",
-        "application/x-xpinstall": "xpi",
-        "application/x-zip-compressed": "zip",
-        "application/xcap-diff+xml": "xdf",
-        "application/xenc+xml": "xenc",
-        "application/xhtml+xml": "xhtml",
-        "application/xml": "xml",
-        "application/xml-dtd": "dtd",
-        "application/xop+xml": "xop",
-        "application/xslt+xml": "xslt",
-        "application/xspf+xml": "xspf",
-        "application/xv+xml": "mxml",
-        "application/yang": "yang",
-        "application/yin+xml": "yin",
-        "application/ynd.ms-pkipko": "pko",
-        "application/zip": "zip",
-        "audio/adpcm": "adp",
-        "audio/aiff": ["aiff", "aif", "aifc"],
-        "audio/basic": ["snd", "au"],
-        "audio/it": "it",
-        "audio/make": ["funk", "my", "pfunk"],
-        "audio/make.my.funk": "pfunk",
-        "audio/mid": ["mid", "rmi"],
-        "audio/midi": ["midi", "kar", "mid"],
-        "audio/mod": "mod",
-        "audio/mp4": "mp4a",
-        "audio/mpeg": ["mpga", "mp3", "m2a", "mp2", "mpa", "mpg"],
-        "audio/mpeg3": "mp3",
-        "audio/nspaudio": ["la", "lma"],
-        "audio/ogg": "oga",
-        "audio/s3m": "s3m",
-        "audio/tsp-audio": "tsi",
-        "audio/tsplayer": "tsp",
-        "audio/vnd.dece.audio": "uva",
-        "audio/vnd.digital-winds": "eol",
-        "audio/vnd.dra": "dra",
-        "audio/vnd.dts": "dts",
-        "audio/vnd.dts.hd": "dtshd",
-        "audio/vnd.lucent.voice": "lvp",
-        "audio/vnd.ms-playready.media.pya": "pya",
-        "audio/vnd.nuera.ecelp4800": "ecelp4800",
-        "audio/vnd.nuera.ecelp7470": "ecelp7470",
-        "audio/vnd.nuera.ecelp9600": "ecelp9600",
-        "audio/vnd.qcelp": "qcp",
-        "audio/vnd.rip": "rip",
-        "audio/voc": "voc",
-        "audio/voxware": "vox",
-        "audio/wav": "wav",
-        "audio/webm": "weba",
-        "audio/x-aac": "aac",
-        "audio/x-adpcm": "snd",
-        "audio/x-aiff": ["aiff", "aif", "aifc"],
-        "audio/x-au": "au",
-        "audio/x-gsm": ["gsd", "gsm"],
-        "audio/x-jam": "jam",
-        "audio/x-liveaudio": "lam",
-        "audio/x-mid": ["mid", "midi"],
-        "audio/x-midi": ["midi", "mid"],
-        "audio/x-mod": "mod",
-        "audio/x-mpeg": "mp2",
-        "audio/x-mpeg-3": "mp3",
-        "audio/x-mpegurl": "m3u",
-        "audio/x-mpequrl": "m3u",
-        "audio/x-ms-wax": "wax",
-        "audio/x-ms-wma": "wma",
-        "audio/x-nspaudio": ["la", "lma"],
-        "audio/x-pn-realaudio": ["ra", "ram", "rm", "rmm", "rmp"],
-        "audio/x-pn-realaudio-plugin": ["ra", "rmp", "rpm"],
-        "audio/x-psid": "sid",
-        "audio/x-realaudio": "ra",
-        "audio/x-twinvq": "vqf",
-        "audio/x-twinvq-plugin": ["vqe", "vql"],
-        "audio/x-vnd.audioexplosion.mjuicemediafile": "mjf",
-        "audio/x-voc": "voc",
-        "audio/x-wav": "wav",
-        "audio/xm": "xm",
-        "chemical/x-cdx": "cdx",
-        "chemical/x-cif": "cif",
-        "chemical/x-cmdf": "cmdf",
-        "chemical/x-cml": "cml",
-        "chemical/x-csml": "csml",
-        "chemical/x-pdb": ["pdb", "xyz"],
-        "chemical/x-xyz": "xyz",
-        "drawing/x-dwf": "dwf",
-        "i-world/i-vrml": "ivr",
-        "image/bmp": ["bmp", "bm"],
-        "image/cgm": "cgm",
-        "image/cis-cod": "cod",
-        "image/cmu-raster": ["ras", "rast"],
-        "image/fif": "fif",
-        "image/florian": ["flo", "turbot"],
-        "image/g3fax": "g3",
-        "image/gif": "gif",
-        "image/ief": ["ief", "iefs"],
-        "image/jpeg": ["jpeg", "jpe", "jpg", "jfif", "jfif-tbnl"],
-        "image/jutvision": "jut",
-        "image/ktx": "ktx",
-        "image/naplps": ["nap", "naplps"],
-        "image/pict": ["pic", "pict"],
-        "image/pipeg": "jfif",
-        "image/pjpeg": ["jfif", "jpe", "jpeg", "jpg"],
-        "image/png": ["png", "x-png"],
-        "image/prs.btif": "btif",
-        "image/svg+xml": "svg",
-        "image/tiff": ["tif", "tiff"],
-        "image/vasa": "mcf",
-        "image/vnd.adobe.photoshop": "psd",
-        "image/vnd.dece.graphic": "uvi",
-        "image/vnd.djvu": "djvu",
-        "image/vnd.dvb.subtitle": "sub",
-        "image/vnd.dwg": ["dwg", "dxf", "svf"],
-        "image/vnd.dxf": "dxf",
-        "image/vnd.fastbidsheet": "fbs",
-        "image/vnd.fpx": "fpx",
-        "image/vnd.fst": "fst",
-        "image/vnd.fujixerox.edmics-mmr": "mmr",
-        "image/vnd.fujixerox.edmics-rlc": "rlc",
-        "image/vnd.ms-modi": "mdi",
-        "image/vnd.net-fpx": ["fpx", "npx"],
-        "image/vnd.rn-realflash": "rf",
-        "image/vnd.rn-realpix": "rp",
-        "image/vnd.wap.wbmp": "wbmp",
-        "image/vnd.xiff": "xif",
-        "image/webp": "webp",
-        "image/x-cmu-raster": "ras",
-        "image/x-cmx": "cmx",
-        "image/x-dwg": ["dwg", "dxf", "svf"],
-        "image/x-freehand": "fh",
-        "image/x-icon": "ico",
-        "image/x-jg": "art",
-        "image/x-jps": "jps",
-        "image/x-niff": ["niff", "nif"],
-        "image/x-pcx": "pcx",
-        "image/x-pict": ["pct", "pic"],
-        "image/x-portable-anymap": "pnm",
-        "image/x-portable-bitmap": "pbm",
-        "image/x-portable-graymap": "pgm",
-        "image/x-portable-greymap": "pgm",
-        "image/x-portable-pixmap": "ppm",
-        "image/x-quicktime": ["qif", "qti", "qtif"],
-        "image/x-rgb": "rgb",
-        "image/x-tiff": ["tif", "tiff"],
-        "image/x-windows-bmp": "bmp",
-        "image/x-xbitmap": "xbm",
-        "image/x-xbm": "xbm",
-        "image/x-xpixmap": ["xpm", "pm"],
-        "image/x-xwd": "xwd",
-        "image/x-xwindowdump": "xwd",
-        "image/xbm": "xbm",
-        "image/xpm": "xpm",
-        "message/rfc822": ["eml", "mht", "mhtml", "nws", "mime"],
-        "model/iges": ["iges", "igs"],
-        "model/mesh": "msh",
-        "model/vnd.collada+xml": "dae",
-        "model/vnd.dwf": "dwf",
-        "model/vnd.gdl": "gdl",
-        "model/vnd.gtw": "gtw",
-        "model/vnd.mts": "mts",
-        "model/vnd.vtu": "vtu",
-        "model/vrml": ["vrml", "wrl", "wrz"],
-        "model/x-pov": "pov",
-        "multipart/x-gzip": "gzip",
-        "multipart/x-ustar": "ustar",
-        "multipart/x-zip": "zip",
-        "music/crescendo": ["mid", "midi"],
-        "music/x-karaoke": "kar",
-        "paleovu/x-pv": "pvu",
-        "text/asp": "asp",
-        "text/calendar": "ics",
-        "text/css": "css",
-        "text/csv": "csv",
-        "text/ecmascript": "js",
-        "text/h323": "323",
-        "text/html": ["html", "htm", "stm", "acgi", "htmls", "htx", "shtml"],
-        "text/iuls": "uls",
-        "text/javascript": "js",
-        "text/mcf": "mcf",
-        "text/n3": "n3",
-        "text/pascal": "pas",
-        "text/plain": [
-          "txt",
-          "bas",
-          "c",
-          "h",
-          "c++",
-          "cc",
-          "com",
-          "conf",
-          "cxx",
-          "def",
-          "f",
-          "f90",
-          "for",
-          "g",
-          "hh",
-          "idc",
-          "jav",
-          "java",
-          "list",
-          "log",
-          "lst",
-          "m",
-          "mar",
-          "pl",
-          "sdml",
-          "text"
-        ],
-        "text/plain-bas": "par",
-        "text/prs.lines.tag": "dsc",
-        "text/richtext": ["rtx", "rt", "rtf"],
-        "text/scriplet": "wsc",
-        "text/scriptlet": "sct",
-        "text/sgml": ["sgm", "sgml"],
-        "text/tab-separated-values": "tsv",
-        "text/troff": "t",
-        "text/turtle": "ttl",
-        "text/uri-list": ["uni", "unis", "uri", "uris"],
-        "text/vnd.abc": "abc",
-        "text/vnd.curl": "curl",
-        "text/vnd.curl.dcurl": "dcurl",
-        "text/vnd.curl.mcurl": "mcurl",
-        "text/vnd.curl.scurl": "scurl",
-        "text/vnd.fly": "fly",
-        "text/vnd.fmi.flexstor": "flx",
-        "text/vnd.graphviz": "gv",
-        "text/vnd.in3d.3dml": "3dml",
-        "text/vnd.in3d.spot": "spot",
-        "text/vnd.rn-realtext": "rt",
-        "text/vnd.sun.j2me.app-descriptor": "jad",
-        "text/vnd.wap.wml": "wml",
-        "text/vnd.wap.wmlscript": "wmls",
-        "text/webviewhtml": "htt",
-        "text/x-asm": ["asm", "s"],
-        "text/x-audiosoft-intra": "aip",
-        "text/x-c": ["c", "cc", "cpp"],
-        "text/x-component": "htc",
-        "text/x-fortran": ["for", "f", "f77", "f90"],
-        "text/x-h": ["h", "hh"],
-        "text/x-java-source": ["java", "jav"],
-        "text/x-java-source,java": "java",
-        "text/x-la-asf": "lsx",
-        "text/x-m": "m",
-        "text/x-pascal": "p",
-        "text/x-script": "hlb",
-        "text/x-script.csh": "csh",
-        "text/x-script.elisp": "el",
-        "text/x-script.guile": "scm",
-        "text/x-script.ksh": "ksh",
-        "text/x-script.lisp": "lsp",
-        "text/x-script.perl": "pl",
-        "text/x-script.perl-module": "pm",
-        "text/x-script.phyton": "py",
-        "text/x-script.rexx": "rexx",
-        "text/x-script.scheme": "scm",
-        "text/x-script.sh": "sh",
-        "text/x-script.tcl": "tcl",
-        "text/x-script.tcsh": "tcsh",
-        "text/x-script.zsh": "zsh",
-        "text/x-server-parsed-html": ["shtml", "ssi"],
-        "text/x-setext": "etx",
-        "text/x-sgml": ["sgm", "sgml"],
-        "text/x-speech": ["spc", "talk"],
-        "text/x-uil": "uil",
-        "text/x-uuencode": ["uu", "uue"],
-        "text/x-vcalendar": "vcs",
-        "text/x-vcard": "vcf",
-        "text/xml": "xml",
-        "video/3gpp": "3gp",
-        "video/3gpp2": "3g2",
-        "video/animaflex": "afl",
-        "video/avi": "avi",
-        "video/avs-video": "avs",
-        "video/dl": "dl",
-        "video/fli": "fli",
-        "video/gl": "gl",
-        "video/h261": "h261",
-        "video/h263": "h263",
-        "video/h264": "h264",
-        "video/jpeg": "jpgv",
-        "video/jpm": "jpm",
-        "video/mj2": "mj2",
-        "video/mp4": "mp4",
-        "video/mpeg": ["mpeg", "mp2", "mpa", "mpe", "mpg", "mpv2", "m1v", "m2v", "mp3"],
-        "video/msvideo": "avi",
-        "video/ogg": "ogv",
-        "video/quicktime": ["mov", "qt", "moov"],
-        "video/vdo": "vdo",
-        "video/vivo": ["viv", "vivo"],
-        "video/vnd.dece.hd": "uvh",
-        "video/vnd.dece.mobile": "uvm",
-        "video/vnd.dece.pd": "uvp",
-        "video/vnd.dece.sd": "uvs",
-        "video/vnd.dece.video": "uvv",
-        "video/vnd.fvt": "fvt",
-        "video/vnd.mpegurl": "mxu",
-        "video/vnd.ms-playready.media.pyv": "pyv",
-        "video/vnd.rn-realvideo": "rv",
-        "video/vnd.uvvu.mp4": "uvu",
-        "video/vnd.vivo": ["viv", "vivo"],
-        "video/vosaic": "vos",
-        "video/webm": "webm",
-        "video/x-amt-demorun": "xdr",
-        "video/x-amt-showrun": "xsr",
-        "video/x-atomic3d-feature": "fmf",
-        "video/x-dl": "dl",
-        "video/x-dv": ["dif", "dv"],
-        "video/x-f4v": "f4v",
-        "video/x-fli": "fli",
-        "video/x-flv": "flv",
-        "video/x-gl": "gl",
-        "video/x-isvideo": "isu",
-        "video/x-la-asf": ["lsf", "lsx"],
-        "video/x-m4v": "m4v",
-        "video/x-motion-jpeg": "mjpg",
-        "video/x-mpeg": ["mp3", "mp2"],
-        "video/x-mpeq2a": "mp2",
-        "video/x-ms-asf": ["asf", "asr", "asx"],
-        "video/x-ms-asf-plugin": "asx",
-        "video/x-ms-wm": "wm",
-        "video/x-ms-wmv": "wmv",
-        "video/x-ms-wmx": "wmx",
-        "video/x-ms-wvx": "wvx",
-        "video/x-msvideo": "avi",
-        "video/x-qtc": "qtc",
-        "video/x-scm": "scm",
-        "video/x-sgi-movie": ["movie", "mv"],
-        "windows/metafile": "wmf",
-        "www/mime": "mime",
-        "x-conference/x-cooltalk": "ice",
-        "x-music/x-midi": ["mid", "midi"],
-        "x-world/x-3dmf": ["3dm", "3dmf", "qd3", "qd3d"],
-        "x-world/x-svr": "svr",
-        "x-world/x-vrml": ["flr", "vrml", "wrl", "wrz", "xaf", "xof"],
-        "x-world/x-vrt": "vrt",
-        "xgl/drawing": "xgz",
-        "xgl/movie": "xmz"
-      },
-      extensions: {
-        "*": "application/octet-stream",
-        "123": "application/vnd.lotus-1-2-3",
-        "323": "text/h323",
-        "3dm": "x-world/x-3dmf",
-        "3dmf": "x-world/x-3dmf",
-        "3dml": "text/vnd.in3d.3dml",
-        "3g2": "video/3gpp2",
-        "3gp": "video/3gpp",
-        "7z": "application/x-7z-compressed",
-        a: "application/octet-stream",
-        aab: "application/x-authorware-bin",
-        aac: "audio/x-aac",
-        aam: "application/x-authorware-map",
-        aas: "application/x-authorware-seg",
-        abc: "text/vnd.abc",
-        abw: "application/x-abiword",
-        ac: "application/pkix-attr-cert",
-        acc: "application/vnd.americandynamics.acc",
-        ace: "application/x-ace-compressed",
-        acgi: "text/html",
-        acu: "application/vnd.acucobol",
-        acx: "application/internet-property-stream",
-        adp: "audio/adpcm",
-        aep: "application/vnd.audiograph",
-        afl: "video/animaflex",
-        afp: "application/vnd.ibm.modcap",
-        ahead: "application/vnd.ahead.space",
-        ai: "application/postscript",
-        aif: ["audio/aiff", "audio/x-aiff"],
-        aifc: ["audio/aiff", "audio/x-aiff"],
-        aiff: ["audio/aiff", "audio/x-aiff"],
-        aim: "application/x-aim",
-        aip: "text/x-audiosoft-intra",
-        air: "application/vnd.adobe.air-application-installer-package+zip",
-        ait: "application/vnd.dvb.ait",
-        ami: "application/vnd.amiga.ami",
-        ani: "application/x-navi-animation",
-        aos: "application/x-nokia-9000-communicator-add-on-software",
-        apk: "application/vnd.android.package-archive",
-        application: "application/x-ms-application",
-        apr: "application/vnd.lotus-approach",
-        aps: "application/mime",
-        arc: "application/octet-stream",
-        arj: ["application/arj", "application/octet-stream"],
-        art: "image/x-jg",
-        asf: "video/x-ms-asf",
-        asm: "text/x-asm",
-        aso: "application/vnd.accpac.simply.aso",
-        asp: "text/asp",
-        asr: "video/x-ms-asf",
-        asx: ["video/x-ms-asf", "application/x-mplayer2", "video/x-ms-asf-plugin"],
-        atc: "application/vnd.acucorp",
-        atomcat: "application/atomcat+xml",
-        atomsvc: "application/atomsvc+xml",
-        atx: "application/vnd.antix.game-component",
-        au: ["audio/basic", "audio/x-au"],
-        avi: ["video/avi", "video/msvideo", "application/x-troff-msvideo", "video/x-msvideo"],
-        avs: "video/avs-video",
-        aw: "application/applixware",
-        axs: "application/olescript",
-        azf: "application/vnd.airzip.filesecure.azf",
-        azs: "application/vnd.airzip.filesecure.azs",
-        azw: "application/vnd.amazon.ebook",
-        bas: "text/plain",
-        bcpio: "application/x-bcpio",
-        bdf: "application/x-font-bdf",
-        bdm: "application/vnd.syncml.dm+wbxml",
-        bed: "application/vnd.realvnc.bed",
-        bh2: "application/vnd.fujitsu.oasysprs",
-        bin: ["application/octet-stream", "application/mac-binary", "application/macbinary", "application/x-macbinary", "application/x-binary"],
-        bm: "image/bmp",
-        bmi: "application/vnd.bmi",
-        bmp: ["image/bmp", "image/x-windows-bmp"],
-        boo: "application/book",
-        book: "application/book",
-        box: "application/vnd.previewsystems.box",
-        boz: "application/x-bzip2",
-        bsh: "application/x-bsh",
-        btif: "image/prs.btif",
-        bz: "application/x-bzip",
-        bz2: "application/x-bzip2",
-        c: ["text/plain", "text/x-c"],
-        "c++": "text/plain",
-        c11amc: "application/vnd.cluetrust.cartomobile-config",
-        c11amz: "application/vnd.cluetrust.cartomobile-config-pkg",
-        c4g: "application/vnd.clonk.c4group",
-        cab: "application/vnd.ms-cab-compressed",
-        car: "application/vnd.curl.car",
-        cat: ["application/vnd.ms-pkiseccat", "application/vnd.ms-pki.seccat"],
-        cc: ["text/plain", "text/x-c"],
-        ccad: "application/clariscad",
-        cco: "application/x-cocoa",
-        ccxml: "application/ccxml+xml,",
-        cdbcmsg: "application/vnd.contact.cmsg",
-        cdf: ["application/cdf", "application/x-cdf", "application/x-netcdf"],
-        cdkey: "application/vnd.mediastation.cdkey",
-        cdmia: "application/cdmi-capability",
-        cdmic: "application/cdmi-container",
-        cdmid: "application/cdmi-domain",
-        cdmio: "application/cdmi-object",
-        cdmiq: "application/cdmi-queue",
-        cdx: "chemical/x-cdx",
-        cdxml: "application/vnd.chemdraw+xml",
-        cdy: "application/vnd.cinderella",
-        cer: ["application/pkix-cert", "application/x-x509-ca-cert"],
-        cgm: "image/cgm",
-        cha: "application/x-chat",
-        chat: "application/x-chat",
-        chm: "application/vnd.ms-htmlhelp",
-        chrt: "application/vnd.kde.kchart",
-        cif: "chemical/x-cif",
-        cii: "application/vnd.anser-web-certificate-issue-initiation",
-        cil: "application/vnd.ms-artgalry",
-        cla: "application/vnd.claymore",
-        class: ["application/octet-stream", "application/java", "application/java-byte-code", "application/java-vm", "application/x-java-class"],
-        clkk: "application/vnd.crick.clicker.keyboard",
-        clkp: "application/vnd.crick.clicker.palette",
-        clkt: "application/vnd.crick.clicker.template",
-        clkw: "application/vnd.crick.clicker.wordbank",
-        clkx: "application/vnd.crick.clicker",
-        clp: "application/x-msclip",
-        cmc: "application/vnd.cosmocaller",
-        cmdf: "chemical/x-cmdf",
-        cml: "chemical/x-cml",
-        cmp: "application/vnd.yellowriver-custom-menu",
-        cmx: "image/x-cmx",
-        cod: ["image/cis-cod", "application/vnd.rim.cod"],
-        com: ["application/octet-stream", "text/plain"],
-        conf: "text/plain",
-        cpio: "application/x-cpio",
-        cpp: "text/x-c",
-        cpt: ["application/mac-compactpro", "application/x-compactpro", "application/x-cpt"],
-        crd: "application/x-mscardfile",
-        crl: ["application/pkix-crl", "application/pkcs-crl"],
-        crt: ["application/pkix-cert", "application/x-x509-user-cert", "application/x-x509-ca-cert"],
-        cryptonote: "application/vnd.rig.cryptonote",
-        csh: ["text/x-script.csh", "application/x-csh"],
-        csml: "chemical/x-csml",
-        csp: "application/vnd.commonspace",
-        css: ["text/css", "application/x-pointplus"],
-        csv: "text/csv",
-        cu: "application/cu-seeme",
-        curl: "text/vnd.curl",
-        cww: "application/prs.cww",
-        cxx: "text/plain",
-        dae: "model/vnd.collada+xml",
-        daf: "application/vnd.mobius.daf",
-        davmount: "application/davmount+xml",
-        dcr: "application/x-director",
-        dcurl: "text/vnd.curl.dcurl",
-        dd2: "application/vnd.oma.dd2+xml",
-        ddd: "application/vnd.fujixerox.ddd",
-        deb: "application/x-debian-package",
-        deepv: "application/x-deepv",
-        def: "text/plain",
-        der: "application/x-x509-ca-cert",
-        dfac: "application/vnd.dreamfactory",
-        dif: "video/x-dv",
-        dir: "application/x-director",
-        dis: "application/vnd.mobius.dis",
-        djvu: "image/vnd.djvu",
-        dl: ["video/dl", "video/x-dl"],
-        dll: "application/x-msdownload",
-        dms: "application/octet-stream",
-        dna: "application/vnd.dna",
-        doc: "application/msword",
-        docm: "application/vnd.ms-word.document.macroenabled.12",
-        docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        dot: "application/msword",
-        dotm: "application/vnd.ms-word.template.macroenabled.12",
-        dotx: "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
-        dp: ["application/commonground", "application/vnd.osgi.dp"],
-        dpg: "application/vnd.dpgraph",
-        dra: "audio/vnd.dra",
-        drw: "application/drafting",
-        dsc: "text/prs.lines.tag",
-        dssc: "application/dssc+der",
-        dtb: "application/x-dtbook+xml",
-        dtd: "application/xml-dtd",
-        dts: "audio/vnd.dts",
-        dtshd: "audio/vnd.dts.hd",
-        dump: "application/octet-stream",
-        dv: "video/x-dv",
-        dvi: "application/x-dvi",
-        dwf: ["model/vnd.dwf", "drawing/x-dwf"],
-        dwg: ["application/acad", "image/vnd.dwg", "image/x-dwg"],
-        dxf: ["application/dxf", "image/vnd.dwg", "image/vnd.dxf", "image/x-dwg"],
-        dxp: "application/vnd.spotfire.dxp",
-        dxr: "application/x-director",
-        ecelp4800: "audio/vnd.nuera.ecelp4800",
-        ecelp7470: "audio/vnd.nuera.ecelp7470",
-        ecelp9600: "audio/vnd.nuera.ecelp9600",
-        edm: "application/vnd.novadigm.edm",
-        edx: "application/vnd.novadigm.edx",
-        efif: "application/vnd.picsel",
-        ei6: "application/vnd.pg.osasli",
-        el: "text/x-script.elisp",
-        elc: ["application/x-elc", "application/x-bytecode.elisp"],
-        eml: "message/rfc822",
-        emma: "application/emma+xml",
-        env: "application/x-envoy",
-        eol: "audio/vnd.digital-winds",
-        eot: "application/vnd.ms-fontobject",
-        eps: "application/postscript",
-        epub: "application/epub+zip",
-        es: ["application/ecmascript", "application/x-esrehber"],
-        es3: "application/vnd.eszigno3+xml",
-        esf: "application/vnd.epson.esf",
-        etx: "text/x-setext",
-        evy: ["application/envoy", "application/x-envoy"],
-        exe: ["application/octet-stream", "application/x-msdownload"],
-        exi: "application/exi",
-        ext: "application/vnd.novadigm.ext",
-        ez2: "application/vnd.ezpix-album",
-        ez3: "application/vnd.ezpix-package",
-        f: ["text/plain", "text/x-fortran"],
-        f4v: "video/x-f4v",
-        f77: "text/x-fortran",
-        f90: ["text/plain", "text/x-fortran"],
-        fbs: "image/vnd.fastbidsheet",
-        fcs: "application/vnd.isac.fcs",
-        fdf: "application/vnd.fdf",
-        fe_launch: "application/vnd.denovo.fcselayout-link",
-        fg5: "application/vnd.fujitsu.oasysgp",
-        fh: "image/x-freehand",
-        fif: ["application/fractals", "image/fif"],
-        fig: "application/x-xfig",
-        fli: ["video/fli", "video/x-fli"],
-        flo: ["image/florian", "application/vnd.micrografx.flo"],
-        flr: "x-world/x-vrml",
-        flv: "video/x-flv",
-        flw: "application/vnd.kde.kivio",
-        flx: "text/vnd.fmi.flexstor",
-        fly: "text/vnd.fly",
-        fm: "application/vnd.framemaker",
-        fmf: "video/x-atomic3d-feature",
-        fnc: "application/vnd.frogans.fnc",
-        for: ["text/plain", "text/x-fortran"],
-        fpx: ["image/vnd.fpx", "image/vnd.net-fpx"],
-        frl: "application/freeloader",
-        fsc: "application/vnd.fsc.weblaunch",
-        fst: "image/vnd.fst",
-        ftc: "application/vnd.fluxtime.clip",
-        fti: "application/vnd.anser-web-funds-transfer-initiation",
-        funk: "audio/make",
-        fvt: "video/vnd.fvt",
-        fxp: "application/vnd.adobe.fxp",
-        fzs: "application/vnd.fuzzysheet",
-        g: "text/plain",
-        g2w: "application/vnd.geoplan",
-        g3: "image/g3fax",
-        g3w: "application/vnd.geospace",
-        gac: "application/vnd.groove-account",
-        gdl: "model/vnd.gdl",
-        geo: "application/vnd.dynageo",
-        gex: "application/vnd.geometry-explorer",
-        ggb: "application/vnd.geogebra.file",
-        ggt: "application/vnd.geogebra.tool",
-        ghf: "application/vnd.groove-help",
-        gif: "image/gif",
-        gim: "application/vnd.groove-identity-message",
-        gl: ["video/gl", "video/x-gl"],
-        gmx: "application/vnd.gmx",
-        gnumeric: "application/x-gnumeric",
-        gph: "application/vnd.flographit",
-        gqf: "application/vnd.grafeq",
-        gram: "application/srgs",
-        grv: "application/vnd.groove-injector",
-        grxml: "application/srgs+xml",
-        gsd: "audio/x-gsm",
-        gsf: "application/x-font-ghostscript",
-        gsm: "audio/x-gsm",
-        gsp: "application/x-gsp",
-        gss: "application/x-gss",
-        gtar: "application/x-gtar",
-        gtm: "application/vnd.groove-tool-message",
-        gtw: "model/vnd.gtw",
-        gv: "text/vnd.graphviz",
-        gxt: "application/vnd.geonext",
-        gz: ["application/x-gzip", "application/x-compressed"],
-        gzip: ["multipart/x-gzip", "application/x-gzip"],
-        h: ["text/plain", "text/x-h"],
-        h261: "video/h261",
-        h263: "video/h263",
-        h264: "video/h264",
-        hal: "application/vnd.hal+xml",
-        hbci: "application/vnd.hbci",
-        hdf: "application/x-hdf",
-        help: "application/x-helpfile",
-        hgl: "application/vnd.hp-hpgl",
-        hh: ["text/plain", "text/x-h"],
-        hlb: "text/x-script",
-        hlp: ["application/winhlp", "application/hlp", "application/x-helpfile", "application/x-winhelp"],
-        hpg: "application/vnd.hp-hpgl",
-        hpgl: "application/vnd.hp-hpgl",
-        hpid: "application/vnd.hp-hpid",
-        hps: "application/vnd.hp-hps",
-        hqx: [
-          "application/mac-binhex40",
-          "application/binhex",
-          "application/binhex4",
-          "application/mac-binhex",
-          "application/x-binhex40",
-          "application/x-mac-binhex40"
-        ],
-        hta: "application/hta",
-        htc: "text/x-component",
-        htke: "application/vnd.kenameaapp",
-        htm: "text/html",
-        html: "text/html",
-        htmls: "text/html",
-        htt: "text/webviewhtml",
-        htx: "text/html",
-        hvd: "application/vnd.yamaha.hv-dic",
-        hvp: "application/vnd.yamaha.hv-voice",
-        hvs: "application/vnd.yamaha.hv-script",
-        i2g: "application/vnd.intergeo",
-        icc: "application/vnd.iccprofile",
-        ice: "x-conference/x-cooltalk",
-        ico: "image/x-icon",
-        ics: "text/calendar",
-        idc: "text/plain",
-        ief: "image/ief",
-        iefs: "image/ief",
-        ifm: "application/vnd.shana.informed.formdata",
-        iges: ["application/iges", "model/iges"],
-        igl: "application/vnd.igloader",
-        igm: "application/vnd.insors.igm",
-        igs: ["application/iges", "model/iges"],
-        igx: "application/vnd.micrografx.igx",
-        iif: "application/vnd.shana.informed.interchange",
-        iii: "application/x-iphone",
-        ima: "application/x-ima",
-        imap: "application/x-httpd-imap",
-        imp: "application/vnd.accpac.simply.imp",
-        ims: "application/vnd.ms-ims",
-        inf: "application/inf",
-        ins: ["application/x-internet-signup", "application/x-internett-signup"],
-        ip: "application/x-ip2",
-        ipfix: "application/ipfix",
-        ipk: "application/vnd.shana.informed.package",
-        irm: "application/vnd.ibm.rights-management",
-        irp: "application/vnd.irepository.package+xml",
-        isp: "application/x-internet-signup",
-        isu: "video/x-isvideo",
-        it: "audio/it",
-        itp: "application/vnd.shana.informed.formtemplate",
-        iv: "application/x-inventor",
-        ivp: "application/vnd.immervision-ivp",
-        ivr: "i-world/i-vrml",
-        ivu: "application/vnd.immervision-ivu",
-        ivy: "application/x-livescreen",
-        jad: "text/vnd.sun.j2me.app-descriptor",
-        jam: ["application/vnd.jam", "audio/x-jam"],
-        jar: "application/java-archive",
-        jav: ["text/plain", "text/x-java-source"],
-        java: ["text/plain", "text/x-java-source,java", "text/x-java-source"],
-        jcm: "application/x-java-commerce",
-        jfif: ["image/pipeg", "image/jpeg", "image/pjpeg"],
-        "jfif-tbnl": "image/jpeg",
-        jisp: "application/vnd.jisp",
-        jlt: "application/vnd.hp-jlyt",
-        jnlp: "application/x-java-jnlp-file",
-        joda: "application/vnd.joost.joda-archive",
-        jpe: ["image/jpeg", "image/pjpeg"],
-        jpeg: ["image/jpeg", "image/pjpeg"],
-        jpg: ["image/jpeg", "image/pjpeg"],
-        jpgv: "video/jpeg",
-        jpm: "video/jpm",
-        jps: "image/x-jps",
-        js: ["application/javascript", "application/ecmascript", "text/javascript", "text/ecmascript", "application/x-javascript"],
-        json: "application/json",
-        jut: "image/jutvision",
-        kar: ["audio/midi", "music/x-karaoke"],
-        karbon: "application/vnd.kde.karbon",
-        kfo: "application/vnd.kde.kformula",
-        kia: "application/vnd.kidspiration",
-        kml: "application/vnd.google-earth.kml+xml",
-        kmz: "application/vnd.google-earth.kmz",
-        kne: "application/vnd.kinar",
-        kon: "application/vnd.kde.kontour",
-        kpr: "application/vnd.kde.kpresenter",
-        ksh: ["application/x-ksh", "text/x-script.ksh"],
-        ksp: "application/vnd.kde.kspread",
-        ktx: "image/ktx",
-        ktz: "application/vnd.kahootz",
-        kwd: "application/vnd.kde.kword",
-        la: ["audio/nspaudio", "audio/x-nspaudio"],
-        lam: "audio/x-liveaudio",
-        lasxml: "application/vnd.las.las+xml",
-        latex: "application/x-latex",
-        lbd: "application/vnd.llamagraphics.life-balance.desktop",
-        lbe: "application/vnd.llamagraphics.life-balance.exchange+xml",
-        les: "application/vnd.hhe.lesson-player",
-        lha: ["application/octet-stream", "application/lha", "application/x-lha"],
-        lhx: "application/octet-stream",
-        link66: "application/vnd.route66.link66+xml",
-        list: "text/plain",
-        lma: ["audio/nspaudio", "audio/x-nspaudio"],
-        log: "text/plain",
-        lrm: "application/vnd.ms-lrm",
-        lsf: "video/x-la-asf",
-        lsp: ["application/x-lisp", "text/x-script.lisp"],
-        lst: "text/plain",
-        lsx: ["video/x-la-asf", "text/x-la-asf"],
-        ltf: "application/vnd.frogans.ltf",
-        ltx: "application/x-latex",
-        lvp: "audio/vnd.lucent.voice",
-        lwp: "application/vnd.lotus-wordpro",
-        lzh: ["application/octet-stream", "application/x-lzh"],
-        lzx: ["application/lzx", "application/octet-stream", "application/x-lzx"],
-        m: ["text/plain", "text/x-m"],
-        m13: "application/x-msmediaview",
-        m14: "application/x-msmediaview",
-        m1v: "video/mpeg",
-        m21: "application/mp21",
-        m2a: "audio/mpeg",
-        m2v: "video/mpeg",
-        m3u: ["audio/x-mpegurl", "audio/x-mpequrl"],
-        m3u8: "application/vnd.apple.mpegurl",
-        m4v: "video/x-m4v",
-        ma: "application/mathematica",
-        mads: "application/mads+xml",
-        mag: "application/vnd.ecowin.chart",
-        man: "application/x-troff-man",
-        map: "application/x-navimap",
-        mar: "text/plain",
-        mathml: "application/mathml+xml",
-        mbd: "application/mbedlet",
-        mbk: "application/vnd.mobius.mbk",
-        mbox: "application/mbox",
-        mc$: "application/x-magic-cap-package-1.0",
-        mc1: "application/vnd.medcalcdata",
-        mcd: ["application/mcad", "application/vnd.mcd", "application/x-mathcad"],
-        mcf: ["image/vasa", "text/mcf"],
-        mcp: "application/netmc",
-        mcurl: "text/vnd.curl.mcurl",
-        mdb: "application/x-msaccess",
-        mdi: "image/vnd.ms-modi",
-        me: "application/x-troff-me",
-        meta4: "application/metalink4+xml",
-        mets: "application/mets+xml",
-        mfm: "application/vnd.mfmp",
-        mgp: "application/vnd.osgeo.mapguide.package",
-        mgz: "application/vnd.proteus.magazine",
-        mht: "message/rfc822",
-        mhtml: "message/rfc822",
-        mid: ["audio/mid", "audio/midi", "music/crescendo", "x-music/x-midi", "audio/x-midi", "application/x-midi", "audio/x-mid"],
-        midi: ["audio/midi", "music/crescendo", "x-music/x-midi", "audio/x-midi", "application/x-midi", "audio/x-mid"],
-        mif: ["application/vnd.mif", "application/x-mif", "application/x-frame"],
-        mime: ["message/rfc822", "www/mime"],
-        mj2: "video/mj2",
-        mjf: "audio/x-vnd.audioexplosion.mjuicemediafile",
-        mjpg: "video/x-motion-jpeg",
-        mlp: "application/vnd.dolby.mlp",
-        mm: ["application/base64", "application/x-meme"],
-        mmd: "application/vnd.chipnuts.karaoke-mmd",
-        mme: "application/base64",
-        mmf: "application/vnd.smaf",
-        mmr: "image/vnd.fujixerox.edmics-mmr",
-        mny: "application/x-msmoney",
-        mod: ["audio/mod", "audio/x-mod"],
-        mods: "application/mods+xml",
-        moov: "video/quicktime",
-        mov: "video/quicktime",
-        movie: "video/x-sgi-movie",
-        mp2: ["video/mpeg", "audio/mpeg", "video/x-mpeg", "audio/x-mpeg", "video/x-mpeq2a"],
-        mp3: ["audio/mpeg", "audio/mpeg3", "video/mpeg", "audio/x-mpeg-3", "video/x-mpeg"],
-        mp4: ["video/mp4", "application/mp4"],
-        mp4a: "audio/mp4",
-        mpa: ["video/mpeg", "audio/mpeg"],
-        mpc: ["application/vnd.mophun.certificate", "application/x-project"],
-        mpe: "video/mpeg",
-        mpeg: "video/mpeg",
-        mpg: ["video/mpeg", "audio/mpeg"],
-        mpga: "audio/mpeg",
-        mpkg: "application/vnd.apple.installer+xml",
-        mpm: "application/vnd.blueice.multipass",
-        mpn: "application/vnd.mophun.application",
-        mpp: "application/vnd.ms-project",
-        mpt: "application/x-project",
-        mpv: "application/x-project",
-        mpv2: "video/mpeg",
-        mpx: "application/x-project",
-        mpy: "application/vnd.ibm.minipay",
-        mqy: "application/vnd.mobius.mqy",
-        mrc: "application/marc",
-        mrcx: "application/marcxml+xml",
-        ms: "application/x-troff-ms",
-        mscml: "application/mediaservercontrol+xml",
-        mseq: "application/vnd.mseq",
-        msf: "application/vnd.epson.msf",
-        msg: "application/vnd.ms-outlook",
-        msh: "model/mesh",
-        msl: "application/vnd.mobius.msl",
-        msty: "application/vnd.muvee.style",
-        mts: "model/vnd.mts",
-        mus: "application/vnd.musician",
-        musicxml: "application/vnd.recordare.musicxml+xml",
-        mv: "video/x-sgi-movie",
-        mvb: "application/x-msmediaview",
-        mwf: "application/vnd.mfer",
-        mxf: "application/mxf",
-        mxl: "application/vnd.recordare.musicxml",
-        mxml: "application/xv+xml",
-        mxs: "application/vnd.triscape.mxs",
-        mxu: "video/vnd.mpegurl",
-        my: "audio/make",
-        mzz: "application/x-vnd.audioexplosion.mzz",
-        "n-gage": "application/vnd.nokia.n-gage.symbian.install",
-        n3: "text/n3",
-        nap: "image/naplps",
-        naplps: "image/naplps",
-        nbp: "application/vnd.wolfram.player",
-        nc: "application/x-netcdf",
-        ncm: "application/vnd.nokia.configuration-message",
-        ncx: "application/x-dtbncx+xml",
-        ngdat: "application/vnd.nokia.n-gage.data",
-        nif: "image/x-niff",
-        niff: "image/x-niff",
-        nix: "application/x-mix-transfer",
-        nlu: "application/vnd.neurolanguage.nlu",
-        nml: "application/vnd.enliven",
-        nnd: "application/vnd.noblenet-directory",
-        nns: "application/vnd.noblenet-sealer",
-        nnw: "application/vnd.noblenet-web",
-        npx: "image/vnd.net-fpx",
-        nsc: "application/x-conference",
-        nsf: "application/vnd.lotus-notes",
-        nvd: "application/x-navidoc",
-        nws: "message/rfc822",
-        o: "application/octet-stream",
-        oa2: "application/vnd.fujitsu.oasys2",
-        oa3: "application/vnd.fujitsu.oasys3",
-        oas: "application/vnd.fujitsu.oasys",
-        obd: "application/x-msbinder",
-        oda: "application/oda",
-        odb: "application/vnd.oasis.opendocument.database",
-        odc: "application/vnd.oasis.opendocument.chart",
-        odf: "application/vnd.oasis.opendocument.formula",
-        odft: "application/vnd.oasis.opendocument.formula-template",
-        odg: "application/vnd.oasis.opendocument.graphics",
-        odi: "application/vnd.oasis.opendocument.image",
-        odm: "application/vnd.oasis.opendocument.text-master",
-        odp: "application/vnd.oasis.opendocument.presentation",
-        ods: "application/vnd.oasis.opendocument.spreadsheet",
-        odt: "application/vnd.oasis.opendocument.text",
-        oga: "audio/ogg",
-        ogv: "video/ogg",
-        ogx: "application/ogg",
-        omc: "application/x-omc",
-        omcd: "application/x-omcdatamaker",
-        omcr: "application/x-omcregerator",
-        onetoc: "application/onenote",
-        opf: "application/oebps-package+xml",
-        org: "application/vnd.lotus-organizer",
-        osf: "application/vnd.yamaha.openscoreformat",
-        osfpvg: "application/vnd.yamaha.openscoreformat.osfpvg+xml",
-        otc: "application/vnd.oasis.opendocument.chart-template",
-        otf: "application/x-font-otf",
-        otg: "application/vnd.oasis.opendocument.graphics-template",
-        oth: "application/vnd.oasis.opendocument.text-web",
-        oti: "application/vnd.oasis.opendocument.image-template",
-        otp: "application/vnd.oasis.opendocument.presentation-template",
-        ots: "application/vnd.oasis.opendocument.spreadsheet-template",
-        ott: "application/vnd.oasis.opendocument.text-template",
-        oxt: "application/vnd.openofficeorg.extension",
-        p: "text/x-pascal",
-        p10: ["application/pkcs10", "application/x-pkcs10"],
-        p12: ["application/pkcs-12", "application/x-pkcs12"],
-        p7a: "application/x-pkcs7-signature",
-        p7b: "application/x-pkcs7-certificates",
-        p7c: ["application/pkcs7-mime", "application/x-pkcs7-mime"],
-        p7m: ["application/pkcs7-mime", "application/x-pkcs7-mime"],
-        p7r: "application/x-pkcs7-certreqresp",
-        p7s: ["application/pkcs7-signature", "application/x-pkcs7-signature"],
-        p8: "application/pkcs8",
-        par: "text/plain-bas",
-        part: "application/pro_eng",
-        pas: "text/pascal",
-        paw: "application/vnd.pawaafile",
-        pbd: "application/vnd.powerbuilder6",
-        pbm: "image/x-portable-bitmap",
-        pcf: "application/x-font-pcf",
-        pcl: ["application/vnd.hp-pcl", "application/x-pcl"],
-        pclxl: "application/vnd.hp-pclxl",
-        pct: "image/x-pict",
-        pcurl: "application/vnd.curl.pcurl",
-        pcx: "image/x-pcx",
-        pdb: ["application/vnd.palm", "chemical/x-pdb"],
-        pdf: "application/pdf",
-        pfa: "application/x-font-type1",
-        pfr: "application/font-tdpfr",
-        pfunk: ["audio/make", "audio/make.my.funk"],
-        pfx: "application/x-pkcs12",
-        pgm: ["image/x-portable-graymap", "image/x-portable-greymap"],
-        pgn: "application/x-chess-pgn",
-        pgp: "application/pgp-signature",
-        pic: ["image/pict", "image/x-pict"],
-        pict: "image/pict",
-        pkg: "application/x-newton-compatible-pkg",
-        pki: "application/pkixcmp",
-        pkipath: "application/pkix-pkipath",
-        pko: ["application/ynd.ms-pkipko", "application/vnd.ms-pki.pko"],
-        pl: ["text/plain", "text/x-script.perl"],
-        plb: "application/vnd.3gpp.pic-bw-large",
-        plc: "application/vnd.mobius.plc",
-        plf: "application/vnd.pocketlearn",
-        pls: "application/pls+xml",
-        plx: "application/x-pixclscript",
-        pm: ["text/x-script.perl-module", "image/x-xpixmap"],
-        pm4: "application/x-pagemaker",
-        pm5: "application/x-pagemaker",
-        pma: "application/x-perfmon",
-        pmc: "application/x-perfmon",
-        pml: ["application/vnd.ctc-posml", "application/x-perfmon"],
-        pmr: "application/x-perfmon",
-        pmw: "application/x-perfmon",
-        png: "image/png",
-        pnm: ["application/x-portable-anymap", "image/x-portable-anymap"],
-        portpkg: "application/vnd.macports.portpkg",
-        pot: ["application/vnd.ms-powerpoint", "application/mspowerpoint"],
-        potm: "application/vnd.ms-powerpoint.template.macroenabled.12",
-        potx: "application/vnd.openxmlformats-officedocument.presentationml.template",
-        pov: "model/x-pov",
-        ppa: "application/vnd.ms-powerpoint",
-        ppam: "application/vnd.ms-powerpoint.addin.macroenabled.12",
-        ppd: "application/vnd.cups-ppd",
-        ppm: "image/x-portable-pixmap",
-        pps: ["application/vnd.ms-powerpoint", "application/mspowerpoint"],
-        ppsm: "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
-        ppsx: "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
-        ppt: ["application/vnd.ms-powerpoint", "application/mspowerpoint", "application/powerpoint", "application/x-mspowerpoint"],
-        pptm: "application/vnd.ms-powerpoint.presentation.macroenabled.12",
-        pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
-        ppz: "application/mspowerpoint",
-        prc: "application/x-mobipocket-ebook",
-        pre: ["application/vnd.lotus-freelance", "application/x-freelance"],
-        prf: "application/pics-rules",
-        prt: "application/pro_eng",
-        ps: "application/postscript",
-        psb: "application/vnd.3gpp.pic-bw-small",
-        psd: ["application/octet-stream", "image/vnd.adobe.photoshop"],
-        psf: "application/x-font-linux-psf",
-        pskcxml: "application/pskc+xml",
-        ptid: "application/vnd.pvi.ptid1",
-        pub: "application/x-mspublisher",
-        pvb: "application/vnd.3gpp.pic-bw-var",
-        pvu: "paleovu/x-pv",
-        pwn: "application/vnd.3m.post-it-notes",
-        pwz: "application/vnd.ms-powerpoint",
-        py: "text/x-script.phyton",
-        pya: "audio/vnd.ms-playready.media.pya",
-        pyc: "applicaiton/x-bytecode.python",
-        pyv: "video/vnd.ms-playready.media.pyv",
-        qam: "application/vnd.epson.quickanime",
-        qbo: "application/vnd.intu.qbo",
-        qcp: "audio/vnd.qcelp",
-        qd3: "x-world/x-3dmf",
-        qd3d: "x-world/x-3dmf",
-        qfx: "application/vnd.intu.qfx",
-        qif: "image/x-quicktime",
-        qps: "application/vnd.publishare-delta-tree",
-        qt: "video/quicktime",
-        qtc: "video/x-qtc",
-        qti: "image/x-quicktime",
-        qtif: "image/x-quicktime",
-        qxd: "application/vnd.quark.quarkxpress",
-        ra: ["audio/x-realaudio", "audio/x-pn-realaudio", "audio/x-pn-realaudio-plugin"],
-        ram: "audio/x-pn-realaudio",
-        rar: "application/x-rar-compressed",
-        ras: ["image/cmu-raster", "application/x-cmu-raster", "image/x-cmu-raster"],
-        rast: "image/cmu-raster",
-        rcprofile: "application/vnd.ipunplugged.rcprofile",
-        rdf: "application/rdf+xml",
-        rdz: "application/vnd.data-vision.rdz",
-        rep: "application/vnd.businessobjects",
-        res: "application/x-dtbresource+xml",
-        rexx: "text/x-script.rexx",
-        rf: "image/vnd.rn-realflash",
-        rgb: "image/x-rgb",
-        rif: "application/reginfo+xml",
-        rip: "audio/vnd.rip",
-        rl: "application/resource-lists+xml",
-        rlc: "image/vnd.fujixerox.edmics-rlc",
-        rld: "application/resource-lists-diff+xml",
-        rm: ["application/vnd.rn-realmedia", "audio/x-pn-realaudio"],
-        rmi: "audio/mid",
-        rmm: "audio/x-pn-realaudio",
-        rmp: ["audio/x-pn-realaudio-plugin", "audio/x-pn-realaudio"],
-        rms: "application/vnd.jcp.javame.midlet-rms",
-        rnc: "application/relax-ng-compact-syntax",
-        rng: ["application/ringing-tones", "application/vnd.nokia.ringing-tone"],
-        rnx: "application/vnd.rn-realplayer",
-        roff: "application/x-troff",
-        rp: "image/vnd.rn-realpix",
-        rp9: "application/vnd.cloanto.rp9",
-        rpm: "audio/x-pn-realaudio-plugin",
-        rpss: "application/vnd.nokia.radio-presets",
-        rpst: "application/vnd.nokia.radio-preset",
-        rq: "application/sparql-query",
-        rs: "application/rls-services+xml",
-        rsd: "application/rsd+xml",
-        rt: ["text/richtext", "text/vnd.rn-realtext"],
-        rtf: ["application/rtf", "text/richtext", "application/x-rtf"],
-        rtx: ["text/richtext", "application/rtf"],
-        rv: "video/vnd.rn-realvideo",
-        s: "text/x-asm",
-        s3m: "audio/s3m",
-        saf: "application/vnd.yamaha.smaf-audio",
-        saveme: "application/octet-stream",
-        sbk: "application/x-tbook",
-        sbml: "application/sbml+xml",
-        sc: "application/vnd.ibm.secure-container",
-        scd: "application/x-msschedule",
-        scm: ["application/vnd.lotus-screencam", "video/x-scm", "text/x-script.guile", "application/x-lotusscreencam", "text/x-script.scheme"],
-        scq: "application/scvp-cv-request",
-        scs: "application/scvp-cv-response",
-        sct: "text/scriptlet",
-        scurl: "text/vnd.curl.scurl",
-        sda: "application/vnd.stardivision.draw",
-        sdc: "application/vnd.stardivision.calc",
-        sdd: "application/vnd.stardivision.impress",
-        sdkm: "application/vnd.solent.sdkm+xml",
-        sdml: "text/plain",
-        sdp: ["application/sdp", "application/x-sdp"],
-        sdr: "application/sounder",
-        sdw: "application/vnd.stardivision.writer",
-        sea: ["application/sea", "application/x-sea"],
-        see: "application/vnd.seemail",
-        seed: "application/vnd.fdsn.seed",
-        sema: "application/vnd.sema",
-        semd: "application/vnd.semd",
-        semf: "application/vnd.semf",
-        ser: "application/java-serialized-object",
-        set: "application/set",
-        setpay: "application/set-payment-initiation",
-        setreg: "application/set-registration-initiation",
-        "sfd-hdstx": "application/vnd.hydrostatix.sof-data",
-        sfs: "application/vnd.spotfire.sfs",
-        sgl: "application/vnd.stardivision.writer-global",
-        sgm: ["text/sgml", "text/x-sgml"],
-        sgml: ["text/sgml", "text/x-sgml"],
-        sh: ["application/x-shar", "application/x-bsh", "application/x-sh", "text/x-script.sh"],
-        shar: ["application/x-bsh", "application/x-shar"],
-        shf: "application/shf+xml",
-        shtml: ["text/html", "text/x-server-parsed-html"],
-        sid: "audio/x-psid",
-        sis: "application/vnd.symbian.install",
-        sit: ["application/x-stuffit", "application/x-sit"],
-        sitx: "application/x-stuffitx",
-        skd: "application/x-koan",
-        skm: "application/x-koan",
-        skp: ["application/vnd.koan", "application/x-koan"],
-        skt: "application/x-koan",
-        sl: "application/x-seelogo",
-        sldm: "application/vnd.ms-powerpoint.slide.macroenabled.12",
-        sldx: "application/vnd.openxmlformats-officedocument.presentationml.slide",
-        slt: "application/vnd.epson.salt",
-        sm: "application/vnd.stepmania.stepchart",
-        smf: "application/vnd.stardivision.math",
-        smi: ["application/smil", "application/smil+xml"],
-        smil: "application/smil",
-        snd: ["audio/basic", "audio/x-adpcm"],
-        snf: "application/x-font-snf",
-        sol: "application/solids",
-        spc: ["text/x-speech", "application/x-pkcs7-certificates"],
-        spf: "application/vnd.yamaha.smaf-phrase",
-        spl: ["application/futuresplash", "application/x-futuresplash"],
-        spot: "text/vnd.in3d.spot",
-        spp: "application/scvp-vp-response",
-        spq: "application/scvp-vp-request",
-        spr: "application/x-sprite",
-        sprite: "application/x-sprite",
-        src: "application/x-wais-source",
-        sru: "application/sru+xml",
-        srx: "application/sparql-results+xml",
-        sse: "application/vnd.kodak-descriptor",
-        ssf: "application/vnd.epson.ssf",
-        ssi: "text/x-server-parsed-html",
-        ssm: "application/streamingmedia",
-        ssml: "application/ssml+xml",
-        sst: ["application/vnd.ms-pkicertstore", "application/vnd.ms-pki.certstore"],
-        st: "application/vnd.sailingtracker.track",
-        stc: "application/vnd.sun.xml.calc.template",
-        std: "application/vnd.sun.xml.draw.template",
-        step: "application/step",
-        stf: "application/vnd.wt.stf",
-        sti: "application/vnd.sun.xml.impress.template",
-        stk: "application/hyperstudio",
-        stl: ["application/vnd.ms-pkistl", "application/sla", "application/vnd.ms-pki.stl", "application/x-navistyle"],
-        stm: "text/html",
-        stp: "application/step",
-        str: "application/vnd.pg.format",
-        stw: "application/vnd.sun.xml.writer.template",
-        sub: "image/vnd.dvb.subtitle",
-        sus: "application/vnd.sus-calendar",
-        sv4cpio: "application/x-sv4cpio",
-        sv4crc: "application/x-sv4crc",
-        svc: "application/vnd.dvb.service",
-        svd: "application/vnd.svd",
-        svf: ["image/vnd.dwg", "image/x-dwg"],
-        svg: "image/svg+xml",
-        svr: ["x-world/x-svr", "application/x-world"],
-        swf: "application/x-shockwave-flash",
-        swi: "application/vnd.aristanetworks.swi",
-        sxc: "application/vnd.sun.xml.calc",
-        sxd: "application/vnd.sun.xml.draw",
-        sxg: "application/vnd.sun.xml.writer.global",
-        sxi: "application/vnd.sun.xml.impress",
-        sxm: "application/vnd.sun.xml.math",
-        sxw: "application/vnd.sun.xml.writer",
-        t: ["text/troff", "application/x-troff"],
-        talk: "text/x-speech",
-        tao: "application/vnd.tao.intent-module-archive",
-        tar: "application/x-tar",
-        tbk: ["application/toolbook", "application/x-tbook"],
-        tcap: "application/vnd.3gpp2.tcap",
-        tcl: ["text/x-script.tcl", "application/x-tcl"],
-        tcsh: "text/x-script.tcsh",
-        teacher: "application/vnd.smart.teacher",
-        tei: "application/tei+xml",
-        tex: "application/x-tex",
-        texi: "application/x-texinfo",
-        texinfo: "application/x-texinfo",
-        text: ["application/plain", "text/plain"],
-        tfi: "application/thraud+xml",
-        tfm: "application/x-tex-tfm",
-        tgz: ["application/gnutar", "application/x-compressed"],
-        thmx: "application/vnd.ms-officetheme",
-        tif: ["image/tiff", "image/x-tiff"],
-        tiff: ["image/tiff", "image/x-tiff"],
-        tmo: "application/vnd.tmobile-livetv",
-        torrent: "application/x-bittorrent",
-        tpl: "application/vnd.groove-tool-template",
-        tpt: "application/vnd.trid.tpt",
-        tr: "application/x-troff",
-        tra: "application/vnd.trueapp",
-        trm: "application/x-msterminal",
-        tsd: "application/timestamped-data",
-        tsi: "audio/tsp-audio",
-        tsp: ["application/dsptype", "audio/tsplayer"],
-        tsv: "text/tab-separated-values",
-        ttf: "application/x-font-ttf",
-        ttl: "text/turtle",
-        turbot: "image/florian",
-        twd: "application/vnd.simtech-mindmapper",
-        txd: "application/vnd.genomatix.tuxedo",
-        txf: "application/vnd.mobius.txf",
-        txt: "text/plain",
-        ufd: "application/vnd.ufdl",
-        uil: "text/x-uil",
-        uls: "text/iuls",
-        umj: "application/vnd.umajin",
-        uni: "text/uri-list",
-        unis: "text/uri-list",
-        unityweb: "application/vnd.unity",
-        unv: "application/i-deas",
-        uoml: "application/vnd.uoml+xml",
-        uri: "text/uri-list",
-        uris: "text/uri-list",
-        ustar: ["application/x-ustar", "multipart/x-ustar"],
-        utz: "application/vnd.uiq.theme",
-        uu: ["application/octet-stream", "text/x-uuencode"],
-        uue: "text/x-uuencode",
-        uva: "audio/vnd.dece.audio",
-        uvh: "video/vnd.dece.hd",
-        uvi: "image/vnd.dece.graphic",
-        uvm: "video/vnd.dece.mobile",
-        uvp: "video/vnd.dece.pd",
-        uvs: "video/vnd.dece.sd",
-        uvu: "video/vnd.uvvu.mp4",
-        uvv: "video/vnd.dece.video",
-        vcd: "application/x-cdlink",
-        vcf: "text/x-vcard",
-        vcg: "application/vnd.groove-vcard",
-        vcs: "text/x-vcalendar",
-        vcx: "application/vnd.vcx",
-        vda: "application/vda",
-        vdo: "video/vdo",
-        vew: "application/groupwise",
-        vis: "application/vnd.visionary",
-        viv: ["video/vivo", "video/vnd.vivo"],
-        vivo: ["video/vivo", "video/vnd.vivo"],
-        vmd: "application/vocaltec-media-desc",
-        vmf: "application/vocaltec-media-file",
-        voc: ["audio/voc", "audio/x-voc"],
-        vos: "video/vosaic",
-        vox: "audio/voxware",
-        vqe: "audio/x-twinvq-plugin",
-        vqf: "audio/x-twinvq",
-        vql: "audio/x-twinvq-plugin",
-        vrml: ["model/vrml", "x-world/x-vrml", "application/x-vrml"],
-        vrt: "x-world/x-vrt",
-        vsd: ["application/vnd.visio", "application/x-visio"],
-        vsf: "application/vnd.vsf",
-        vst: "application/x-visio",
-        vsw: "application/x-visio",
-        vtu: "model/vnd.vtu",
-        vxml: "application/voicexml+xml",
-        w60: "application/wordperfect6.0",
-        w61: "application/wordperfect6.1",
-        w6w: "application/msword",
-        wad: "application/x-doom",
-        wav: ["audio/wav", "audio/x-wav"],
-        wax: "audio/x-ms-wax",
-        wb1: "application/x-qpro",
-        wbmp: "image/vnd.wap.wbmp",
-        wbs: "application/vnd.criticaltools.wbs+xml",
-        wbxml: "application/vnd.wap.wbxml",
-        wcm: "application/vnd.ms-works",
-        wdb: "application/vnd.ms-works",
-        web: "application/vnd.xara",
-        weba: "audio/webm",
-        webm: "video/webm",
-        webp: "image/webp",
-        wg: "application/vnd.pmi.widget",
-        wgt: "application/widget",
-        wiz: "application/msword",
-        wk1: "application/x-123",
-        wks: "application/vnd.ms-works",
-        wm: "video/x-ms-wm",
-        wma: "audio/x-ms-wma",
-        wmd: "application/x-ms-wmd",
-        wmf: ["windows/metafile", "application/x-msmetafile"],
-        wml: "text/vnd.wap.wml",
-        wmlc: "application/vnd.wap.wmlc",
-        wmls: "text/vnd.wap.wmlscript",
-        wmlsc: "application/vnd.wap.wmlscriptc",
-        wmv: "video/x-ms-wmv",
-        wmx: "video/x-ms-wmx",
-        wmz: "application/x-ms-wmz",
-        woff: "application/x-font-woff",
-        word: "application/msword",
-        wp: "application/wordperfect",
-        wp5: ["application/wordperfect", "application/wordperfect6.0"],
-        wp6: "application/wordperfect",
-        wpd: ["application/wordperfect", "application/vnd.wordperfect", "application/x-wpwin"],
-        wpl: "application/vnd.ms-wpl",
-        wps: "application/vnd.ms-works",
-        wq1: "application/x-lotus",
-        wqd: "application/vnd.wqd",
-        wri: ["application/mswrite", "application/x-wri", "application/x-mswrite"],
-        wrl: ["model/vrml", "x-world/x-vrml", "application/x-world"],
-        wrz: ["model/vrml", "x-world/x-vrml"],
-        wsc: "text/scriplet",
-        wsdl: "application/wsdl+xml",
-        wspolicy: "application/wspolicy+xml",
-        wsrc: "application/x-wais-source",
-        wtb: "application/vnd.webturbo",
-        wtk: "application/x-wintalk",
-        wvx: "video/x-ms-wvx",
-        "x-png": "image/png",
-        x3d: "application/vnd.hzn-3d-crossword",
-        xaf: "x-world/x-vrml",
-        xap: "application/x-silverlight-app",
-        xar: "application/vnd.xara",
-        xbap: "application/x-ms-xbap",
-        xbd: "application/vnd.fujixerox.docuworks.binder",
-        xbm: ["image/xbm", "image/x-xbm", "image/x-xbitmap"],
-        xdf: "application/xcap-diff+xml",
-        xdm: "application/vnd.syncml.dm+xml",
-        xdp: "application/vnd.adobe.xdp+xml",
-        xdr: "video/x-amt-demorun",
-        xdssc: "application/dssc+xml",
-        xdw: "application/vnd.fujixerox.docuworks",
-        xenc: "application/xenc+xml",
-        xer: "application/patch-ops-error+xml",
-        xfdf: "application/vnd.adobe.xfdf",
-        xfdl: "application/vnd.xfdl",
-        xgz: "xgl/drawing",
-        xhtml: "application/xhtml+xml",
-        xif: "image/vnd.xiff",
-        xl: "application/excel",
-        xla: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
-        xlam: "application/vnd.ms-excel.addin.macroenabled.12",
-        xlb: ["application/excel", "application/vnd.ms-excel", "application/x-excel"],
-        xlc: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
-        xld: ["application/excel", "application/x-excel"],
-        xlk: ["application/excel", "application/x-excel"],
-        xll: ["application/excel", "application/vnd.ms-excel", "application/x-excel"],
-        xlm: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
-        xls: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
-        xlsb: "application/vnd.ms-excel.sheet.binary.macroenabled.12",
-        xlsm: "application/vnd.ms-excel.sheet.macroenabled.12",
-        xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        xlt: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
-        xltm: "application/vnd.ms-excel.template.macroenabled.12",
-        xltx: "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
-        xlv: ["application/excel", "application/x-excel"],
-        xlw: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
-        xm: "audio/xm",
-        xml: ["application/xml", "text/xml", "application/atom+xml", "application/rss+xml"],
-        xmz: "xgl/movie",
-        xo: "application/vnd.olpc-sugar",
-        xof: "x-world/x-vrml",
-        xop: "application/xop+xml",
-        xpi: "application/x-xpinstall",
-        xpix: "application/x-vnd.ls-xpix",
-        xpm: ["image/xpm", "image/x-xpixmap"],
-        xpr: "application/vnd.is-xpr",
-        xps: "application/vnd.ms-xpsdocument",
-        xpw: "application/vnd.intercon.formnet",
-        xslt: "application/xslt+xml",
-        xsm: "application/vnd.syncml+xml",
-        xspf: "application/xspf+xml",
-        xsr: "video/x-amt-showrun",
-        xul: "application/vnd.mozilla.xul+xml",
-        xwd: ["image/x-xwd", "image/x-xwindowdump"],
-        xyz: ["chemical/x-xyz", "chemical/x-pdb"],
-        yang: "application/yang",
-        yin: "application/yin+xml",
-        z: ["application/x-compressed", "application/x-compress"],
-        zaz: "application/vnd.zzazz.deck+xml",
-        zip: ["application/zip", "multipart/x-zip", "application/x-zip-compressed", "application/x-compressed"],
-        zir: "application/vnd.zul",
-        zmm: "application/vnd.handheld-entertainment+xml",
-        zoo: "application/octet-stream",
-        zsh: "text/x-script.zsh"
-      }
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.extensions = exports.list = void 0;
+    exports.list = {
+      "application/acad": "dwg",
+      "application/applixware": "aw",
+      "application/arj": "arj",
+      "application/atom+xml": "xml",
+      "application/atomcat+xml": "atomcat",
+      "application/atomsvc+xml": "atomsvc",
+      "application/base64": ["mm", "mme"],
+      "application/binhex": "hqx",
+      "application/binhex4": "hqx",
+      "application/book": ["book", "boo"],
+      "application/ccxml+xml": "ccxml",
+      "application/cdf": "cdf",
+      "application/cdmi-capability": "cdmia",
+      "application/cdmi-container": "cdmic",
+      "application/cdmi-domain": "cdmid",
+      "application/cdmi-object": "cdmio",
+      "application/cdmi-queue": "cdmiq",
+      "application/clariscad": "ccad",
+      "application/commonground": "dp",
+      "application/cu-seeme": "cu",
+      "application/davmount+xml": "davmount",
+      "application/drafting": "drw",
+      "application/dsptype": "tsp",
+      "application/dssc+der": "dssc",
+      "application/dssc+xml": "xdssc",
+      "application/dxf": "dxf",
+      "application/ecmascript": ["js", "es"],
+      "application/emma+xml": "emma",
+      "application/envoy": "evy",
+      "application/epub+zip": "epub",
+      "application/excel": ["xls", "xl", "xla", "xlb", "xlc", "xld", "xlk", "xll", "xlm", "xlt", "xlv", "xlw"],
+      "application/exi": "exi",
+      "application/font-tdpfr": "pfr",
+      "application/fractals": "fif",
+      "application/freeloader": "frl",
+      "application/futuresplash": "spl",
+      "application/geo+json": "geojson",
+      "application/gnutar": "tgz",
+      "application/groupwise": "vew",
+      "application/hlp": "hlp",
+      "application/hta": "hta",
+      "application/hyperstudio": "stk",
+      "application/i-deas": "unv",
+      "application/iges": ["iges", "igs"],
+      "application/inf": "inf",
+      "application/internet-property-stream": "acx",
+      "application/ipfix": "ipfix",
+      "application/java": "class",
+      "application/java-archive": "jar",
+      "application/java-byte-code": "class",
+      "application/java-serialized-object": "ser",
+      "application/java-vm": "class",
+      "application/javascript": "js",
+      "application/json": "json",
+      "application/lha": "lha",
+      "application/lzx": "lzx",
+      "application/mac-binary": "bin",
+      "application/mac-binhex": "hqx",
+      "application/mac-binhex40": "hqx",
+      "application/mac-compactpro": "cpt",
+      "application/macbinary": "bin",
+      "application/mads+xml": "mads",
+      "application/marc": "mrc",
+      "application/marcxml+xml": "mrcx",
+      "application/mathematica": "ma",
+      "application/mathml+xml": "mathml",
+      "application/mbedlet": "mbd",
+      "application/mbox": "mbox",
+      "application/mcad": "mcd",
+      "application/mediaservercontrol+xml": "mscml",
+      "application/metalink4+xml": "meta4",
+      "application/mets+xml": "mets",
+      "application/mime": "aps",
+      "application/mods+xml": "mods",
+      "application/mp21": "m21",
+      "application/mp4": "mp4",
+      "application/mspowerpoint": ["ppt", "pot", "pps", "ppz"],
+      "application/msword": ["doc", "dot", "w6w", "wiz", "word"],
+      "application/mswrite": "wri",
+      "application/mxf": "mxf",
+      "application/netmc": "mcp",
+      "application/octet-stream": ["*"],
+      "application/oda": "oda",
+      "application/oebps-package+xml": "opf",
+      "application/ogg": "ogx",
+      "application/olescript": "axs",
+      "application/onenote": "onetoc",
+      "application/patch-ops-error+xml": "xer",
+      "application/pdf": "pdf",
+      "application/pgp-encrypted": "asc",
+      "application/pgp-signature": "pgp",
+      "application/pics-rules": "prf",
+      "application/pkcs-12": "p12",
+      "application/pkcs-crl": "crl",
+      "application/pkcs10": "p10",
+      "application/pkcs7-mime": ["p7c", "p7m"],
+      "application/pkcs7-signature": "p7s",
+      "application/pkcs8": "p8",
+      "application/pkix-attr-cert": "ac",
+      "application/pkix-cert": ["cer", "crt"],
+      "application/pkix-crl": "crl",
+      "application/pkix-pkipath": "pkipath",
+      "application/pkixcmp": "pki",
+      "application/plain": "text",
+      "application/pls+xml": "pls",
+      "application/postscript": ["ps", "ai", "eps"],
+      "application/powerpoint": "ppt",
+      "application/pro_eng": ["part", "prt"],
+      "application/prs.cww": "cww",
+      "application/pskc+xml": "pskcxml",
+      "application/rdf+xml": "rdf",
+      "application/reginfo+xml": "rif",
+      "application/relax-ng-compact-syntax": "rnc",
+      "application/resource-lists+xml": "rl",
+      "application/resource-lists-diff+xml": "rld",
+      "application/ringing-tones": "rng",
+      "application/rls-services+xml": "rs",
+      "application/rsd+xml": "rsd",
+      "application/rss+xml": "xml",
+      "application/rtf": ["rtf", "rtx"],
+      "application/sbml+xml": "sbml",
+      "application/scvp-cv-request": "scq",
+      "application/scvp-cv-response": "scs",
+      "application/scvp-vp-request": "spq",
+      "application/scvp-vp-response": "spp",
+      "application/sdp": "sdp",
+      "application/sea": "sea",
+      "application/set": "set",
+      "application/set-payment-initiation": "setpay",
+      "application/set-registration-initiation": "setreg",
+      "application/shf+xml": "shf",
+      "application/sla": "stl",
+      "application/smil": ["smi", "smil"],
+      "application/smil+xml": "smi",
+      "application/solids": "sol",
+      "application/sounder": "sdr",
+      "application/sparql-query": "rq",
+      "application/sparql-results+xml": "srx",
+      "application/srgs": "gram",
+      "application/srgs+xml": "grxml",
+      "application/sru+xml": "sru",
+      "application/ssml+xml": "ssml",
+      "application/step": ["step", "stp"],
+      "application/streamingmedia": "ssm",
+      "application/tei+xml": "tei",
+      "application/thraud+xml": "tfi",
+      "application/timestamped-data": "tsd",
+      "application/toolbook": "tbk",
+      "application/vda": "vda",
+      "application/vnd.3gpp.pic-bw-large": "plb",
+      "application/vnd.3gpp.pic-bw-small": "psb",
+      "application/vnd.3gpp.pic-bw-var": "pvb",
+      "application/vnd.3gpp2.tcap": "tcap",
+      "application/vnd.3m.post-it-notes": "pwn",
+      "application/vnd.accpac.simply.aso": "aso",
+      "application/vnd.accpac.simply.imp": "imp",
+      "application/vnd.acucobol": "acu",
+      "application/vnd.acucorp": "atc",
+      "application/vnd.adobe.air-application-installer-package+zip": "air",
+      "application/vnd.adobe.fxp": "fxp",
+      "application/vnd.adobe.xdp+xml": "xdp",
+      "application/vnd.adobe.xfdf": "xfdf",
+      "application/vnd.ahead.space": "ahead",
+      "application/vnd.airzip.filesecure.azf": "azf",
+      "application/vnd.airzip.filesecure.azs": "azs",
+      "application/vnd.amazon.ebook": "azw",
+      "application/vnd.americandynamics.acc": "acc",
+      "application/vnd.amiga.ami": "ami",
+      "application/vnd.android.package-archive": "apk",
+      "application/vnd.anser-web-certificate-issue-initiation": "cii",
+      "application/vnd.anser-web-funds-transfer-initiation": "fti",
+      "application/vnd.antix.game-component": "atx",
+      "application/vnd.apple.installer+xml": "mpkg",
+      "application/vnd.apple.mpegurl": "m3u8",
+      "application/vnd.aristanetworks.swi": "swi",
+      "application/vnd.audiograph": "aep",
+      "application/vnd.blueice.multipass": "mpm",
+      "application/vnd.bmi": "bmi",
+      "application/vnd.businessobjects": "rep",
+      "application/vnd.chemdraw+xml": "cdxml",
+      "application/vnd.chipnuts.karaoke-mmd": "mmd",
+      "application/vnd.cinderella": "cdy",
+      "application/vnd.claymore": "cla",
+      "application/vnd.cloanto.rp9": "rp9",
+      "application/vnd.clonk.c4group": "c4g",
+      "application/vnd.cluetrust.cartomobile-config": "c11amc",
+      "application/vnd.cluetrust.cartomobile-config-pkg": "c11amz",
+      "application/vnd.commonspace": "csp",
+      "application/vnd.contact.cmsg": "cdbcmsg",
+      "application/vnd.cosmocaller": "cmc",
+      "application/vnd.crick.clicker": "clkx",
+      "application/vnd.crick.clicker.keyboard": "clkk",
+      "application/vnd.crick.clicker.palette": "clkp",
+      "application/vnd.crick.clicker.template": "clkt",
+      "application/vnd.crick.clicker.wordbank": "clkw",
+      "application/vnd.criticaltools.wbs+xml": "wbs",
+      "application/vnd.ctc-posml": "pml",
+      "application/vnd.cups-ppd": "ppd",
+      "application/vnd.curl.car": "car",
+      "application/vnd.curl.pcurl": "pcurl",
+      "application/vnd.data-vision.rdz": "rdz",
+      "application/vnd.denovo.fcselayout-link": "fe_launch",
+      "application/vnd.dna": "dna",
+      "application/vnd.dolby.mlp": "mlp",
+      "application/vnd.dpgraph": "dpg",
+      "application/vnd.dreamfactory": "dfac",
+      "application/vnd.dvb.ait": "ait",
+      "application/vnd.dvb.service": "svc",
+      "application/vnd.dynageo": "geo",
+      "application/vnd.ecowin.chart": "mag",
+      "application/vnd.enliven": "nml",
+      "application/vnd.epson.esf": "esf",
+      "application/vnd.epson.msf": "msf",
+      "application/vnd.epson.quickanime": "qam",
+      "application/vnd.epson.salt": "slt",
+      "application/vnd.epson.ssf": "ssf",
+      "application/vnd.eszigno3+xml": "es3",
+      "application/vnd.ezpix-album": "ez2",
+      "application/vnd.ezpix-package": "ez3",
+      "application/vnd.fdf": "fdf",
+      "application/vnd.fdsn.seed": "seed",
+      "application/vnd.flographit": "gph",
+      "application/vnd.fluxtime.clip": "ftc",
+      "application/vnd.framemaker": "fm",
+      "application/vnd.frogans.fnc": "fnc",
+      "application/vnd.frogans.ltf": "ltf",
+      "application/vnd.fsc.weblaunch": "fsc",
+      "application/vnd.fujitsu.oasys": "oas",
+      "application/vnd.fujitsu.oasys2": "oa2",
+      "application/vnd.fujitsu.oasys3": "oa3",
+      "application/vnd.fujitsu.oasysgp": "fg5",
+      "application/vnd.fujitsu.oasysprs": "bh2",
+      "application/vnd.fujixerox.ddd": "ddd",
+      "application/vnd.fujixerox.docuworks": "xdw",
+      "application/vnd.fujixerox.docuworks.binder": "xbd",
+      "application/vnd.fuzzysheet": "fzs",
+      "application/vnd.genomatix.tuxedo": "txd",
+      "application/vnd.geogebra.file": "ggb",
+      "application/vnd.geogebra.tool": "ggt",
+      "application/vnd.geometry-explorer": "gex",
+      "application/vnd.geonext": "gxt",
+      "application/vnd.geoplan": "g2w",
+      "application/vnd.geospace": "g3w",
+      "application/vnd.gmx": "gmx",
+      "application/vnd.google-earth.kml+xml": "kml",
+      "application/vnd.google-earth.kmz": "kmz",
+      "application/vnd.grafeq": "gqf",
+      "application/vnd.groove-account": "gac",
+      "application/vnd.groove-help": "ghf",
+      "application/vnd.groove-identity-message": "gim",
+      "application/vnd.groove-injector": "grv",
+      "application/vnd.groove-tool-message": "gtm",
+      "application/vnd.groove-tool-template": "tpl",
+      "application/vnd.groove-vcard": "vcg",
+      "application/vnd.hal+xml": "hal",
+      "application/vnd.handheld-entertainment+xml": "zmm",
+      "application/vnd.hbci": "hbci",
+      "application/vnd.hhe.lesson-player": "les",
+      "application/vnd.hp-hpgl": ["hgl", "hpg", "hpgl"],
+      "application/vnd.hp-hpid": "hpid",
+      "application/vnd.hp-hps": "hps",
+      "application/vnd.hp-jlyt": "jlt",
+      "application/vnd.hp-pcl": "pcl",
+      "application/vnd.hp-pclxl": "pclxl",
+      "application/vnd.hydrostatix.sof-data": "sfd-hdstx",
+      "application/vnd.hzn-3d-crossword": "x3d",
+      "application/vnd.ibm.minipay": "mpy",
+      "application/vnd.ibm.modcap": "afp",
+      "application/vnd.ibm.rights-management": "irm",
+      "application/vnd.ibm.secure-container": "sc",
+      "application/vnd.iccprofile": "icc",
+      "application/vnd.igloader": "igl",
+      "application/vnd.immervision-ivp": "ivp",
+      "application/vnd.immervision-ivu": "ivu",
+      "application/vnd.insors.igm": "igm",
+      "application/vnd.intercon.formnet": "xpw",
+      "application/vnd.intergeo": "i2g",
+      "application/vnd.intu.qbo": "qbo",
+      "application/vnd.intu.qfx": "qfx",
+      "application/vnd.ipunplugged.rcprofile": "rcprofile",
+      "application/vnd.irepository.package+xml": "irp",
+      "application/vnd.is-xpr": "xpr",
+      "application/vnd.isac.fcs": "fcs",
+      "application/vnd.jam": "jam",
+      "application/vnd.jcp.javame.midlet-rms": "rms",
+      "application/vnd.jisp": "jisp",
+      "application/vnd.joost.joda-archive": "joda",
+      "application/vnd.kahootz": "ktz",
+      "application/vnd.kde.karbon": "karbon",
+      "application/vnd.kde.kchart": "chrt",
+      "application/vnd.kde.kformula": "kfo",
+      "application/vnd.kde.kivio": "flw",
+      "application/vnd.kde.kontour": "kon",
+      "application/vnd.kde.kpresenter": "kpr",
+      "application/vnd.kde.kspread": "ksp",
+      "application/vnd.kde.kword": "kwd",
+      "application/vnd.kenameaapp": "htke",
+      "application/vnd.kidspiration": "kia",
+      "application/vnd.kinar": "kne",
+      "application/vnd.koan": "skp",
+      "application/vnd.kodak-descriptor": "sse",
+      "application/vnd.las.las+xml": "lasxml",
+      "application/vnd.llamagraphics.life-balance.desktop": "lbd",
+      "application/vnd.llamagraphics.life-balance.exchange+xml": "lbe",
+      "application/vnd.lotus-1-2-3": "123",
+      "application/vnd.lotus-approach": "apr",
+      "application/vnd.lotus-freelance": "pre",
+      "application/vnd.lotus-notes": "nsf",
+      "application/vnd.lotus-organizer": "org",
+      "application/vnd.lotus-screencam": "scm",
+      "application/vnd.lotus-wordpro": "lwp",
+      "application/vnd.macports.portpkg": "portpkg",
+      "application/vnd.mcd": "mcd",
+      "application/vnd.medcalcdata": "mc1",
+      "application/vnd.mediastation.cdkey": "cdkey",
+      "application/vnd.mfer": "mwf",
+      "application/vnd.mfmp": "mfm",
+      "application/vnd.micrografx.flo": "flo",
+      "application/vnd.micrografx.igx": "igx",
+      "application/vnd.mif": "mif",
+      "application/vnd.mobius.daf": "daf",
+      "application/vnd.mobius.dis": "dis",
+      "application/vnd.mobius.mbk": "mbk",
+      "application/vnd.mobius.mqy": "mqy",
+      "application/vnd.mobius.msl": "msl",
+      "application/vnd.mobius.plc": "plc",
+      "application/vnd.mobius.txf": "txf",
+      "application/vnd.mophun.application": "mpn",
+      "application/vnd.mophun.certificate": "mpc",
+      "application/vnd.mozilla.xul+xml": "xul",
+      "application/vnd.ms-artgalry": "cil",
+      "application/vnd.ms-cab-compressed": "cab",
+      "application/vnd.ms-excel": ["xls", "xla", "xlc", "xlm", "xlt", "xlw", "xlb", "xll"],
+      "application/vnd.ms-excel.addin.macroenabled.12": "xlam",
+      "application/vnd.ms-excel.sheet.binary.macroenabled.12": "xlsb",
+      "application/vnd.ms-excel.sheet.macroenabled.12": "xlsm",
+      "application/vnd.ms-excel.template.macroenabled.12": "xltm",
+      "application/vnd.ms-fontobject": "eot",
+      "application/vnd.ms-htmlhelp": "chm",
+      "application/vnd.ms-ims": "ims",
+      "application/vnd.ms-lrm": "lrm",
+      "application/vnd.ms-officetheme": "thmx",
+      "application/vnd.ms-outlook": "msg",
+      "application/vnd.ms-pki.certstore": "sst",
+      "application/vnd.ms-pki.pko": "pko",
+      "application/vnd.ms-pki.seccat": "cat",
+      "application/vnd.ms-pki.stl": "stl",
+      "application/vnd.ms-pkicertstore": "sst",
+      "application/vnd.ms-pkiseccat": "cat",
+      "application/vnd.ms-pkistl": "stl",
+      "application/vnd.ms-powerpoint": ["ppt", "pot", "pps", "ppa", "pwz"],
+      "application/vnd.ms-powerpoint.addin.macroenabled.12": "ppam",
+      "application/vnd.ms-powerpoint.presentation.macroenabled.12": "pptm",
+      "application/vnd.ms-powerpoint.slide.macroenabled.12": "sldm",
+      "application/vnd.ms-powerpoint.slideshow.macroenabled.12": "ppsm",
+      "application/vnd.ms-powerpoint.template.macroenabled.12": "potm",
+      "application/vnd.ms-project": "mpp",
+      "application/vnd.ms-word.document.macroenabled.12": "docm",
+      "application/vnd.ms-word.template.macroenabled.12": "dotm",
+      "application/vnd.ms-works": ["wks", "wcm", "wdb", "wps"],
+      "application/vnd.ms-wpl": "wpl",
+      "application/vnd.ms-xpsdocument": "xps",
+      "application/vnd.mseq": "mseq",
+      "application/vnd.musician": "mus",
+      "application/vnd.muvee.style": "msty",
+      "application/vnd.neurolanguage.nlu": "nlu",
+      "application/vnd.noblenet-directory": "nnd",
+      "application/vnd.noblenet-sealer": "nns",
+      "application/vnd.noblenet-web": "nnw",
+      "application/vnd.nokia.configuration-message": "ncm",
+      "application/vnd.nokia.n-gage.data": "ngdat",
+      "application/vnd.nokia.n-gage.symbian.install": "n-gage",
+      "application/vnd.nokia.radio-preset": "rpst",
+      "application/vnd.nokia.radio-presets": "rpss",
+      "application/vnd.nokia.ringing-tone": "rng",
+      "application/vnd.novadigm.edm": "edm",
+      "application/vnd.novadigm.edx": "edx",
+      "application/vnd.novadigm.ext": "ext",
+      "application/vnd.oasis.opendocument.chart": "odc",
+      "application/vnd.oasis.opendocument.chart-template": "otc",
+      "application/vnd.oasis.opendocument.database": "odb",
+      "application/vnd.oasis.opendocument.formula": "odf",
+      "application/vnd.oasis.opendocument.formula-template": "odft",
+      "application/vnd.oasis.opendocument.graphics": "odg",
+      "application/vnd.oasis.opendocument.graphics-template": "otg",
+      "application/vnd.oasis.opendocument.image": "odi",
+      "application/vnd.oasis.opendocument.image-template": "oti",
+      "application/vnd.oasis.opendocument.presentation": "odp",
+      "application/vnd.oasis.opendocument.presentation-template": "otp",
+      "application/vnd.oasis.opendocument.spreadsheet": "ods",
+      "application/vnd.oasis.opendocument.spreadsheet-template": "ots",
+      "application/vnd.oasis.opendocument.text": "odt",
+      "application/vnd.oasis.opendocument.text-master": "odm",
+      "application/vnd.oasis.opendocument.text-template": "ott",
+      "application/vnd.oasis.opendocument.text-web": "oth",
+      "application/vnd.olpc-sugar": "xo",
+      "application/vnd.oma.dd2+xml": "dd2",
+      "application/vnd.openofficeorg.extension": "oxt",
+      "application/vnd.openxmlformats-officedocument.presentationml.presentation": "pptx",
+      "application/vnd.openxmlformats-officedocument.presentationml.slide": "sldx",
+      "application/vnd.openxmlformats-officedocument.presentationml.slideshow": "ppsx",
+      "application/vnd.openxmlformats-officedocument.presentationml.template": "potx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet": "xlsx",
+      "application/vnd.openxmlformats-officedocument.spreadsheetml.template": "xltx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document": "docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.template": "dotx",
+      "application/vnd.osgeo.mapguide.package": "mgp",
+      "application/vnd.osgi.dp": "dp",
+      "application/vnd.palm": "pdb",
+      "application/vnd.pawaafile": "paw",
+      "application/vnd.pg.format": "str",
+      "application/vnd.pg.osasli": "ei6",
+      "application/vnd.picsel": "efif",
+      "application/vnd.pmi.widget": "wg",
+      "application/vnd.pocketlearn": "plf",
+      "application/vnd.powerbuilder6": "pbd",
+      "application/vnd.previewsystems.box": "box",
+      "application/vnd.proteus.magazine": "mgz",
+      "application/vnd.publishare-delta-tree": "qps",
+      "application/vnd.pvi.ptid1": "ptid",
+      "application/vnd.quark.quarkxpress": "qxd",
+      "application/vnd.realvnc.bed": "bed",
+      "application/vnd.recordare.musicxml": "mxl",
+      "application/vnd.recordare.musicxml+xml": "musicxml",
+      "application/vnd.rig.cryptonote": "cryptonote",
+      "application/vnd.rim.cod": "cod",
+      "application/vnd.rn-realmedia": "rm",
+      "application/vnd.rn-realplayer": "rnx",
+      "application/vnd.route66.link66+xml": "link66",
+      "application/vnd.sailingtracker.track": "st",
+      "application/vnd.seemail": "see",
+      "application/vnd.sema": "sema",
+      "application/vnd.semd": "semd",
+      "application/vnd.semf": "semf",
+      "application/vnd.shana.informed.formdata": "ifm",
+      "application/vnd.shana.informed.formtemplate": "itp",
+      "application/vnd.shana.informed.interchange": "iif",
+      "application/vnd.shana.informed.package": "ipk",
+      "application/vnd.simtech-mindmapper": "twd",
+      "application/vnd.smaf": "mmf",
+      "application/vnd.smart.teacher": "teacher",
+      "application/vnd.solent.sdkm+xml": "sdkm",
+      "application/vnd.spotfire.dxp": "dxp",
+      "application/vnd.spotfire.sfs": "sfs",
+      "application/vnd.stardivision.calc": "sdc",
+      "application/vnd.stardivision.draw": "sda",
+      "application/vnd.stardivision.impress": "sdd",
+      "application/vnd.stardivision.math": "smf",
+      "application/vnd.stardivision.writer": "sdw",
+      "application/vnd.stardivision.writer-global": "sgl",
+      "application/vnd.stepmania.stepchart": "sm",
+      "application/vnd.sun.xml.calc": "sxc",
+      "application/vnd.sun.xml.calc.template": "stc",
+      "application/vnd.sun.xml.draw": "sxd",
+      "application/vnd.sun.xml.draw.template": "std",
+      "application/vnd.sun.xml.impress": "sxi",
+      "application/vnd.sun.xml.impress.template": "sti",
+      "application/vnd.sun.xml.math": "sxm",
+      "application/vnd.sun.xml.writer": "sxw",
+      "application/vnd.sun.xml.writer.global": "sxg",
+      "application/vnd.sun.xml.writer.template": "stw",
+      "application/vnd.sus-calendar": "sus",
+      "application/vnd.svd": "svd",
+      "application/vnd.symbian.install": "sis",
+      "application/vnd.syncml+xml": "xsm",
+      "application/vnd.syncml.dm+wbxml": "bdm",
+      "application/vnd.syncml.dm+xml": "xdm",
+      "application/vnd.tao.intent-module-archive": "tao",
+      "application/vnd.tmobile-livetv": "tmo",
+      "application/vnd.trid.tpt": "tpt",
+      "application/vnd.triscape.mxs": "mxs",
+      "application/vnd.trueapp": "tra",
+      "application/vnd.ufdl": "ufd",
+      "application/vnd.uiq.theme": "utz",
+      "application/vnd.umajin": "umj",
+      "application/vnd.unity": "unityweb",
+      "application/vnd.uoml+xml": "uoml",
+      "application/vnd.vcx": "vcx",
+      "application/vnd.visio": "vsd",
+      "application/vnd.visionary": "vis",
+      "application/vnd.vsf": "vsf",
+      "application/vnd.wap.wbxml": "wbxml",
+      "application/vnd.wap.wmlc": "wmlc",
+      "application/vnd.wap.wmlscriptc": "wmlsc",
+      "application/vnd.webturbo": "wtb",
+      "application/vnd.wolfram.player": "nbp",
+      "application/vnd.wordperfect": "wpd",
+      "application/vnd.wqd": "wqd",
+      "application/vnd.wt.stf": "stf",
+      "application/vnd.xara": ["web", "xar"],
+      "application/vnd.xfdl": "xfdl",
+      "application/vnd.yamaha.hv-dic": "hvd",
+      "application/vnd.yamaha.hv-script": "hvs",
+      "application/vnd.yamaha.hv-voice": "hvp",
+      "application/vnd.yamaha.openscoreformat": "osf",
+      "application/vnd.yamaha.openscoreformat.osfpvg+xml": "osfpvg",
+      "application/vnd.yamaha.smaf-audio": "saf",
+      "application/vnd.yamaha.smaf-phrase": "spf",
+      "application/vnd.yellowriver-custom-menu": "cmp",
+      "application/vnd.zul": "zir",
+      "application/vnd.zzazz.deck+xml": "zaz",
+      "application/vocaltec-media-desc": "vmd",
+      "application/vocaltec-media-file": "vmf",
+      "application/voicexml+xml": "vxml",
+      "application/wasm": "wasm",
+      "application/widget": "wgt",
+      "application/winhlp": "hlp",
+      "application/wordperfect": ["wp", "wp5", "wp6", "wpd"],
+      "application/wordperfect6.0": ["w60", "wp5"],
+      "application/wordperfect6.1": "w61",
+      "application/wsdl+xml": "wsdl",
+      "application/wspolicy+xml": "wspolicy",
+      "application/x-123": "wk1",
+      "application/x-7z-compressed": "7z",
+      "application/x-abiword": "abw",
+      "application/x-ace-compressed": "ace",
+      "application/x-aim": "aim",
+      "application/x-authorware-bin": "aab",
+      "application/x-authorware-map": "aam",
+      "application/x-authorware-seg": "aas",
+      "application/x-bcpio": "bcpio",
+      "application/x-binary": "bin",
+      "application/x-binhex40": "hqx",
+      "application/x-bittorrent": "torrent",
+      "application/x-bsh": ["bsh", "sh", "shar"],
+      "application/x-bytecode.elisp": "elc",
+      "application/x-bytecode.python": "pyc",
+      "application/x-bzip": "bz",
+      "application/x-bzip2": ["boz", "bz2"],
+      "application/x-cdf": "cdf",
+      "application/x-cdlink": "vcd",
+      "application/x-chat": ["cha", "chat"],
+      "application/x-chess-pgn": "pgn",
+      "application/x-cmu-raster": "ras",
+      "application/x-cocoa": "cco",
+      "application/x-compactpro": "cpt",
+      "application/x-compress": "z",
+      "application/x-compressed": ["tgz", "gz", "z", "zip"],
+      "application/x-conference": "nsc",
+      "application/x-cpio": "cpio",
+      "application/x-cpt": "cpt",
+      "application/x-csh": "csh",
+      "application/x-debian-package": "deb",
+      "application/x-deepv": "deepv",
+      "application/x-director": ["dir", "dcr", "dxr"],
+      "application/x-doom": "wad",
+      "application/x-dtbncx+xml": "ncx",
+      "application/x-dtbook+xml": "dtb",
+      "application/x-dtbresource+xml": "res",
+      "application/x-dvi": "dvi",
+      "application/x-elc": "elc",
+      "application/x-envoy": ["env", "evy"],
+      "application/x-esrehber": "es",
+      "application/x-excel": ["xls", "xla", "xlb", "xlc", "xld", "xlk", "xll", "xlm", "xlt", "xlv", "xlw"],
+      "application/x-font-bdf": "bdf",
+      "application/x-font-ghostscript": "gsf",
+      "application/x-font-linux-psf": "psf",
+      "application/x-font-otf": "otf",
+      "application/x-font-pcf": "pcf",
+      "application/x-font-snf": "snf",
+      "application/x-font-ttf": "ttf",
+      "application/x-font-type1": "pfa",
+      "application/x-font-woff": "woff",
+      "application/x-frame": "mif",
+      "application/x-freelance": "pre",
+      "application/x-futuresplash": "spl",
+      "application/x-gnumeric": "gnumeric",
+      "application/x-gsp": "gsp",
+      "application/x-gss": "gss",
+      "application/x-gtar": "gtar",
+      "application/x-gzip": ["gz", "gzip"],
+      "application/x-hdf": "hdf",
+      "application/x-helpfile": ["help", "hlp"],
+      "application/x-httpd-imap": "imap",
+      "application/x-ima": "ima",
+      "application/x-internet-signup": ["ins", "isp"],
+      "application/x-internett-signup": "ins",
+      "application/x-inventor": "iv",
+      "application/x-ip2": "ip",
+      "application/x-iphone": "iii",
+      "application/x-java-class": "class",
+      "application/x-java-commerce": "jcm",
+      "application/x-java-jnlp-file": "jnlp",
+      "application/x-javascript": "js",
+      "application/x-koan": ["skd", "skm", "skp", "skt"],
+      "application/x-ksh": "ksh",
+      "application/x-latex": ["latex", "ltx"],
+      "application/x-lha": "lha",
+      "application/x-lisp": "lsp",
+      "application/x-livescreen": "ivy",
+      "application/x-lotus": "wq1",
+      "application/x-lotusscreencam": "scm",
+      "application/x-lzh": "lzh",
+      "application/x-lzx": "lzx",
+      "application/x-mac-binhex40": "hqx",
+      "application/x-macbinary": "bin",
+      "application/x-magic-cap-package-1.0": "mc$",
+      "application/x-mathcad": "mcd",
+      "application/x-meme": "mm",
+      "application/x-midi": ["mid", "midi"],
+      "application/x-mif": "mif",
+      "application/x-mix-transfer": "nix",
+      "application/x-mobipocket-ebook": "prc",
+      "application/x-mplayer2": "asx",
+      "application/x-ms-application": "application",
+      "application/x-ms-wmd": "wmd",
+      "application/x-ms-wmz": "wmz",
+      "application/x-ms-xbap": "xbap",
+      "application/x-msaccess": "mdb",
+      "application/x-msbinder": "obd",
+      "application/x-mscardfile": "crd",
+      "application/x-msclip": "clp",
+      "application/x-msdownload": ["exe", "dll"],
+      "application/x-msexcel": ["xls", "xla", "xlw"],
+      "application/x-msmediaview": ["mvb", "m13", "m14"],
+      "application/x-msmetafile": "wmf",
+      "application/x-msmoney": "mny",
+      "application/x-mspowerpoint": "ppt",
+      "application/x-mspublisher": "pub",
+      "application/x-msschedule": "scd",
+      "application/x-msterminal": "trm",
+      "application/x-mswrite": "wri",
+      "application/x-navi-animation": "ani",
+      "application/x-navidoc": "nvd",
+      "application/x-navimap": "map",
+      "application/x-navistyle": "stl",
+      "application/x-netcdf": ["cdf", "nc"],
+      "application/x-newton-compatible-pkg": "pkg",
+      "application/x-nokia-9000-communicator-add-on-software": "aos",
+      "application/x-omc": "omc",
+      "application/x-omcdatamaker": "omcd",
+      "application/x-omcregerator": "omcr",
+      "application/x-pagemaker": ["pm4", "pm5"],
+      "application/x-pcl": "pcl",
+      "application/x-perfmon": ["pma", "pmc", "pml", "pmr", "pmw"],
+      "application/x-pixclscript": "plx",
+      "application/x-pkcs10": "p10",
+      "application/x-pkcs12": ["p12", "pfx"],
+      "application/x-pkcs7-certificates": ["p7b", "spc"],
+      "application/x-pkcs7-certreqresp": "p7r",
+      "application/x-pkcs7-mime": ["p7m", "p7c"],
+      "application/x-pkcs7-signature": ["p7s", "p7a"],
+      "application/x-pointplus": "css",
+      "application/x-portable-anymap": "pnm",
+      "application/x-project": ["mpc", "mpt", "mpv", "mpx"],
+      "application/x-qpro": "wb1",
+      "application/x-rar-compressed": "rar",
+      "application/x-rtf": "rtf",
+      "application/x-sdp": "sdp",
+      "application/x-sea": "sea",
+      "application/x-seelogo": "sl",
+      "application/x-sh": "sh",
+      "application/x-shar": ["shar", "sh"],
+      "application/x-shockwave-flash": "swf",
+      "application/x-silverlight-app": "xap",
+      "application/x-sit": "sit",
+      "application/x-sprite": ["spr", "sprite"],
+      "application/x-stuffit": "sit",
+      "application/x-stuffitx": "sitx",
+      "application/x-sv4cpio": "sv4cpio",
+      "application/x-sv4crc": "sv4crc",
+      "application/x-tar": "tar",
+      "application/x-tbook": ["sbk", "tbk"],
+      "application/x-tcl": "tcl",
+      "application/x-tex": "tex",
+      "application/x-tex-tfm": "tfm",
+      "application/x-texinfo": ["texi", "texinfo"],
+      "application/x-troff": ["roff", "t", "tr"],
+      "application/x-troff-man": "man",
+      "application/x-troff-me": "me",
+      "application/x-troff-ms": "ms",
+      "application/x-troff-msvideo": "avi",
+      "application/x-ustar": "ustar",
+      "application/x-visio": ["vsd", "vst", "vsw"],
+      "application/x-vnd.audioexplosion.mzz": "mzz",
+      "application/x-vnd.ls-xpix": "xpix",
+      "application/x-vrml": "vrml",
+      "application/x-wais-source": ["src", "wsrc"],
+      "application/x-winhelp": "hlp",
+      "application/x-wintalk": "wtk",
+      "application/x-world": ["wrl", "svr"],
+      "application/x-wpwin": "wpd",
+      "application/x-wri": "wri",
+      "application/x-x509-ca-cert": ["cer", "crt", "der"],
+      "application/x-x509-user-cert": "crt",
+      "application/x-xfig": "fig",
+      "application/x-xpinstall": "xpi",
+      "application/x-zip-compressed": "zip",
+      "application/xcap-diff+xml": "xdf",
+      "application/xenc+xml": "xenc",
+      "application/xhtml+xml": "xhtml",
+      "application/xml": "xml",
+      "application/xml-dtd": "dtd",
+      "application/xop+xml": "xop",
+      "application/xslt+xml": "xslt",
+      "application/xspf+xml": "xspf",
+      "application/xv+xml": "mxml",
+      "application/yaml": ["yaml", "yml"],
+      "application/yang": "yang",
+      "application/yin+xml": "yin",
+      "application/ynd.ms-pkipko": "pko",
+      "application/zip": "zip",
+      "audio/adpcm": "adp",
+      "audio/aiff": ["aiff", "aif", "aifc"],
+      "audio/basic": ["snd", "au"],
+      "audio/it": "it",
+      "audio/make": ["funk", "my", "pfunk"],
+      "audio/make.my.funk": "pfunk",
+      "audio/mid": ["mid", "rmi"],
+      "audio/midi": ["midi", "kar", "mid"],
+      "audio/mod": "mod",
+      "audio/mp4": "mp4a",
+      "audio/mpeg": ["mpga", "mp3", "m2a", "mp2", "mpa", "mpg"],
+      "audio/mpeg3": "mp3",
+      "audio/nspaudio": ["la", "lma"],
+      "audio/ogg": "oga",
+      "audio/opus": "opus",
+      "audio/s3m": "s3m",
+      "audio/tsp-audio": "tsi",
+      "audio/tsplayer": "tsp",
+      "audio/vnd.dece.audio": "uva",
+      "audio/vnd.digital-winds": "eol",
+      "audio/vnd.dra": "dra",
+      "audio/vnd.dts": "dts",
+      "audio/vnd.dts.hd": "dtshd",
+      "audio/vnd.lucent.voice": "lvp",
+      "audio/vnd.ms-playready.media.pya": "pya",
+      "audio/vnd.nuera.ecelp4800": "ecelp4800",
+      "audio/vnd.nuera.ecelp7470": "ecelp7470",
+      "audio/vnd.nuera.ecelp9600": "ecelp9600",
+      "audio/vnd.qcelp": "qcp",
+      "audio/vnd.rip": "rip",
+      "audio/voc": "voc",
+      "audio/voxware": "vox",
+      "audio/wav": "wav",
+      "audio/webm": "weba",
+      "audio/x-aac": "aac",
+      "audio/x-adpcm": "snd",
+      "audio/x-aiff": ["aiff", "aif", "aifc"],
+      "audio/x-au": "au",
+      "audio/x-gsm": ["gsd", "gsm"],
+      "audio/x-jam": "jam",
+      "audio/x-liveaudio": "lam",
+      "audio/x-m4a": "m4a",
+      "audio/x-mid": ["mid", "midi"],
+      "audio/x-midi": ["midi", "mid"],
+      "audio/x-mod": "mod",
+      "audio/x-mpeg": "mp2",
+      "audio/x-mpeg-3": "mp3",
+      "audio/x-mpegurl": "m3u",
+      "audio/x-mpequrl": "m3u",
+      "audio/x-ms-wax": "wax",
+      "audio/x-ms-wma": "wma",
+      "audio/x-nspaudio": ["la", "lma"],
+      "audio/x-pn-realaudio": ["ra", "ram", "rm", "rmm", "rmp"],
+      "audio/x-pn-realaudio-plugin": ["ra", "rmp", "rpm"],
+      "audio/x-psid": "sid",
+      "audio/x-realaudio": "ra",
+      "audio/x-twinvq": "vqf",
+      "audio/x-twinvq-plugin": ["vqe", "vql"],
+      "audio/x-vnd.audioexplosion.mjuicemediafile": "mjf",
+      "audio/x-voc": "voc",
+      "audio/x-wav": "wav",
+      "audio/xm": "xm",
+      "chemical/x-cdx": "cdx",
+      "chemical/x-cif": "cif",
+      "chemical/x-cmdf": "cmdf",
+      "chemical/x-cml": "cml",
+      "chemical/x-csml": "csml",
+      "chemical/x-pdb": ["pdb", "xyz"],
+      "chemical/x-xyz": "xyz",
+      "drawing/x-dwf": "dwf",
+      "font/woff": "woff",
+      "font/woff2": "woff2",
+      "i-world/i-vrml": "ivr",
+      "image/avif": "avif",
+      "image/bmp": ["bmp", "bm"],
+      "image/cgm": "cgm",
+      "image/cis-cod": "cod",
+      "image/cmu-raster": ["ras", "rast"],
+      "image/fif": "fif",
+      "image/florian": ["flo", "turbot"],
+      "image/g3fax": "g3",
+      "image/gif": "gif",
+      "image/heic": "heic",
+      "image/heif": "heif",
+      "image/ief": ["ief", "iefs"],
+      "image/jpeg": ["jpeg", "jpe", "jpg", "jfif", "jfif-tbnl"],
+      "image/jutvision": "jut",
+      "image/ktx": "ktx",
+      "image/naplps": ["nap", "naplps"],
+      "image/pict": ["pic", "pict"],
+      "image/pipeg": "jfif",
+      "image/pjpeg": ["jfif", "jpe", "jpeg", "jpg"],
+      "image/png": ["png", "x-png"],
+      "image/prs.btif": "btif",
+      "image/svg+xml": "svg",
+      "image/tiff": ["tif", "tiff"],
+      "image/vasa": "mcf",
+      "image/vnd.adobe.photoshop": "psd",
+      "image/vnd.dece.graphic": "uvi",
+      "image/vnd.djvu": "djvu",
+      "image/vnd.dvb.subtitle": "sub",
+      "image/vnd.dwg": ["dwg", "dxf", "svf"],
+      "image/vnd.dxf": "dxf",
+      "image/vnd.fastbidsheet": "fbs",
+      "image/vnd.fpx": "fpx",
+      "image/vnd.fst": "fst",
+      "image/vnd.fujixerox.edmics-mmr": "mmr",
+      "image/vnd.fujixerox.edmics-rlc": "rlc",
+      "image/vnd.ms-modi": "mdi",
+      "image/vnd.net-fpx": ["fpx", "npx"],
+      "image/vnd.rn-realflash": "rf",
+      "image/vnd.rn-realpix": "rp",
+      "image/vnd.wap.wbmp": "wbmp",
+      "image/vnd.xiff": "xif",
+      "image/webp": "webp",
+      "image/x-cmu-raster": "ras",
+      "image/x-cmx": "cmx",
+      "image/x-dwg": ["dwg", "dxf", "svf"],
+      "image/x-freehand": "fh",
+      "image/x-icon": "ico",
+      "image/x-jg": "art",
+      "image/x-jps": "jps",
+      "image/x-niff": ["niff", "nif"],
+      "image/x-pcx": "pcx",
+      "image/x-pict": ["pct", "pic"],
+      "image/x-portable-anymap": "pnm",
+      "image/x-portable-bitmap": "pbm",
+      "image/x-portable-graymap": "pgm",
+      "image/x-portable-greymap": "pgm",
+      "image/x-portable-pixmap": "ppm",
+      "image/x-quicktime": ["qif", "qti", "qtif"],
+      "image/x-rgb": "rgb",
+      "image/x-tiff": ["tif", "tiff"],
+      "image/x-windows-bmp": "bmp",
+      "image/x-xbitmap": "xbm",
+      "image/x-xbm": "xbm",
+      "image/x-xpixmap": ["xpm", "pm"],
+      "image/x-xwd": "xwd",
+      "image/x-xwindowdump": "xwd",
+      "image/xbm": "xbm",
+      "image/xpm": "xpm",
+      "message/rfc822": ["eml", "mht", "mhtml", "nws", "mime"],
+      "model/iges": ["iges", "igs"],
+      "model/mesh": "msh",
+      "model/vnd.collada+xml": "dae",
+      "model/vnd.dwf": "dwf",
+      "model/vnd.gdl": "gdl",
+      "model/vnd.gtw": "gtw",
+      "model/vnd.mts": "mts",
+      "model/vnd.vtu": "vtu",
+      "model/vrml": ["vrml", "wrl", "wrz"],
+      "model/x-pov": "pov",
+      "multipart/x-gzip": "gzip",
+      "multipart/x-ustar": "ustar",
+      "multipart/x-zip": "zip",
+      "music/crescendo": ["mid", "midi"],
+      "music/x-karaoke": "kar",
+      "paleovu/x-pv": "pvu",
+      "text/asp": "asp",
+      "text/calendar": "ics",
+      "text/css": "css",
+      "text/csv": "csv",
+      "text/ecmascript": "js",
+      "text/h323": "323",
+      "text/html": ["html", "htm", "stm", "acgi", "htmls", "htx", "shtml"],
+      "text/iuls": "uls",
+      "text/javascript": "js",
+      "text/markdown": "md",
+      "text/mcf": "mcf",
+      "text/n3": "n3",
+      "text/pascal": "pas",
+      "text/plain": [
+        "txt",
+        "bas",
+        "c",
+        "h",
+        "c++",
+        "cc",
+        "com",
+        "conf",
+        "cxx",
+        "def",
+        "f",
+        "f90",
+        "for",
+        "g",
+        "hh",
+        "idc",
+        "jav",
+        "java",
+        "list",
+        "log",
+        "lst",
+        "m",
+        "mar",
+        "pl",
+        "sdml",
+        "text"
+      ],
+      "text/plain-bas": "par",
+      "text/prs.lines.tag": "dsc",
+      "text/richtext": ["rtx", "rt", "rtf"],
+      "text/scriplet": "wsc",
+      "text/scriptlet": "sct",
+      "text/sgml": ["sgm", "sgml"],
+      "text/tab-separated-values": "tsv",
+      "text/troff": "t",
+      "text/turtle": "ttl",
+      "text/uri-list": ["uni", "unis", "uri", "uris"],
+      "text/vnd.abc": "abc",
+      "text/vnd.curl": "curl",
+      "text/vnd.curl.dcurl": "dcurl",
+      "text/vnd.curl.mcurl": "mcurl",
+      "text/vnd.curl.scurl": "scurl",
+      "text/vnd.fly": "fly",
+      "text/vnd.fmi.flexstor": "flx",
+      "text/vnd.graphviz": "gv",
+      "text/vnd.in3d.3dml": "3dml",
+      "text/vnd.in3d.spot": "spot",
+      "text/vnd.rn-realtext": "rt",
+      "text/vnd.sun.j2me.app-descriptor": "jad",
+      "text/vnd.wap.wml": "wml",
+      "text/vnd.wap.wmlscript": "wmls",
+      "text/webviewhtml": "htt",
+      "text/x-asm": ["asm", "s"],
+      "text/x-audiosoft-intra": "aip",
+      "text/x-c": ["c", "cc", "cpp"],
+      "text/x-component": "htc",
+      "text/x-fortran": ["for", "f", "f77", "f90"],
+      "text/x-h": ["h", "hh"],
+      "text/x-java-source": ["java", "jav"],
+      "text/x-la-asf": "lsx",
+      "text/x-m": "m",
+      "text/x-pascal": "p",
+      "text/x-script": "hlb",
+      "text/x-script.csh": "csh",
+      "text/x-script.elisp": "el",
+      "text/x-script.guile": "scm",
+      "text/x-script.ksh": "ksh",
+      "text/x-script.lisp": "lsp",
+      "text/x-script.perl": "pl",
+      "text/x-script.perl-module": "pm",
+      "text/x-script.phyton": "py",
+      "text/x-script.rexx": "rexx",
+      "text/x-script.scheme": "scm",
+      "text/x-script.sh": "sh",
+      "text/x-script.tcl": "tcl",
+      "text/x-script.tcsh": "tcsh",
+      "text/x-script.zsh": "zsh",
+      "text/x-server-parsed-html": ["shtml", "ssi"],
+      "text/x-setext": "etx",
+      "text/x-sgml": ["sgm", "sgml"],
+      "text/x-speech": ["spc", "talk"],
+      "text/x-uil": "uil",
+      "text/x-uuencode": ["uu", "uue"],
+      "text/x-vcalendar": "vcs",
+      "text/x-vcard": "vcf",
+      "text/xml": "xml",
+      "video/3gpp": "3gp",
+      "video/3gpp2": "3g2",
+      "video/animaflex": "afl",
+      "video/avi": "avi",
+      "video/avs-video": "avs",
+      "video/dl": "dl",
+      "video/fli": "fli",
+      "video/gl": "gl",
+      "video/h261": "h261",
+      "video/h263": "h263",
+      "video/h264": "h264",
+      "video/jpeg": "jpgv",
+      "video/jpm": "jpm",
+      "video/mj2": "mj2",
+      "video/mp4": "mp4",
+      "video/mpeg": ["mpeg", "mp2", "mpa", "mpe", "mpg", "mpv2", "m1v", "m2v", "mp3"],
+      "video/msvideo": "avi",
+      "video/ogg": "ogv",
+      "video/quicktime": ["mov", "qt", "moov"],
+      "video/vdo": "vdo",
+      "video/vivo": ["viv", "vivo"],
+      "video/vnd.dece.hd": "uvh",
+      "video/vnd.dece.mobile": "uvm",
+      "video/vnd.dece.pd": "uvp",
+      "video/vnd.dece.sd": "uvs",
+      "video/vnd.dece.video": "uvv",
+      "video/vnd.fvt": "fvt",
+      "video/vnd.mpegurl": "mxu",
+      "video/vnd.ms-playready.media.pyv": "pyv",
+      "video/vnd.rn-realvideo": "rv",
+      "video/vnd.uvvu.mp4": "uvu",
+      "video/vnd.vivo": ["viv", "vivo"],
+      "video/vosaic": "vos",
+      "video/webm": "webm",
+      "video/x-amt-demorun": "xdr",
+      "video/x-amt-showrun": "xsr",
+      "video/x-atomic3d-feature": "fmf",
+      "video/x-dl": "dl",
+      "video/x-dv": ["dif", "dv"],
+      "video/x-f4v": "f4v",
+      "video/x-fli": "fli",
+      "video/x-flv": "flv",
+      "video/x-gl": "gl",
+      "video/x-isvideo": "isu",
+      "video/x-la-asf": ["lsf", "lsx"],
+      "video/x-m4v": "m4v",
+      "video/x-motion-jpeg": "mjpg",
+      "video/x-mpeg": ["mp3", "mp2"],
+      "video/x-mpeq2a": "mp2",
+      "video/x-ms-asf": ["asf", "asr", "asx"],
+      "video/x-ms-asf-plugin": "asx",
+      "video/x-ms-wm": "wm",
+      "video/x-ms-wmv": "wmv",
+      "video/x-ms-wmx": "wmx",
+      "video/x-ms-wvx": "wvx",
+      "video/x-msvideo": "avi",
+      "video/x-qtc": "qtc",
+      "video/x-scm": "scm",
+      "video/x-sgi-movie": ["movie", "mv"],
+      "windows/metafile": "wmf",
+      "www/mime": "mime",
+      "x-conference/x-cooltalk": "ice",
+      "x-music/x-midi": ["mid", "midi"],
+      "x-world/x-3dmf": ["3dm", "3dmf", "qd3", "qd3d"],
+      "x-world/x-svr": "svr",
+      "x-world/x-vrml": ["flr", "vrml", "wrl", "wrz", "xaf", "xof"],
+      "x-world/x-vrt": "vrt",
+      "xgl/drawing": "xgz",
+      "xgl/movie": "xmz"
     };
+    exports.extensions = {
+      "*": "application/octet-stream",
+      "123": "application/vnd.lotus-1-2-3",
+      "323": "text/h323",
+      "3dm": "x-world/x-3dmf",
+      "3dmf": "x-world/x-3dmf",
+      "3dml": "text/vnd.in3d.3dml",
+      "3g2": "video/3gpp2",
+      "3gp": "video/3gpp",
+      "7z": "application/x-7z-compressed",
+      a: "application/octet-stream",
+      aab: "application/x-authorware-bin",
+      aac: "audio/x-aac",
+      aam: "application/x-authorware-map",
+      aas: "application/x-authorware-seg",
+      abc: "text/vnd.abc",
+      abw: "application/x-abiword",
+      ac: "application/pkix-attr-cert",
+      acc: "application/vnd.americandynamics.acc",
+      ace: "application/x-ace-compressed",
+      acgi: "text/html",
+      acu: "application/vnd.acucobol",
+      acx: "application/internet-property-stream",
+      adp: "audio/adpcm",
+      aep: "application/vnd.audiograph",
+      afl: "video/animaflex",
+      afp: "application/vnd.ibm.modcap",
+      ahead: "application/vnd.ahead.space",
+      ai: "application/postscript",
+      aif: ["audio/aiff", "audio/x-aiff"],
+      aifc: ["audio/aiff", "audio/x-aiff"],
+      aiff: ["audio/aiff", "audio/x-aiff"],
+      aim: "application/x-aim",
+      aip: "text/x-audiosoft-intra",
+      air: "application/vnd.adobe.air-application-installer-package+zip",
+      ait: "application/vnd.dvb.ait",
+      ami: "application/vnd.amiga.ami",
+      ani: "application/x-navi-animation",
+      aos: "application/x-nokia-9000-communicator-add-on-software",
+      apk: "application/vnd.android.package-archive",
+      application: "application/x-ms-application",
+      apr: "application/vnd.lotus-approach",
+      aps: "application/mime",
+      arc: "application/octet-stream",
+      arj: ["application/arj", "application/octet-stream"],
+      art: "image/x-jg",
+      asf: "video/x-ms-asf",
+      asm: "text/x-asm",
+      aso: "application/vnd.accpac.simply.aso",
+      asp: "text/asp",
+      asr: "video/x-ms-asf",
+      asx: ["video/x-ms-asf", "application/x-mplayer2", "video/x-ms-asf-plugin"],
+      atc: "application/vnd.acucorp",
+      atomcat: "application/atomcat+xml",
+      atomsvc: "application/atomsvc+xml",
+      atx: "application/vnd.antix.game-component",
+      au: ["audio/basic", "audio/x-au"],
+      avi: ["video/avi", "video/msvideo", "application/x-troff-msvideo", "video/x-msvideo"],
+      avif: "image/avif",
+      avs: "video/avs-video",
+      aw: "application/applixware",
+      axs: "application/olescript",
+      azf: "application/vnd.airzip.filesecure.azf",
+      azs: "application/vnd.airzip.filesecure.azs",
+      azw: "application/vnd.amazon.ebook",
+      bas: "text/plain",
+      bcpio: "application/x-bcpio",
+      bdf: "application/x-font-bdf",
+      bdm: "application/vnd.syncml.dm+wbxml",
+      bed: "application/vnd.realvnc.bed",
+      bh2: "application/vnd.fujitsu.oasysprs",
+      bin: ["application/octet-stream", "application/mac-binary", "application/macbinary", "application/x-macbinary", "application/x-binary"],
+      bm: "image/bmp",
+      bmi: "application/vnd.bmi",
+      bmp: ["image/bmp", "image/x-windows-bmp"],
+      boo: "application/book",
+      book: "application/book",
+      box: "application/vnd.previewsystems.box",
+      boz: "application/x-bzip2",
+      bsh: "application/x-bsh",
+      btif: "image/prs.btif",
+      bz: "application/x-bzip",
+      bz2: "application/x-bzip2",
+      c: ["text/plain", "text/x-c"],
+      "c++": "text/plain",
+      c11amc: "application/vnd.cluetrust.cartomobile-config",
+      c11amz: "application/vnd.cluetrust.cartomobile-config-pkg",
+      c4g: "application/vnd.clonk.c4group",
+      cab: "application/vnd.ms-cab-compressed",
+      car: "application/vnd.curl.car",
+      cat: ["application/vnd.ms-pkiseccat", "application/vnd.ms-pki.seccat"],
+      cc: ["text/plain", "text/x-c"],
+      ccad: "application/clariscad",
+      cco: "application/x-cocoa",
+      ccxml: "application/ccxml+xml",
+      cdbcmsg: "application/vnd.contact.cmsg",
+      cdf: ["application/cdf", "application/x-cdf", "application/x-netcdf"],
+      cdkey: "application/vnd.mediastation.cdkey",
+      cdmia: "application/cdmi-capability",
+      cdmic: "application/cdmi-container",
+      cdmid: "application/cdmi-domain",
+      cdmio: "application/cdmi-object",
+      cdmiq: "application/cdmi-queue",
+      cdx: "chemical/x-cdx",
+      cdxml: "application/vnd.chemdraw+xml",
+      cdy: "application/vnd.cinderella",
+      cer: ["application/pkix-cert", "application/x-x509-ca-cert"],
+      cgm: "image/cgm",
+      cha: "application/x-chat",
+      chat: "application/x-chat",
+      chm: "application/vnd.ms-htmlhelp",
+      chrt: "application/vnd.kde.kchart",
+      cif: "chemical/x-cif",
+      cii: "application/vnd.anser-web-certificate-issue-initiation",
+      cil: "application/vnd.ms-artgalry",
+      cla: "application/vnd.claymore",
+      class: ["application/octet-stream", "application/java", "application/java-byte-code", "application/java-vm", "application/x-java-class"],
+      clkk: "application/vnd.crick.clicker.keyboard",
+      clkp: "application/vnd.crick.clicker.palette",
+      clkt: "application/vnd.crick.clicker.template",
+      clkw: "application/vnd.crick.clicker.wordbank",
+      clkx: "application/vnd.crick.clicker",
+      clp: "application/x-msclip",
+      cmc: "application/vnd.cosmocaller",
+      cmdf: "chemical/x-cmdf",
+      cml: "chemical/x-cml",
+      cmp: "application/vnd.yellowriver-custom-menu",
+      cmx: "image/x-cmx",
+      cod: ["image/cis-cod", "application/vnd.rim.cod"],
+      com: ["application/octet-stream", "text/plain"],
+      conf: "text/plain",
+      cpio: "application/x-cpio",
+      cpp: "text/x-c",
+      cpt: ["application/mac-compactpro", "application/x-compactpro", "application/x-cpt"],
+      crd: "application/x-mscardfile",
+      crl: ["application/pkix-crl", "application/pkcs-crl"],
+      crt: ["application/pkix-cert", "application/x-x509-user-cert", "application/x-x509-ca-cert"],
+      cryptonote: "application/vnd.rig.cryptonote",
+      csh: ["text/x-script.csh", "application/x-csh"],
+      csml: "chemical/x-csml",
+      csp: "application/vnd.commonspace",
+      css: ["text/css", "application/x-pointplus"],
+      csv: "text/csv",
+      cu: "application/cu-seeme",
+      curl: "text/vnd.curl",
+      cww: "application/prs.cww",
+      cxx: "text/plain",
+      dae: "model/vnd.collada+xml",
+      daf: "application/vnd.mobius.daf",
+      davmount: "application/davmount+xml",
+      dcr: "application/x-director",
+      dcurl: "text/vnd.curl.dcurl",
+      dd2: "application/vnd.oma.dd2+xml",
+      ddd: "application/vnd.fujixerox.ddd",
+      deb: "application/x-debian-package",
+      deepv: "application/x-deepv",
+      def: "text/plain",
+      der: "application/x-x509-ca-cert",
+      dfac: "application/vnd.dreamfactory",
+      dif: "video/x-dv",
+      dir: "application/x-director",
+      dis: "application/vnd.mobius.dis",
+      djvu: "image/vnd.djvu",
+      dl: ["video/dl", "video/x-dl"],
+      dll: "application/x-msdownload",
+      dms: "application/octet-stream",
+      dna: "application/vnd.dna",
+      doc: "application/msword",
+      docm: "application/vnd.ms-word.document.macroenabled.12",
+      docx: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+      dot: "application/msword",
+      dotm: "application/vnd.ms-word.template.macroenabled.12",
+      dotx: "application/vnd.openxmlformats-officedocument.wordprocessingml.template",
+      dp: ["application/commonground", "application/vnd.osgi.dp"],
+      dpg: "application/vnd.dpgraph",
+      dra: "audio/vnd.dra",
+      drw: "application/drafting",
+      dsc: "text/prs.lines.tag",
+      dssc: "application/dssc+der",
+      dtb: "application/x-dtbook+xml",
+      dtd: "application/xml-dtd",
+      dts: "audio/vnd.dts",
+      dtshd: "audio/vnd.dts.hd",
+      dump: "application/octet-stream",
+      dv: "video/x-dv",
+      dvi: "application/x-dvi",
+      dwf: ["model/vnd.dwf", "drawing/x-dwf"],
+      dwg: ["application/acad", "image/vnd.dwg", "image/x-dwg"],
+      dxf: ["application/dxf", "image/vnd.dwg", "image/vnd.dxf", "image/x-dwg"],
+      dxp: "application/vnd.spotfire.dxp",
+      dxr: "application/x-director",
+      ecelp4800: "audio/vnd.nuera.ecelp4800",
+      ecelp7470: "audio/vnd.nuera.ecelp7470",
+      ecelp9600: "audio/vnd.nuera.ecelp9600",
+      edm: "application/vnd.novadigm.edm",
+      edx: "application/vnd.novadigm.edx",
+      efif: "application/vnd.picsel",
+      ei6: "application/vnd.pg.osasli",
+      el: "text/x-script.elisp",
+      elc: ["application/x-elc", "application/x-bytecode.elisp"],
+      eml: "message/rfc822",
+      emma: "application/emma+xml",
+      env: "application/x-envoy",
+      eol: "audio/vnd.digital-winds",
+      eot: "application/vnd.ms-fontobject",
+      eps: "application/postscript",
+      epub: "application/epub+zip",
+      es: ["application/ecmascript", "application/x-esrehber"],
+      es3: "application/vnd.eszigno3+xml",
+      esf: "application/vnd.epson.esf",
+      etx: "text/x-setext",
+      evy: ["application/envoy", "application/x-envoy"],
+      exe: ["application/octet-stream", "application/x-msdownload"],
+      exi: "application/exi",
+      ext: "application/vnd.novadigm.ext",
+      ez2: "application/vnd.ezpix-album",
+      ez3: "application/vnd.ezpix-package",
+      f: ["text/plain", "text/x-fortran"],
+      f4v: "video/x-f4v",
+      f77: "text/x-fortran",
+      f90: ["text/plain", "text/x-fortran"],
+      fbs: "image/vnd.fastbidsheet",
+      fcs: "application/vnd.isac.fcs",
+      fdf: "application/vnd.fdf",
+      fe_launch: "application/vnd.denovo.fcselayout-link",
+      fg5: "application/vnd.fujitsu.oasysgp",
+      fh: "image/x-freehand",
+      fif: ["application/fractals", "image/fif"],
+      fig: "application/x-xfig",
+      fli: ["video/fli", "video/x-fli"],
+      flo: ["image/florian", "application/vnd.micrografx.flo"],
+      flr: "x-world/x-vrml",
+      flv: "video/x-flv",
+      flw: "application/vnd.kde.kivio",
+      flx: "text/vnd.fmi.flexstor",
+      fly: "text/vnd.fly",
+      fm: "application/vnd.framemaker",
+      fmf: "video/x-atomic3d-feature",
+      fnc: "application/vnd.frogans.fnc",
+      for: ["text/plain", "text/x-fortran"],
+      fpx: ["image/vnd.fpx", "image/vnd.net-fpx"],
+      frl: "application/freeloader",
+      fsc: "application/vnd.fsc.weblaunch",
+      fst: "image/vnd.fst",
+      ftc: "application/vnd.fluxtime.clip",
+      fti: "application/vnd.anser-web-funds-transfer-initiation",
+      funk: "audio/make",
+      fvt: "video/vnd.fvt",
+      fxp: "application/vnd.adobe.fxp",
+      fzs: "application/vnd.fuzzysheet",
+      g: "text/plain",
+      g2w: "application/vnd.geoplan",
+      g3: "image/g3fax",
+      g3w: "application/vnd.geospace",
+      gac: "application/vnd.groove-account",
+      gdl: "model/vnd.gdl",
+      geo: "application/vnd.dynageo",
+      geojson: "application/geo+json",
+      gex: "application/vnd.geometry-explorer",
+      ggb: "application/vnd.geogebra.file",
+      ggt: "application/vnd.geogebra.tool",
+      ghf: "application/vnd.groove-help",
+      gif: "image/gif",
+      gim: "application/vnd.groove-identity-message",
+      gl: ["video/gl", "video/x-gl"],
+      gmx: "application/vnd.gmx",
+      gnumeric: "application/x-gnumeric",
+      gph: "application/vnd.flographit",
+      gqf: "application/vnd.grafeq",
+      gram: "application/srgs",
+      grv: "application/vnd.groove-injector",
+      grxml: "application/srgs+xml",
+      gsd: "audio/x-gsm",
+      gsf: "application/x-font-ghostscript",
+      gsm: "audio/x-gsm",
+      gsp: "application/x-gsp",
+      gss: "application/x-gss",
+      gtar: "application/x-gtar",
+      gtm: "application/vnd.groove-tool-message",
+      gtw: "model/vnd.gtw",
+      gv: "text/vnd.graphviz",
+      gxt: "application/vnd.geonext",
+      gz: ["application/x-gzip", "application/x-compressed"],
+      gzip: ["multipart/x-gzip", "application/x-gzip"],
+      h: ["text/plain", "text/x-h"],
+      h261: "video/h261",
+      h263: "video/h263",
+      h264: "video/h264",
+      hal: "application/vnd.hal+xml",
+      hbci: "application/vnd.hbci",
+      hdf: "application/x-hdf",
+      heic: "image/heic",
+      heif: "image/heif",
+      help: "application/x-helpfile",
+      hgl: "application/vnd.hp-hpgl",
+      hh: ["text/plain", "text/x-h"],
+      hlb: "text/x-script",
+      hlp: ["application/winhlp", "application/hlp", "application/x-helpfile", "application/x-winhelp"],
+      hpg: "application/vnd.hp-hpgl",
+      hpgl: "application/vnd.hp-hpgl",
+      hpid: "application/vnd.hp-hpid",
+      hps: "application/vnd.hp-hps",
+      hqx: [
+        "application/mac-binhex40",
+        "application/binhex",
+        "application/binhex4",
+        "application/mac-binhex",
+        "application/x-binhex40",
+        "application/x-mac-binhex40"
+      ],
+      hta: "application/hta",
+      htc: "text/x-component",
+      htke: "application/vnd.kenameaapp",
+      htm: "text/html",
+      html: "text/html",
+      htmls: "text/html",
+      htt: "text/webviewhtml",
+      htx: "text/html",
+      hvd: "application/vnd.yamaha.hv-dic",
+      hvp: "application/vnd.yamaha.hv-voice",
+      hvs: "application/vnd.yamaha.hv-script",
+      i2g: "application/vnd.intergeo",
+      icc: "application/vnd.iccprofile",
+      ice: "x-conference/x-cooltalk",
+      ico: "image/x-icon",
+      ics: "text/calendar",
+      idc: "text/plain",
+      ief: "image/ief",
+      iefs: "image/ief",
+      ifm: "application/vnd.shana.informed.formdata",
+      iges: ["application/iges", "model/iges"],
+      igl: "application/vnd.igloader",
+      igm: "application/vnd.insors.igm",
+      igs: ["application/iges", "model/iges"],
+      igx: "application/vnd.micrografx.igx",
+      iif: "application/vnd.shana.informed.interchange",
+      iii: "application/x-iphone",
+      ima: "application/x-ima",
+      imap: "application/x-httpd-imap",
+      imp: "application/vnd.accpac.simply.imp",
+      ims: "application/vnd.ms-ims",
+      inf: "application/inf",
+      ins: ["application/x-internet-signup", "application/x-internett-signup"],
+      ip: "application/x-ip2",
+      ipfix: "application/ipfix",
+      ipk: "application/vnd.shana.informed.package",
+      irm: "application/vnd.ibm.rights-management",
+      irp: "application/vnd.irepository.package+xml",
+      isp: "application/x-internet-signup",
+      isu: "video/x-isvideo",
+      it: "audio/it",
+      itp: "application/vnd.shana.informed.formtemplate",
+      iv: "application/x-inventor",
+      ivp: "application/vnd.immervision-ivp",
+      ivr: "i-world/i-vrml",
+      ivu: "application/vnd.immervision-ivu",
+      ivy: "application/x-livescreen",
+      jad: "text/vnd.sun.j2me.app-descriptor",
+      jam: ["application/vnd.jam", "audio/x-jam"],
+      jar: "application/java-archive",
+      jav: ["text/plain", "text/x-java-source"],
+      java: ["text/plain", "text/x-java-source"],
+      jcm: "application/x-java-commerce",
+      jfif: ["image/pipeg", "image/jpeg", "image/pjpeg"],
+      "jfif-tbnl": "image/jpeg",
+      jisp: "application/vnd.jisp",
+      jlt: "application/vnd.hp-jlyt",
+      jnlp: "application/x-java-jnlp-file",
+      joda: "application/vnd.joost.joda-archive",
+      jpe: ["image/jpeg", "image/pjpeg"],
+      jpeg: ["image/jpeg", "image/pjpeg"],
+      jpg: ["image/jpeg", "image/pjpeg"],
+      jpgv: "video/jpeg",
+      jpm: "video/jpm",
+      jps: "image/x-jps",
+      js: ["application/javascript", "application/ecmascript", "text/javascript", "text/ecmascript", "application/x-javascript"],
+      json: "application/json",
+      jut: "image/jutvision",
+      kar: ["audio/midi", "music/x-karaoke"],
+      karbon: "application/vnd.kde.karbon",
+      kfo: "application/vnd.kde.kformula",
+      kia: "application/vnd.kidspiration",
+      kml: "application/vnd.google-earth.kml+xml",
+      kmz: "application/vnd.google-earth.kmz",
+      kne: "application/vnd.kinar",
+      kon: "application/vnd.kde.kontour",
+      kpr: "application/vnd.kde.kpresenter",
+      ksh: ["application/x-ksh", "text/x-script.ksh"],
+      ksp: "application/vnd.kde.kspread",
+      ktx: "image/ktx",
+      ktz: "application/vnd.kahootz",
+      kwd: "application/vnd.kde.kword",
+      la: ["audio/nspaudio", "audio/x-nspaudio"],
+      lam: "audio/x-liveaudio",
+      lasxml: "application/vnd.las.las+xml",
+      latex: "application/x-latex",
+      lbd: "application/vnd.llamagraphics.life-balance.desktop",
+      lbe: "application/vnd.llamagraphics.life-balance.exchange+xml",
+      les: "application/vnd.hhe.lesson-player",
+      lha: ["application/octet-stream", "application/lha", "application/x-lha"],
+      lhx: "application/octet-stream",
+      link66: "application/vnd.route66.link66+xml",
+      list: "text/plain",
+      lma: ["audio/nspaudio", "audio/x-nspaudio"],
+      log: "text/plain",
+      lrm: "application/vnd.ms-lrm",
+      lsf: "video/x-la-asf",
+      lsp: ["application/x-lisp", "text/x-script.lisp"],
+      lst: "text/plain",
+      lsx: ["video/x-la-asf", "text/x-la-asf"],
+      ltf: "application/vnd.frogans.ltf",
+      ltx: "application/x-latex",
+      lvp: "audio/vnd.lucent.voice",
+      lwp: "application/vnd.lotus-wordpro",
+      lzh: ["application/octet-stream", "application/x-lzh"],
+      lzx: ["application/lzx", "application/octet-stream", "application/x-lzx"],
+      m: ["text/plain", "text/x-m"],
+      m13: "application/x-msmediaview",
+      m14: "application/x-msmediaview",
+      m1v: "video/mpeg",
+      m21: "application/mp21",
+      m2a: "audio/mpeg",
+      m2v: "video/mpeg",
+      m3u: ["audio/x-mpegurl", "audio/x-mpequrl"],
+      m3u8: "application/vnd.apple.mpegurl",
+      m4a: "audio/mp4",
+      m4v: "video/x-m4v",
+      ma: "application/mathematica",
+      mads: "application/mads+xml",
+      mag: "application/vnd.ecowin.chart",
+      man: "application/x-troff-man",
+      map: "application/x-navimap",
+      mar: "text/plain",
+      markdown: "text/markdown",
+      mathml: "application/mathml+xml",
+      mbd: "application/mbedlet",
+      mbk: "application/vnd.mobius.mbk",
+      mbox: "application/mbox",
+      mc$: "application/x-magic-cap-package-1.0",
+      mc1: "application/vnd.medcalcdata",
+      mcd: ["application/mcad", "application/vnd.mcd", "application/x-mathcad"],
+      mcf: ["image/vasa", "text/mcf"],
+      mcp: "application/netmc",
+      mcurl: "text/vnd.curl.mcurl",
+      md: "text/markdown",
+      mdb: "application/x-msaccess",
+      mdi: "image/vnd.ms-modi",
+      me: "application/x-troff-me",
+      meta4: "application/metalink4+xml",
+      mets: "application/mets+xml",
+      mfm: "application/vnd.mfmp",
+      mgp: "application/vnd.osgeo.mapguide.package",
+      mgz: "application/vnd.proteus.magazine",
+      mht: "message/rfc822",
+      mhtml: "message/rfc822",
+      mid: ["audio/mid", "audio/midi", "music/crescendo", "x-music/x-midi", "audio/x-midi", "application/x-midi", "audio/x-mid"],
+      midi: ["audio/midi", "music/crescendo", "x-music/x-midi", "audio/x-midi", "application/x-midi", "audio/x-mid"],
+      mif: ["application/vnd.mif", "application/x-mif", "application/x-frame"],
+      mime: ["message/rfc822", "www/mime"],
+      mj2: "video/mj2",
+      mjf: "audio/x-vnd.audioexplosion.mjuicemediafile",
+      mjpg: "video/x-motion-jpeg",
+      mjs: "text/javascript",
+      mlp: "application/vnd.dolby.mlp",
+      mm: ["application/base64", "application/x-meme"],
+      mmd: "application/vnd.chipnuts.karaoke-mmd",
+      mme: "application/base64",
+      mmf: "application/vnd.smaf",
+      mmr: "image/vnd.fujixerox.edmics-mmr",
+      mny: "application/x-msmoney",
+      mod: ["audio/mod", "audio/x-mod"],
+      mods: "application/mods+xml",
+      moov: "video/quicktime",
+      mov: "video/quicktime",
+      movie: "video/x-sgi-movie",
+      mp2: ["video/mpeg", "audio/mpeg", "video/x-mpeg", "audio/x-mpeg", "video/x-mpeq2a"],
+      mp3: ["audio/mpeg", "audio/mpeg3", "video/mpeg", "audio/x-mpeg-3", "video/x-mpeg"],
+      mp4: ["video/mp4", "application/mp4"],
+      mp4a: "audio/mp4",
+      mpa: ["video/mpeg", "audio/mpeg"],
+      mpc: ["application/vnd.mophun.certificate", "application/x-project"],
+      mpe: "video/mpeg",
+      mpeg: "video/mpeg",
+      mpg: ["video/mpeg", "audio/mpeg"],
+      mpga: "audio/mpeg",
+      mpkg: "application/vnd.apple.installer+xml",
+      mpm: "application/vnd.blueice.multipass",
+      mpn: "application/vnd.mophun.application",
+      mpp: "application/vnd.ms-project",
+      mpt: "application/x-project",
+      mpv: "application/x-project",
+      mpv2: "video/mpeg",
+      mpx: "application/x-project",
+      mpy: "application/vnd.ibm.minipay",
+      mqy: "application/vnd.mobius.mqy",
+      mrc: "application/marc",
+      mrcx: "application/marcxml+xml",
+      ms: "application/x-troff-ms",
+      mscml: "application/mediaservercontrol+xml",
+      mseq: "application/vnd.mseq",
+      msf: "application/vnd.epson.msf",
+      msg: "application/vnd.ms-outlook",
+      msh: "model/mesh",
+      msl: "application/vnd.mobius.msl",
+      msty: "application/vnd.muvee.style",
+      mts: "model/vnd.mts",
+      mus: "application/vnd.musician",
+      musicxml: "application/vnd.recordare.musicxml+xml",
+      mv: "video/x-sgi-movie",
+      mvb: "application/x-msmediaview",
+      mwf: "application/vnd.mfer",
+      mxf: "application/mxf",
+      mxl: "application/vnd.recordare.musicxml",
+      mxml: "application/xv+xml",
+      mxs: "application/vnd.triscape.mxs",
+      mxu: "video/vnd.mpegurl",
+      my: "audio/make",
+      mzz: "application/x-vnd.audioexplosion.mzz",
+      "n-gage": "application/vnd.nokia.n-gage.symbian.install",
+      n3: "text/n3",
+      nap: "image/naplps",
+      naplps: "image/naplps",
+      nbp: "application/vnd.wolfram.player",
+      nc: "application/x-netcdf",
+      ncm: "application/vnd.nokia.configuration-message",
+      ncx: "application/x-dtbncx+xml",
+      ngdat: "application/vnd.nokia.n-gage.data",
+      nif: "image/x-niff",
+      niff: "image/x-niff",
+      nix: "application/x-mix-transfer",
+      nlu: "application/vnd.neurolanguage.nlu",
+      nml: "application/vnd.enliven",
+      nnd: "application/vnd.noblenet-directory",
+      nns: "application/vnd.noblenet-sealer",
+      nnw: "application/vnd.noblenet-web",
+      npx: "image/vnd.net-fpx",
+      nsc: "application/x-conference",
+      nsf: "application/vnd.lotus-notes",
+      nvd: "application/x-navidoc",
+      nws: "message/rfc822",
+      o: "application/octet-stream",
+      oa2: "application/vnd.fujitsu.oasys2",
+      oa3: "application/vnd.fujitsu.oasys3",
+      oas: "application/vnd.fujitsu.oasys",
+      obd: "application/x-msbinder",
+      oda: "application/oda",
+      odb: "application/vnd.oasis.opendocument.database",
+      odc: "application/vnd.oasis.opendocument.chart",
+      odf: "application/vnd.oasis.opendocument.formula",
+      odft: "application/vnd.oasis.opendocument.formula-template",
+      odg: "application/vnd.oasis.opendocument.graphics",
+      odi: "application/vnd.oasis.opendocument.image",
+      odm: "application/vnd.oasis.opendocument.text-master",
+      odp: "application/vnd.oasis.opendocument.presentation",
+      ods: "application/vnd.oasis.opendocument.spreadsheet",
+      odt: "application/vnd.oasis.opendocument.text",
+      oga: "audio/ogg",
+      ogv: "video/ogg",
+      ogx: "application/ogg",
+      omc: "application/x-omc",
+      omcd: "application/x-omcdatamaker",
+      omcr: "application/x-omcregerator",
+      onetoc: "application/onenote",
+      opf: "application/oebps-package+xml",
+      opus: "audio/opus",
+      org: "application/vnd.lotus-organizer",
+      osf: "application/vnd.yamaha.openscoreformat",
+      osfpvg: "application/vnd.yamaha.openscoreformat.osfpvg+xml",
+      otc: "application/vnd.oasis.opendocument.chart-template",
+      otf: "application/x-font-otf",
+      otg: "application/vnd.oasis.opendocument.graphics-template",
+      oth: "application/vnd.oasis.opendocument.text-web",
+      oti: "application/vnd.oasis.opendocument.image-template",
+      otp: "application/vnd.oasis.opendocument.presentation-template",
+      ots: "application/vnd.oasis.opendocument.spreadsheet-template",
+      ott: "application/vnd.oasis.opendocument.text-template",
+      oxt: "application/vnd.openofficeorg.extension",
+      p: "text/x-pascal",
+      p10: ["application/pkcs10", "application/x-pkcs10"],
+      p12: ["application/pkcs-12", "application/x-pkcs12"],
+      p7a: "application/x-pkcs7-signature",
+      p7b: "application/x-pkcs7-certificates",
+      p7c: ["application/pkcs7-mime", "application/x-pkcs7-mime"],
+      p7m: ["application/pkcs7-mime", "application/x-pkcs7-mime"],
+      p7r: "application/x-pkcs7-certreqresp",
+      p7s: ["application/pkcs7-signature", "application/x-pkcs7-signature"],
+      p8: "application/pkcs8",
+      par: "text/plain-bas",
+      part: "application/pro_eng",
+      pas: "text/pascal",
+      paw: "application/vnd.pawaafile",
+      pbd: "application/vnd.powerbuilder6",
+      pbm: "image/x-portable-bitmap",
+      pcf: "application/x-font-pcf",
+      pcl: ["application/vnd.hp-pcl", "application/x-pcl"],
+      pclxl: "application/vnd.hp-pclxl",
+      pct: "image/x-pict",
+      pcurl: "application/vnd.curl.pcurl",
+      pcx: "image/x-pcx",
+      pdb: ["application/vnd.palm", "chemical/x-pdb"],
+      pdf: "application/pdf",
+      pfa: "application/x-font-type1",
+      pfr: "application/font-tdpfr",
+      pfunk: ["audio/make", "audio/make.my.funk"],
+      pfx: "application/x-pkcs12",
+      pgm: ["image/x-portable-graymap", "image/x-portable-greymap"],
+      pgn: "application/x-chess-pgn",
+      pgp: "application/pgp-signature",
+      pic: ["image/pict", "image/x-pict"],
+      pict: "image/pict",
+      pkg: "application/x-newton-compatible-pkg",
+      pki: "application/pkixcmp",
+      pkipath: "application/pkix-pkipath",
+      pko: ["application/ynd.ms-pkipko", "application/vnd.ms-pki.pko"],
+      pl: ["text/plain", "text/x-script.perl"],
+      plb: "application/vnd.3gpp.pic-bw-large",
+      plc: "application/vnd.mobius.plc",
+      plf: "application/vnd.pocketlearn",
+      pls: "application/pls+xml",
+      plx: "application/x-pixclscript",
+      pm: ["text/x-script.perl-module", "image/x-xpixmap"],
+      pm4: "application/x-pagemaker",
+      pm5: "application/x-pagemaker",
+      pma: "application/x-perfmon",
+      pmc: "application/x-perfmon",
+      pml: ["application/vnd.ctc-posml", "application/x-perfmon"],
+      pmr: "application/x-perfmon",
+      pmw: "application/x-perfmon",
+      png: "image/png",
+      pnm: ["application/x-portable-anymap", "image/x-portable-anymap"],
+      portpkg: "application/vnd.macports.portpkg",
+      pot: ["application/vnd.ms-powerpoint", "application/mspowerpoint"],
+      potm: "application/vnd.ms-powerpoint.template.macroenabled.12",
+      potx: "application/vnd.openxmlformats-officedocument.presentationml.template",
+      pov: "model/x-pov",
+      ppa: "application/vnd.ms-powerpoint",
+      ppam: "application/vnd.ms-powerpoint.addin.macroenabled.12",
+      ppd: "application/vnd.cups-ppd",
+      ppm: "image/x-portable-pixmap",
+      pps: ["application/vnd.ms-powerpoint", "application/mspowerpoint"],
+      ppsm: "application/vnd.ms-powerpoint.slideshow.macroenabled.12",
+      ppsx: "application/vnd.openxmlformats-officedocument.presentationml.slideshow",
+      ppt: ["application/vnd.ms-powerpoint", "application/mspowerpoint", "application/powerpoint", "application/x-mspowerpoint"],
+      pptm: "application/vnd.ms-powerpoint.presentation.macroenabled.12",
+      pptx: "application/vnd.openxmlformats-officedocument.presentationml.presentation",
+      ppz: "application/mspowerpoint",
+      prc: "application/x-mobipocket-ebook",
+      pre: ["application/vnd.lotus-freelance", "application/x-freelance"],
+      prf: "application/pics-rules",
+      prt: "application/pro_eng",
+      ps: "application/postscript",
+      psb: "application/vnd.3gpp.pic-bw-small",
+      psd: ["application/octet-stream", "image/vnd.adobe.photoshop"],
+      psf: "application/x-font-linux-psf",
+      pskcxml: "application/pskc+xml",
+      ptid: "application/vnd.pvi.ptid1",
+      pub: "application/x-mspublisher",
+      pvb: "application/vnd.3gpp.pic-bw-var",
+      pvu: "paleovu/x-pv",
+      pwn: "application/vnd.3m.post-it-notes",
+      pwz: "application/vnd.ms-powerpoint",
+      py: "text/x-script.phyton",
+      pya: "audio/vnd.ms-playready.media.pya",
+      pyc: "application/x-bytecode.python",
+      pyv: "video/vnd.ms-playready.media.pyv",
+      qam: "application/vnd.epson.quickanime",
+      qbo: "application/vnd.intu.qbo",
+      qcp: "audio/vnd.qcelp",
+      qd3: "x-world/x-3dmf",
+      qd3d: "x-world/x-3dmf",
+      qfx: "application/vnd.intu.qfx",
+      qif: "image/x-quicktime",
+      qps: "application/vnd.publishare-delta-tree",
+      qt: "video/quicktime",
+      qtc: "video/x-qtc",
+      qti: "image/x-quicktime",
+      qtif: "image/x-quicktime",
+      qxd: "application/vnd.quark.quarkxpress",
+      ra: ["audio/x-realaudio", "audio/x-pn-realaudio", "audio/x-pn-realaudio-plugin"],
+      ram: "audio/x-pn-realaudio",
+      rar: "application/x-rar-compressed",
+      ras: ["image/cmu-raster", "application/x-cmu-raster", "image/x-cmu-raster"],
+      rast: "image/cmu-raster",
+      rcprofile: "application/vnd.ipunplugged.rcprofile",
+      rdf: "application/rdf+xml",
+      rdz: "application/vnd.data-vision.rdz",
+      rep: "application/vnd.businessobjects",
+      res: "application/x-dtbresource+xml",
+      rexx: "text/x-script.rexx",
+      rf: "image/vnd.rn-realflash",
+      rgb: "image/x-rgb",
+      rif: "application/reginfo+xml",
+      rip: "audio/vnd.rip",
+      rl: "application/resource-lists+xml",
+      rlc: "image/vnd.fujixerox.edmics-rlc",
+      rld: "application/resource-lists-diff+xml",
+      rm: ["application/vnd.rn-realmedia", "audio/x-pn-realaudio"],
+      rmi: "audio/mid",
+      rmm: "audio/x-pn-realaudio",
+      rmp: ["audio/x-pn-realaudio-plugin", "audio/x-pn-realaudio"],
+      rms: "application/vnd.jcp.javame.midlet-rms",
+      rnc: "application/relax-ng-compact-syntax",
+      rng: ["application/ringing-tones", "application/vnd.nokia.ringing-tone"],
+      rnx: "application/vnd.rn-realplayer",
+      roff: "application/x-troff",
+      rp: "image/vnd.rn-realpix",
+      rp9: "application/vnd.cloanto.rp9",
+      rpm: "audio/x-pn-realaudio-plugin",
+      rpss: "application/vnd.nokia.radio-presets",
+      rpst: "application/vnd.nokia.radio-preset",
+      rq: "application/sparql-query",
+      rs: "application/rls-services+xml",
+      rsd: "application/rsd+xml",
+      rt: ["text/richtext", "text/vnd.rn-realtext"],
+      rtf: ["application/rtf", "text/richtext", "application/x-rtf"],
+      rtx: ["text/richtext", "application/rtf"],
+      rv: "video/vnd.rn-realvideo",
+      s: "text/x-asm",
+      s3m: "audio/s3m",
+      saf: "application/vnd.yamaha.smaf-audio",
+      saveme: "application/octet-stream",
+      sbk: "application/x-tbook",
+      sbml: "application/sbml+xml",
+      sc: "application/vnd.ibm.secure-container",
+      scd: "application/x-msschedule",
+      scm: ["application/vnd.lotus-screencam", "video/x-scm", "text/x-script.guile", "application/x-lotusscreencam", "text/x-script.scheme"],
+      scq: "application/scvp-cv-request",
+      scs: "application/scvp-cv-response",
+      sct: "text/scriptlet",
+      scurl: "text/vnd.curl.scurl",
+      sda: "application/vnd.stardivision.draw",
+      sdc: "application/vnd.stardivision.calc",
+      sdd: "application/vnd.stardivision.impress",
+      sdkm: "application/vnd.solent.sdkm+xml",
+      sdml: "text/plain",
+      sdp: ["application/sdp", "application/x-sdp"],
+      sdr: "application/sounder",
+      sdw: "application/vnd.stardivision.writer",
+      sea: ["application/sea", "application/x-sea"],
+      see: "application/vnd.seemail",
+      seed: "application/vnd.fdsn.seed",
+      sema: "application/vnd.sema",
+      semd: "application/vnd.semd",
+      semf: "application/vnd.semf",
+      ser: "application/java-serialized-object",
+      set: "application/set",
+      setpay: "application/set-payment-initiation",
+      setreg: "application/set-registration-initiation",
+      "sfd-hdstx": "application/vnd.hydrostatix.sof-data",
+      sfs: "application/vnd.spotfire.sfs",
+      sgl: "application/vnd.stardivision.writer-global",
+      sgm: ["text/sgml", "text/x-sgml"],
+      sgml: ["text/sgml", "text/x-sgml"],
+      sh: ["application/x-shar", "application/x-bsh", "application/x-sh", "text/x-script.sh"],
+      shar: ["application/x-bsh", "application/x-shar"],
+      shf: "application/shf+xml",
+      shtml: ["text/html", "text/x-server-parsed-html"],
+      sid: "audio/x-psid",
+      sis: "application/vnd.symbian.install",
+      sit: ["application/x-stuffit", "application/x-sit"],
+      sitx: "application/x-stuffitx",
+      skd: "application/x-koan",
+      skm: "application/x-koan",
+      skp: ["application/vnd.koan", "application/x-koan"],
+      skt: "application/x-koan",
+      sl: "application/x-seelogo",
+      sldm: "application/vnd.ms-powerpoint.slide.macroenabled.12",
+      sldx: "application/vnd.openxmlformats-officedocument.presentationml.slide",
+      slt: "application/vnd.epson.salt",
+      sm: "application/vnd.stepmania.stepchart",
+      smf: "application/vnd.stardivision.math",
+      smi: ["application/smil", "application/smil+xml"],
+      smil: "application/smil",
+      snd: ["audio/basic", "audio/x-adpcm"],
+      snf: "application/x-font-snf",
+      sol: "application/solids",
+      spc: ["text/x-speech", "application/x-pkcs7-certificates"],
+      spf: "application/vnd.yamaha.smaf-phrase",
+      spl: ["application/futuresplash", "application/x-futuresplash"],
+      spot: "text/vnd.in3d.spot",
+      spp: "application/scvp-vp-response",
+      spq: "application/scvp-vp-request",
+      spr: "application/x-sprite",
+      sprite: "application/x-sprite",
+      src: "application/x-wais-source",
+      sru: "application/sru+xml",
+      srx: "application/sparql-results+xml",
+      sse: "application/vnd.kodak-descriptor",
+      ssf: "application/vnd.epson.ssf",
+      ssi: "text/x-server-parsed-html",
+      ssm: "application/streamingmedia",
+      ssml: "application/ssml+xml",
+      sst: ["application/vnd.ms-pkicertstore", "application/vnd.ms-pki.certstore"],
+      st: "application/vnd.sailingtracker.track",
+      stc: "application/vnd.sun.xml.calc.template",
+      std: "application/vnd.sun.xml.draw.template",
+      step: "application/step",
+      stf: "application/vnd.wt.stf",
+      sti: "application/vnd.sun.xml.impress.template",
+      stk: "application/hyperstudio",
+      stl: ["application/vnd.ms-pkistl", "application/sla", "application/vnd.ms-pki.stl", "application/x-navistyle"],
+      stm: "text/html",
+      stp: "application/step",
+      str: "application/vnd.pg.format",
+      stw: "application/vnd.sun.xml.writer.template",
+      sub: "image/vnd.dvb.subtitle",
+      sus: "application/vnd.sus-calendar",
+      sv4cpio: "application/x-sv4cpio",
+      sv4crc: "application/x-sv4crc",
+      svc: "application/vnd.dvb.service",
+      svd: "application/vnd.svd",
+      svf: ["image/vnd.dwg", "image/x-dwg"],
+      svg: "image/svg+xml",
+      svr: ["x-world/x-svr", "application/x-world"],
+      swf: "application/x-shockwave-flash",
+      swi: "application/vnd.aristanetworks.swi",
+      sxc: "application/vnd.sun.xml.calc",
+      sxd: "application/vnd.sun.xml.draw",
+      sxg: "application/vnd.sun.xml.writer.global",
+      sxi: "application/vnd.sun.xml.impress",
+      sxm: "application/vnd.sun.xml.math",
+      sxw: "application/vnd.sun.xml.writer",
+      t: ["text/troff", "application/x-troff"],
+      talk: "text/x-speech",
+      tao: "application/vnd.tao.intent-module-archive",
+      tar: "application/x-tar",
+      tbk: ["application/toolbook", "application/x-tbook"],
+      tcap: "application/vnd.3gpp2.tcap",
+      tcl: ["text/x-script.tcl", "application/x-tcl"],
+      tcsh: "text/x-script.tcsh",
+      teacher: "application/vnd.smart.teacher",
+      tei: "application/tei+xml",
+      tex: "application/x-tex",
+      texi: "application/x-texinfo",
+      texinfo: "application/x-texinfo",
+      text: ["application/plain", "text/plain"],
+      tfi: "application/thraud+xml",
+      tfm: "application/x-tex-tfm",
+      tgz: ["application/gnutar", "application/x-compressed"],
+      thmx: "application/vnd.ms-officetheme",
+      tif: ["image/tiff", "image/x-tiff"],
+      tiff: ["image/tiff", "image/x-tiff"],
+      tmo: "application/vnd.tmobile-livetv",
+      torrent: "application/x-bittorrent",
+      tpl: "application/vnd.groove-tool-template",
+      tpt: "application/vnd.trid.tpt",
+      tr: "application/x-troff",
+      tra: "application/vnd.trueapp",
+      trm: "application/x-msterminal",
+      tsd: "application/timestamped-data",
+      tsi: "audio/tsp-audio",
+      tsp: ["application/dsptype", "audio/tsplayer"],
+      tsv: "text/tab-separated-values",
+      ttf: "application/x-font-ttf",
+      ttl: "text/turtle",
+      turbot: "image/florian",
+      twd: "application/vnd.simtech-mindmapper",
+      txd: "application/vnd.genomatix.tuxedo",
+      txf: "application/vnd.mobius.txf",
+      txt: "text/plain",
+      ufd: "application/vnd.ufdl",
+      uil: "text/x-uil",
+      uls: "text/iuls",
+      umj: "application/vnd.umajin",
+      uni: "text/uri-list",
+      unis: "text/uri-list",
+      unityweb: "application/vnd.unity",
+      unv: "application/i-deas",
+      uoml: "application/vnd.uoml+xml",
+      uri: "text/uri-list",
+      uris: "text/uri-list",
+      ustar: ["application/x-ustar", "multipart/x-ustar"],
+      utz: "application/vnd.uiq.theme",
+      uu: ["application/octet-stream", "text/x-uuencode"],
+      uue: "text/x-uuencode",
+      uva: "audio/vnd.dece.audio",
+      uvh: "video/vnd.dece.hd",
+      uvi: "image/vnd.dece.graphic",
+      uvm: "video/vnd.dece.mobile",
+      uvp: "video/vnd.dece.pd",
+      uvs: "video/vnd.dece.sd",
+      uvu: "video/vnd.uvvu.mp4",
+      uvv: "video/vnd.dece.video",
+      vcd: "application/x-cdlink",
+      vcf: "text/x-vcard",
+      vcg: "application/vnd.groove-vcard",
+      vcs: "text/x-vcalendar",
+      vcx: "application/vnd.vcx",
+      vda: "application/vda",
+      vdo: "video/vdo",
+      vew: "application/groupwise",
+      vis: "application/vnd.visionary",
+      viv: ["video/vivo", "video/vnd.vivo"],
+      vivo: ["video/vivo", "video/vnd.vivo"],
+      vmd: "application/vocaltec-media-desc",
+      vmf: "application/vocaltec-media-file",
+      voc: ["audio/voc", "audio/x-voc"],
+      vos: "video/vosaic",
+      vox: "audio/voxware",
+      vqe: "audio/x-twinvq-plugin",
+      vqf: "audio/x-twinvq",
+      vql: "audio/x-twinvq-plugin",
+      vrml: ["model/vrml", "x-world/x-vrml", "application/x-vrml"],
+      vrt: "x-world/x-vrt",
+      vsd: ["application/vnd.visio", "application/x-visio"],
+      vsf: "application/vnd.vsf",
+      vst: "application/x-visio",
+      vsw: "application/x-visio",
+      vtu: "model/vnd.vtu",
+      vxml: "application/voicexml+xml",
+      w60: "application/wordperfect6.0",
+      w61: "application/wordperfect6.1",
+      w6w: "application/msword",
+      wad: "application/x-doom",
+      wasm: "application/wasm",
+      wav: ["audio/wav", "audio/x-wav"],
+      wax: "audio/x-ms-wax",
+      wb1: "application/x-qpro",
+      wbmp: "image/vnd.wap.wbmp",
+      wbs: "application/vnd.criticaltools.wbs+xml",
+      wbxml: "application/vnd.wap.wbxml",
+      wcm: "application/vnd.ms-works",
+      wdb: "application/vnd.ms-works",
+      web: "application/vnd.xara",
+      weba: "audio/webm",
+      webm: "video/webm",
+      webp: "image/webp",
+      wg: "application/vnd.pmi.widget",
+      wgt: "application/widget",
+      wiz: "application/msword",
+      wk1: "application/x-123",
+      wks: "application/vnd.ms-works",
+      wm: "video/x-ms-wm",
+      wma: "audio/x-ms-wma",
+      wmd: "application/x-ms-wmd",
+      wmf: ["windows/metafile", "application/x-msmetafile"],
+      wml: "text/vnd.wap.wml",
+      wmlc: "application/vnd.wap.wmlc",
+      wmls: "text/vnd.wap.wmlscript",
+      wmlsc: "application/vnd.wap.wmlscriptc",
+      wmv: "video/x-ms-wmv",
+      wmx: "video/x-ms-wmx",
+      wmz: "application/x-ms-wmz",
+      woff: "application/x-font-woff",
+      woff2: "font/woff2",
+      word: "application/msword",
+      wp: "application/wordperfect",
+      wp5: ["application/wordperfect", "application/wordperfect6.0"],
+      wp6: "application/wordperfect",
+      wpd: ["application/wordperfect", "application/vnd.wordperfect", "application/x-wpwin"],
+      wpl: "application/vnd.ms-wpl",
+      wps: "application/vnd.ms-works",
+      wq1: "application/x-lotus",
+      wqd: "application/vnd.wqd",
+      wri: ["application/mswrite", "application/x-wri", "application/x-mswrite"],
+      wrl: ["model/vrml", "x-world/x-vrml", "application/x-world"],
+      wrz: ["model/vrml", "x-world/x-vrml"],
+      wsc: "text/scriplet",
+      wsdl: "application/wsdl+xml",
+      wspolicy: "application/wspolicy+xml",
+      wsrc: "application/x-wais-source",
+      wtb: "application/vnd.webturbo",
+      wtk: "application/x-wintalk",
+      wvx: "video/x-ms-wvx",
+      "x-png": "image/png",
+      x3d: "application/vnd.hzn-3d-crossword",
+      xaf: "x-world/x-vrml",
+      xap: "application/x-silverlight-app",
+      xar: "application/vnd.xara",
+      xbap: "application/x-ms-xbap",
+      xbd: "application/vnd.fujixerox.docuworks.binder",
+      xbm: ["image/xbm", "image/x-xbm", "image/x-xbitmap"],
+      xdf: "application/xcap-diff+xml",
+      xdm: "application/vnd.syncml.dm+xml",
+      xdp: "application/vnd.adobe.xdp+xml",
+      xdr: "video/x-amt-demorun",
+      xdssc: "application/dssc+xml",
+      xdw: "application/vnd.fujixerox.docuworks",
+      xenc: "application/xenc+xml",
+      xer: "application/patch-ops-error+xml",
+      xfdf: "application/vnd.adobe.xfdf",
+      xfdl: "application/vnd.xfdl",
+      xgz: "xgl/drawing",
+      xhtml: "application/xhtml+xml",
+      xif: "image/vnd.xiff",
+      xl: "application/excel",
+      xla: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
+      xlam: "application/vnd.ms-excel.addin.macroenabled.12",
+      xlb: ["application/excel", "application/vnd.ms-excel", "application/x-excel"],
+      xlc: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
+      xld: ["application/excel", "application/x-excel"],
+      xlk: ["application/excel", "application/x-excel"],
+      xll: ["application/excel", "application/vnd.ms-excel", "application/x-excel"],
+      xlm: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
+      xls: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
+      xlsb: "application/vnd.ms-excel.sheet.binary.macroenabled.12",
+      xlsm: "application/vnd.ms-excel.sheet.macroenabled.12",
+      xlsx: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+      xlt: ["application/vnd.ms-excel", "application/excel", "application/x-excel"],
+      xltm: "application/vnd.ms-excel.template.macroenabled.12",
+      xltx: "application/vnd.openxmlformats-officedocument.spreadsheetml.template",
+      xlv: ["application/excel", "application/x-excel"],
+      xlw: ["application/vnd.ms-excel", "application/excel", "application/x-msexcel", "application/x-excel"],
+      xm: "audio/xm",
+      xml: ["application/xml", "text/xml", "application/atom+xml", "application/rss+xml"],
+      xmz: "xgl/movie",
+      xo: "application/vnd.olpc-sugar",
+      xof: "x-world/x-vrml",
+      xop: "application/xop+xml",
+      xpi: "application/x-xpinstall",
+      xpix: "application/x-vnd.ls-xpix",
+      xpm: ["image/xpm", "image/x-xpixmap"],
+      xpr: "application/vnd.is-xpr",
+      xps: "application/vnd.ms-xpsdocument",
+      xpw: "application/vnd.intercon.formnet",
+      xslt: "application/xslt+xml",
+      xsm: "application/vnd.syncml+xml",
+      xspf: "application/xspf+xml",
+      xsr: "video/x-amt-showrun",
+      xul: "application/vnd.mozilla.xul+xml",
+      xwd: ["image/x-xwd", "image/x-xwindowdump"],
+      xyz: ["chemical/x-xyz", "chemical/x-pdb"],
+      yaml: "application/yaml",
+      yang: "application/yang",
+      yin: "application/yin+xml",
+      yml: "application/yaml",
+      z: ["application/x-compressed", "application/x-compress"],
+      zaz: "application/vnd.zzazz.deck+xml",
+      zip: ["application/zip", "multipart/x-zip", "application/x-zip-compressed", "application/x-compressed"],
+      zir: "application/vnd.zul",
+      zmm: "application/vnd.handheld-entertainment+xml",
+      zoo: "application/octet-stream",
+      zsh: "text/x-script.zsh"
+    };
+    exports.default = { list: exports.list, extensions: exports.extensions };
+    Object.defineProperty(exports, "default", { value: exports, enumerable: false, writable: true, configurable: true });
   }
 });
 
-// ../node_modules/libmime/lib/libmime.js
+// ../node_modules/libmime/dist/cjs/libmime.js
 var require_libmime = __commonJS({
-  "../node_modules/libmime/lib/libmime.js"(exports, module) {
+  "../node_modules/libmime/dist/cjs/libmime.js"(exports, module) {
     "use strict";
-    var { Buffer: Buffer2 } = __require("node:buffer");
-    var libcharset = require_charset();
-    var libbase64 = require_libbase64();
-    var libqp = require_libqp();
-    var mimetypes = require_mimetypes();
+    var __createBinding = exports && exports.__createBinding || (Object.create ? (function(o, m, k, k2) {
+      if (k2 === void 0) k2 = k;
+      var desc = Object.getOwnPropertyDescriptor(m, k);
+      if (!desc || ("get" in desc ? !m.__esModule : desc.writable || desc.configurable)) {
+        desc = { enumerable: true, get: function() {
+          return m[k];
+        } };
+      }
+      Object.defineProperty(o, k2, desc);
+    }) : (function(o, m, k, k2) {
+      if (k2 === void 0) k2 = k;
+      o[k2] = m[k];
+    }));
+    var __setModuleDefault = exports && exports.__setModuleDefault || (Object.create ? (function(o, v) {
+      Object.defineProperty(o, "default", { enumerable: true, value: v });
+    }) : function(o, v) {
+      o["default"] = v;
+    });
+    var __importStar = exports && exports.__importStar || /* @__PURE__ */ (function() {
+      var ownKeys = function(o) {
+        ownKeys = Object.getOwnPropertyNames || function(o2) {
+          var ar = [];
+          for (var k in o2) if (Object.prototype.hasOwnProperty.call(o2, k)) ar[ar.length] = k;
+          return ar;
+        };
+        return ownKeys(o);
+      };
+      return function(mod) {
+        if (mod && mod.__esModule) return mod;
+        var result = {};
+        if (mod != null) {
+          for (var k = ownKeys(mod), i = 0; i < k.length; i++) if (k[i] !== "default") __createBinding(result, mod, k[i]);
+        }
+        __setModuleDefault(result, mod);
+        return result;
+      };
+    })();
+    var __importDefault = exports && exports.__importDefault || function(mod) {
+      return mod && mod.__esModule ? mod : { "default": mod };
+    };
+    Object.defineProperty(exports, "__esModule", { value: true });
+    exports.Libmime = void 0;
+    var node_buffer_1 = __require("node:buffer");
+    var libbase64_1 = __importDefault(require_libbase64());
+    var libqp_1 = __importDefault(require_libqp());
+    var libcharset = __importStar(require_charset());
+    var mimetypes = __importStar(require_mimetypes());
     var STAGE_KEY = 4097;
     var STAGE_VALUE = 4098;
     var setOwnProperty = (obj, key, value) => {
@@ -30327,7 +30542,6 @@ var require_libmime = __commonJS({
         obj[key] = value;
       }
     };
-    var hasOwn = (obj, key) => Object.prototype.hasOwnProperty.call(obj, key);
     var isWSP = (chr) => chr === " " || chr === "	" || chr === "\r" || chr === "\n" || chr === "\f" || chr === "\v";
     var Libmime = class {
       constructor(config2) {
@@ -30336,20 +30550,31 @@ var require_libmime = __commonJS({
       /**
        * Checks if a value is plaintext string (uses only printable 7bit chars)
        *
+       * When isParam is set the value is destined for a header parameter, so HT, CR and LF
+       * are not plaintext either: a header parameter has no way to carry them. HT is a valid
+       * fold point, so folding and unfolding a header would rewrite it as a space, and CR/LF
+       * cannot appear in a header value at all. DEL is neither a token character nor qtext,
+       * so it can not be carried bare or quoted. Such values have to go through the rfc2231
+       * parameter continuation encoding instead, the same way non-ASCII text does.
+       *
        * @param {String} value String to be tested
+       * @param {Boolean} [isParam] Set to true if the value is a header parameter value
        * @returns {Boolean} true if it is a plaintext string
        */
-      isPlainText(value) {
-        if (typeof value !== "string" || /[\x00-\x08\x0b\x0c\x0e-\x1f\u0080-\uFFFF]/.test(value)) {
-          return false;
-        } else {
-          return true;
-        }
+      isPlainText(value, isParam) {
+        let re = isParam ? /[\x00-\x1f\x7f\u0080-\uFFFF]/ : /[\x00-\x08\x0b\x0c\x0e-\x1f\u0080-\uFFFF]/;
+        return typeof value === "string" && !re.test(value);
+      }
+      // A parameter value goes out as is only when it is plain text that does not look like an encoded
+      // word. Receivers decode encoded words found in parameter values (and libmime itself does so for
+      // unencoded continuations), so as plain text it would come back as something else
+      isPlainParamValue(value) {
+        return this.isPlainText(value, true) && !value.includes("=?");
       }
       /**
        * Checks if a multi line string containes lines longer than the selected value.
        *
-       * Useful when detecting if a mail message needs any processing at all –
+       * Useful when detecting if a mail message needs any processing at all:
        * if only plaintext characters are used and lines are short, then there is
        * no need to encode the values in any way. If the value is plaintext but has
        * longer lines then allowed, then use format=flowed
@@ -30368,28 +30593,41 @@ var require_libmime = __commonJS({
        * @param {Boolean} [delSp] If true, delete leading spaces (delsp=yes)
        * @return {String} Mime decoded string
        */
-      decodeFlowed(str, delSp) {
-        str = (str || "").toString();
+      decodeFlowed(input, delSp) {
+        let str = (input || "").toString();
         let lines = str.split(/\r?\n/);
-        let result = [], buffer = null;
+        let result = [];
+        let parts = [], partsLength = 0;
+        let pushPart = (part) => {
+          if (part) {
+            parts.push(part);
+            partsLength += part.length;
+          }
+        };
         for (let i = 0; i < lines.length; i++) {
           let line = lines[i];
-          let isSoftBreak = buffer !== null && / $/.test(buffer) && !/(^|\n)-- $/.test(buffer);
+          let last = parts.length ? parts[parts.length - 1] : "";
+          let isSoftBreak = last.endsWith(" ") && !(partsLength === 3 && parts.join("") === "-- ");
           if (isSoftBreak) {
             if (delSp) {
-              buffer = buffer.slice(0, -1) + line;
+              parts.pop();
+              partsLength -= last.length;
+              pushPart(last.slice(0, -1));
+              pushPart(line);
             } else {
-              buffer += line;
+              pushPart(line.replace(/^ /, ""));
             }
           } else {
-            if (buffer !== null) {
-              result.push(buffer);
+            if (i > 0) {
+              result.push(parts.join(""));
             }
-            buffer = line;
+            parts = [];
+            partsLength = 0;
+            pushPart(line);
           }
         }
-        if (buffer) {
-          result.push(buffer);
+        if (partsLength) {
+          result.push(parts.join(""));
         }
         return result.join("\n").replace(/^ /gm, "");
       }
@@ -30403,15 +30641,17 @@ var require_libmime = __commonJS({
        */
       encodeFlowed(str, lineLength) {
         lineLength = lineLength || 76;
+        let stuff = (line) => line.replace(/^( |From|>)/i, " $1");
         let flowed = [];
         str.split(/\r?\n/).forEach((line) => {
-          flowed.push(
-            this.foldLines(
-              line.replace(/^( |From|>)/gim, " $1"),
-              lineLength,
-              true
-            )
-          );
+          if (line !== "-- ") {
+            line = line.replace(/ +$/, "");
+          }
+          let folded = this.foldLines(stuff(line), lineLength, true).split("\r\n");
+          for (let i = 1; i < folded.length; i++) {
+            folded[i] = stuff(folded[i]);
+          }
+          flowed.push(folded.join("\r\n"));
         });
         return flowed.join("\r\n");
       }
@@ -30426,13 +30666,13 @@ var require_libmime = __commonJS({
       encodeWord(data, mimeWordEncoding, maxLength) {
         mimeWordEncoding = (mimeWordEncoding || "Q").toString().toUpperCase().trim().charAt(0);
         maxLength = maxLength || 0;
-        let encodedStr;
+        let encodedStr = "";
         let toCharset = "UTF-8";
         if (maxLength && maxLength > 7 + toCharset.length) {
           maxLength -= 7 + toCharset.length;
         }
         if (mimeWordEncoding === "Q") {
-          encodedStr = libqp.encode(data).replace(/[^a-z0-9!*+\-/=]/gi, (chr) => {
+          encodedStr = libqp_1.default.encode(data).replace(/[^a-z0-9!*+\-/=]/gi, (chr) => {
             let ord = chr.charCodeAt(0).toString(16).toUpperCase();
             if (chr === " ") {
               return "_";
@@ -30441,29 +30681,25 @@ var require_libmime = __commonJS({
             }
           });
         } else if (mimeWordEncoding === "B") {
-          encodedStr = typeof data === "string" ? data : libbase64.encode(data);
+          encodedStr = typeof data === "string" ? data : data.toString("utf-8");
           maxLength = maxLength ? Math.max(3, (maxLength - maxLength % 4) / 4 * 3) : 0;
         }
-        if (maxLength && (mimeWordEncoding !== "B" ? encodedStr : libbase64.encode(data)).length > maxLength) {
+        if (maxLength && (mimeWordEncoding !== "B" ? encodedStr : libbase64_1.default.encode(data)).length > maxLength) {
           if (mimeWordEncoding === "Q") {
             encodedStr = this.splitMimeEncodedString(encodedStr, maxLength).join("?= =?" + toCharset + "?" + mimeWordEncoding + "?");
           } else {
             let parts = [];
             let lpart = "";
-            for (let i = 0, len = encodedStr.length; i < len; i++) {
-              let chr = encodedStr.charAt(i);
-              if (/[\ud83c\ud83d\ud83e]/.test(chr) && i < len - 1) {
-                chr += encodedStr.charAt(++i);
-              }
-              if (Buffer2.byteLength(lpart + chr) <= maxLength || i === 0) {
+            for (let chr of encodedStr) {
+              if (node_buffer_1.Buffer.byteLength(lpart + chr) <= maxLength || !lpart) {
                 lpart += chr;
               } else {
-                parts.push(libbase64.encode(lpart));
+                parts.push(libbase64_1.default.encode(lpart));
                 lpart = chr;
               }
             }
             if (lpart) {
-              parts.push(libbase64.encode(lpart));
+              parts.push(libbase64_1.default.encode(lpart));
             }
             if (parts.length > 1) {
               encodedStr = parts.join("?= =?" + toCharset + "?" + mimeWordEncoding + "?");
@@ -30472,9 +30708,9 @@ var require_libmime = __commonJS({
             }
           }
         } else if (mimeWordEncoding === "B") {
-          encodedStr = libbase64.encode(data);
+          encodedStr = libbase64_1.default.encode(data);
         }
-        return "=?" + toCharset + "?" + mimeWordEncoding + "?" + encodedStr + (encodedStr.substr(-2) === "?=" ? "" : "?=");
+        return "=?" + toCharset + "?" + mimeWordEncoding + "?" + encodedStr + (encodedStr.slice(-2) === "?=" ? "" : "?=");
       }
       /**
        * Normalizes a charset name to its canonical form, resolving common aliases and
@@ -30500,13 +30736,14 @@ var require_libmime = __commonJS({
       decodeWord(charset, encoding, str) {
         let splitPos = charset.indexOf("*");
         if (splitPos >= 0) {
-          charset = charset.substr(0, splitPos);
+          charset = charset.substring(0, splitPos);
         }
         charset = libcharset.normalizeCharset(charset);
         encoding = encoding.toUpperCase();
+        let decoded;
         if (encoding === "Q") {
           str = str.replace(/=\s+([0-9a-fA-F])/g, "=$1").replace(/[_\s]/g, " ");
-          let buf = Buffer2.from(str);
+          let buf = node_buffer_1.Buffer.from(str);
           let bytes = [];
           for (let i = 0, len = buf.length; i < len; i++) {
             let c = buf[i];
@@ -30522,15 +30759,13 @@ var require_libmime = __commonJS({
             }
             bytes.push(c);
           }
-          str = Buffer2.from(bytes);
+          decoded = node_buffer_1.Buffer.from(bytes);
         } else if (encoding === "B") {
-          str = Buffer2.concat(
-            str.split("=").filter((s) => s !== "").map((str2) => Buffer2.from(str2, "base64"))
-          );
+          decoded = libbase64_1.default.decode(str);
         } else {
-          str = Buffer2.from(str);
+          decoded = node_buffer_1.Buffer.from(str);
         }
-        return libcharset.decode(str, charset);
+        return libcharset.decode(decoded, charset);
       }
       /**
        * Finds word sequences with non ascii text and converts these to mime words
@@ -30546,22 +30781,23 @@ var require_libmime = __commonJS({
           fromCharset = maxLength;
           maxLength = void 0;
         }
-        maxLength = maxLength || 0;
+        let maxLineLength = Number(maxLength) || 0;
         let decodedValue = libcharset.decode(libcharset.convert(data || "", fromCharset));
         let encodedValue;
         let firstMatch = decodedValue.match(/(?:^|\s)([^\s]*[\u0080-\uFFFF])/);
         if (!firstMatch) {
           return decodedValue;
         }
-        let lastMatch = decodedValue.match(/([\u0080-\uFFFF][^\s]*)[^\u0080-\uFFFF]*$/);
-        if (!lastMatch) {
-          return decodedValue;
-        }
         let startIndex = firstMatch.index + (firstMatch[0].match(/[^\s]/) || {
           index: 0
         }).index;
-        let endIndex = lastMatch.index + (lastMatch[1] || "").length;
-        encodedValue = (startIndex ? decodedValue.substr(0, startIndex) : "") + this.encodeWord(decodedValue.substring(startIndex, endIndex), mimeWordEncoding || "Q", maxLength) + (endIndex < decodedValue.length ? decodedValue.substr(endIndex) : "");
+        let lastIndex = decodedValue.length - 1;
+        while (lastIndex >= 0 && decodedValue.charCodeAt(lastIndex) < 128) {
+          lastIndex--;
+        }
+        let wordEnd = decodedValue.slice(lastIndex + 1).search(/\s/);
+        let endIndex = wordEnd < 0 ? decodedValue.length : lastIndex + 1 + wordEnd;
+        encodedValue = (startIndex ? decodedValue.substring(0, startIndex) : "") + this.encodeWord(decodedValue.substring(startIndex, endIndex), mimeWordEncoding || "Q", maxLineLength) + (endIndex < decodedValue.length ? decodedValue.slice(endIndex) : "");
         return encodedValue;
       }
       /**
@@ -30581,10 +30817,10 @@ var require_libmime = __commonJS({
             return left + "__\0JOIN\0__";
           }
           return match;
-        }).replace(/(\?=)?__\x00JOIN\x00__(=\?([^?]+)\?[QqBb]\?)?/g, "").replace(/(=\?[^?]+\?[QqBb]\?[^?]*\?=)\s+(?==\?[^?]+\?[QqBb]\?[^?]*\?=)/g, "$1").replace(/=\?([\w_\-*]+)\?([QqBb])\?([^?]*)\?=/g, (m, charset, encoding, text) => this.decodeWord(charset, encoding, text));
+        }).replace(/(\?=)?__\x00JOIN\x00__(=\?([^?]+)\?[QqBb]\?)?/g, "").replace(/(=\?[^?]+\?[QqBb]\?[^?]*\?=)\s+(?==\?[^?]+\?[QqBb]\?[^?]*\?=)/g, "$1").replace(/=\?([\w_\-*]+)\?([QqBb])\?([^?]*)\?=/g, (_m, charset, encoding, text) => this.decodeWord(charset, encoding, text));
       }
       getHex(c) {
-        if (c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70) {
+        if (c !== void 0 && (c >= 48 && c <= 57 || c >= 97 && c <= 102 || c >= 65 && c <= 70)) {
           return String.fromCharCode(c);
         }
         return false;
@@ -30619,15 +30855,18 @@ var require_libmime = __commonJS({
         }
         let bodyPos = lines.indexOf("", headersPos);
         lines = lines.slice(headersPos, bodyPos >= 0 ? bodyPos : lines.length);
-        for (i = lines.length - 1; i > 0; i--) {
-          if (/^[ \t]/.test(lines[i])) {
-            lines[i - 1] += "\r\n" + lines[i];
-            lines.splice(i, 1);
+        let unfolded = [];
+        for (i = 0, len = lines.length; i < len; i++) {
+          if (unfolded.length && /^[ \t]/.test(lines[i])) {
+            unfolded[unfolded.length - 1] += "\r\n" + lines[i];
+          } else {
+            unfolded.push(lines[i]);
           }
         }
+        lines = unfolded;
         for (i = 0, len = lines.length; i < len; i++) {
           header = this.decodeHeader(lines[i]);
-          if (!hasOwn(headersObj, header.key)) {
+          if (!Object.hasOwn(headersObj, header.key)) {
             setOwnProperty(headersObj, header.key, [header.value]);
           } else {
             headersObj[header.key].push(header.value);
@@ -30644,23 +30883,26 @@ var require_libmime = __commonJS({
        */
       buildHeaderValue(structured) {
         let paramsArray = [];
-        Object.keys(structured.params || {}).forEach((param) => {
-          let value = structured.params[param];
-          if (!this.isPlainText(value) || value.length >= 75) {
-            this.buildHeaderParam(param, value, 50).forEach((encodedParam) => {
-              if (!/[\s"\\;:/=(),<>@[\]?]|^[-']|'$/.test(encodedParam.value) || encodedParam.key.substr(-1) === "*") {
+        let params = structured.params || {};
+        Object.keys(params).forEach((key) => {
+          let value2 = params[key];
+          let param = key.replace(/[\x00-\x1f\x7f]/g, "");
+          if (!this.isPlainParamValue(value2) || value2.length >= 75) {
+            this.buildHeaderParam(param, value2, 50).forEach((encodedParam) => {
+              if (!/[\s"\\;:/=(),<>@[\]?]|^[-']|'$/.test(encodedParam.value) || encodedParam.key.endsWith("*")) {
                 paramsArray.push(encodedParam.key + "=" + encodedParam.value);
               } else {
                 paramsArray.push(encodedParam.key + "=" + JSON.stringify(encodedParam.value));
               }
             });
-          } else if (/[\s'"\\;:/=(),<>@[\]?]|^-/.test(value)) {
-            paramsArray.push(param + "=" + JSON.stringify(value));
+          } else if (!value2.length || /[\s'"\\;:/=(),<>@[\]?]|^-/.test(value2)) {
+            paramsArray.push(param + "=" + JSON.stringify(value2));
           } else {
-            paramsArray.push(param + "=" + value);
+            paramsArray.push(param + "=" + value2);
           }
         });
-        return structured.value + (paramsArray.length ? "; " + paramsArray.join("; ") : "");
+        let value = typeof structured.value === "string" ? structured.value.replace(/[\x00-\x1f\x7f]/g, "") : structured.value;
+        return value + (paramsArray.length ? "; " + paramsArray.join("; ") : "");
       }
       /**
        * Parses a header value with key=value arguments into a structured
@@ -30674,14 +30916,24 @@ var require_libmime = __commonJS({
        *     }
        *   }
        *
+       * The result also carries a non-enumerable `decodedParams` array that names the params
+       * assembled from rfc2231 segments (title*=, title*0*=, title*0=). Those values are already
+       * decoded, so a caller that runs decodeWords() over the params has to leave them out
+       *
        * @param {String} str Header value
        * @return {Object} Header value as a parsed structure
        */
       parseHeaderValue(str) {
         let response = {
-          value: false,
+          value: "",
           params: {}
         };
+        Object.defineProperty(response, "decodedParams", {
+          value: [],
+          writable: true,
+          enumerable: false,
+          configurable: true
+        });
         let key = false;
         let value = "";
         let valueEnd = 0;
@@ -30754,7 +31006,7 @@ var require_libmime = __commonJS({
           if (!match) {
             continue;
           }
-          let actualKey = key2.substr(0, match.index).toLowerCase();
+          let actualKey = key2.substring(0, match.index).toLowerCase();
           let nr = Number(match[2]) || 0;
           let value2 = response.params[key2];
           delete response.params[key2];
@@ -30774,6 +31026,7 @@ var require_libmime = __commonJS({
         }
         for (let [key2, continuation] of continuations) {
           let value2 = continuation.values.sort((a, b) => a.nr - b.nr).map((val) => val.value).join("");
+          response.decodedParams.push(key2);
           if (!continuation.charset) {
             setOwnProperty(response.params, key2, this.decodeWords(value2));
             continue;
@@ -30807,18 +31060,17 @@ var require_libmime = __commonJS({
        */
       buildHeaderParam(key, data, maxLength, fromCharset) {
         let list = [];
-        if (typeof data !== "string" && !Buffer2.isBuffer(data)) {
+        if (typeof data !== "string" && !node_buffer_1.Buffer.isBuffer(data)) {
           data = data === null || data === void 0 ? "" : data.toString();
         }
         let encodedStr = typeof data === "string" ? data : libcharset.decode(data, fromCharset);
-        let encodedStrArr;
-        let chr, ord;
+        let chr;
         let line;
         let startPos = 0;
         let isEncoded = false;
         let i, len;
         maxLength = maxLength || 50;
-        if (this.isPlainText(data)) {
+        if (this.isPlainParamValue(data)) {
           if (encodedStr.length <= maxLength) {
             return [
               {
@@ -30840,19 +31092,7 @@ var require_libmime = __commonJS({
           }
         } else {
           if (/[\uD800-\uDBFF]/.test(encodedStr)) {
-            encodedStrArr = [];
-            for (i = 0, len = encodedStr.length; i < len; i++) {
-              chr = encodedStr.charAt(i);
-              ord = chr.charCodeAt(0);
-              if (ord >= 55296 && ord <= 56319 && i < len - 1) {
-                chr += encodedStr.charAt(i + 1);
-                encodedStrArr.push(chr);
-                i++;
-              } else {
-                encodedStrArr.push(chr);
-              }
-            }
-            encodedStr = encodedStrArr;
+            encodedStr = Array.from(encodedStr);
           }
           line = "utf-8''";
           isEncoded = true;
@@ -30870,7 +31110,7 @@ var require_libmime = __commonJS({
                     encoded: isEncoded
                   });
                   line = "";
-                  startPos = i - 1;
+                  isEncoded = true;
                 } else {
                   isEncoded = true;
                   i = startPos;
@@ -30917,9 +31157,9 @@ var require_libmime = __commonJS({
        * @param {String} mimeType Content type to be checked for
        * @return {String} File extension
        */
-      detectExtension(mimeType) {
-        mimeType = (mimeType || "").toString().toLowerCase().replace(/\s/g, "");
-        if (!hasOwn(mimetypes.list, mimeType)) {
+      detectExtension(input) {
+        let mimeType = (input || "").toString().toLowerCase().replace(/\s/g, "");
+        if (!Object.hasOwn(mimetypes.list, mimeType)) {
           return "bin";
         }
         if (typeof mimetypes.list[mimeType] === "string") {
@@ -30940,9 +31180,9 @@ var require_libmime = __commonJS({
        * @param {String} extension Extension (or filename) to be checked for
        * @return {String} Content type
        */
-      detectMimeType(extension) {
-        extension = (extension || "").toString().toLowerCase().replace(/\s/g, "").replace(/^\./g, "").split(".").pop();
-        if (!hasOwn(mimetypes.extensions, extension)) {
+      detectMimeType(input) {
+        let extension = (input || "").toString().toLowerCase().replace(/\s/g, "").replace(/^\./g, "").split(".").pop() || "";
+        if (!Object.hasOwn(mimetypes.extensions, extension)) {
           return "application/octet-stream";
         }
         if (typeof mimetypes.extensions[extension] === "string") {
@@ -30966,12 +31206,12 @@ var require_libmime = __commonJS({
        * @param {Boolean} afterSpace If true, leave a space in the end of a line
        * @return {String} String with folded lines
        */
-      foldLines(str, lineLength, afterSpace) {
-        str = (str || "").toString();
+      foldLines(input, lineLength, afterSpace) {
+        let str = (input || "").toString();
         lineLength = lineLength || 76;
         let pos = 0, len = str.length, result = "", line, match;
         while (pos < len) {
-          line = str.substr(pos, lineLength);
+          line = str.substring(pos, pos + Math.max(lineLength, 0));
           if (line.length < lineLength) {
             result += line;
             break;
@@ -30982,9 +31222,9 @@ var require_libmime = __commonJS({
             pos += line.length;
             continue;
           } else if ((match = line.match(/(\s+)[^\s]*$/)) && match[0].length - (afterSpace ? (match[1] || "").length : 0) < line.length) {
-            line = line.substr(0, line.length - (match[0].length - (afterSpace ? (match[1] || "").length : 0)));
-          } else if (match = str.substr(pos + line.length).match(/^[^\s]+(\s*)/)) {
-            line = line + match[0].substr(0, match[0].length - (!afterSpace ? (match[1] || "").length : 0));
+            line = line.substring(0, line.length - (match[0].length - (afterSpace ? (match[1] || "").length : 0)));
+          } else if (match = str.slice(pos + line.length).match(/^[^\s]+(\s*)/)) {
+            line = line + match[0].substring(0, match[0].length - (!afterSpace ? (match[1] || "").length : 0));
           }
           result += line;
           pos += line.length;
@@ -31002,52 +31242,58 @@ var require_libmime = __commonJS({
        * @return {Array} Split string
        */
       splitMimeEncodedString(str, maxlen) {
-        let curLine, match, chr, done, lines = [];
+        let curLine, fallbackLine, match, chr, done, lines = [];
         maxlen = Math.max(maxlen || 0, 12);
         while (str.length) {
-          curLine = str.substr(0, maxlen);
+          curLine = str.substring(0, maxlen);
           if (match = curLine.match(/[=][0-9A-F]?$/i)) {
-            curLine = curLine.substr(0, match.index);
+            curLine = curLine.substring(0, match.index);
           }
+          fallbackLine = curLine.length ? curLine : str.substring(0, maxlen);
           done = false;
-          while (!done) {
+          while (!done && curLine.length) {
             done = true;
-            if (match = str.substr(curLine.length).match(/^[=]([0-9A-F]{2})/i)) {
+            if (match = str.slice(curLine.length).match(/^[=]([0-9A-F]{2})/i)) {
               chr = parseInt(match[1], 16);
-              if (chr < 194 && chr > 127) {
-                curLine = curLine.substr(0, curLine.length - 3);
+              if (chr < 194 && chr > 127 && /=[0-9A-F]{2}$/i.test(curLine)) {
+                curLine = curLine.substring(0, curLine.length - 3);
                 done = false;
               }
             }
           }
-          if (curLine.length) {
-            lines.push(curLine);
+          if (!curLine.length) {
+            curLine = fallbackLine;
           }
-          str = str.substr(curLine.length);
+          lines.push(curLine);
+          str = str.slice(curLine.length);
         }
         return lines;
       }
       encodeURICharComponent(chr) {
         let res = "";
-        let buf = Buffer2.from(chr, "utf-8");
+        let buf = node_buffer_1.Buffer.from(chr, "utf-8");
         for (let i = 0, len = buf.length; i < len; i++) {
           let ord = buf[i].toString(16).toUpperCase();
           res += "%" + (ord.length < 2 ? "0" : "") + ord;
         }
         return res;
       }
-      safeEncodeURIComponent(str) {
-        str = (str || "").toString();
+      safeEncodeURIComponent(input) {
+        let str = (input || "").toString();
         try {
           str = encodeURIComponent(str);
-        } catch (E) {
-          return str.replace(/[^\x00-\x1F *'()<>@,;:\\"[\]?=\u007F-\uFFFF]+/g, "");
+        } catch (_err) {
+          str = encodeURIComponent(node_buffer_1.Buffer.from(str, "utf-8").toString("utf-8"));
         }
         return str.replace(/[\x00-\x1F *'()<>@,;:\\"[\]?=\u007F-\uFFFF]/g, (chr) => this.encodeURICharComponent(chr));
       }
     };
-    module.exports = new Libmime();
-    module.exports.Libmime = Libmime;
+    exports.Libmime = Libmime;
+    var libmime = new Libmime();
+    libmime.Libmime = Libmime;
+    exports.default = libmime;
+    module.exports = exports.default;
+    Object.defineProperty(module.exports, "default", { value: exports.default, enumerable: false, writable: true, configurable: true });
   }
 });
 
@@ -31354,36 +31600,45 @@ var require_headers = __commonJS({
           this.parsed = true;
           return;
         }
-        let lines = this.headers.toString("binary").replace(/[\r\n]+$/, "").split(/\r?\n/);
-        for (let i = lines.length - 1; i >= 0; i--) {
-          let currentLine = (
-            /** @type {string} */
-            lines[i]
-          );
-          if (i && this._isFoldingChar(currentLine.charAt(0))) {
-            lines[i - 1] = /** @type {string} */
-            lines[i - 1] + "\r\n" + currentLine;
-            lines.splice(i, 1);
-          } else {
-            let line = currentLine;
-            if (!i && /^From /i.test(line)) {
-              this.mbox = line;
-              lines.splice(i, 1);
-              continue;
-            } else if (!i && /^POST /i.test(line)) {
-              this.http = line;
-              lines.splice(i, 1);
-              continue;
+        let raw = this.headers.toString("binary");
+        let end = raw.length;
+        while (end > 0 && (raw.charCodeAt(end - 1) === 10 || raw.charCodeAt(end - 1) === 13)) {
+          end--;
+        }
+        let rawLines = raw.slice(0, end).split(/\r?\n/);
+        let i = 1;
+        let first = rawLines[0];
+        while (i < rawLines.length && this._isFoldingChar(rawLines[i].charAt(0))) {
+          first += "\r\n" + rawLines[i++];
+        }
+        let lines = [];
+        if (/^From /i.test(first)) {
+          this.mbox = first;
+        } else if (/^POST /i.test(first)) {
+          this.http = first;
+        } else {
+          lines.push({ key: this._normalizeHeader(first.substr(0, first.indexOf(":"))), line: first });
+        }
+        let keyPending = false;
+        for (; i < rawLines.length; i++) {
+          let currentLine = rawLines[i];
+          if (this._isFoldingChar(currentLine.charAt(0))) {
+            let entry = lines[lines.length - 1];
+            if (keyPending) {
+              let colon = currentLine.indexOf(":");
+              if (colon >= 0) {
+                entry.key = this._normalizeHeader(entry.line + "\r\n" + currentLine.substr(0, colon));
+                keyPending = false;
+              }
             }
-            let key = this._normalizeHeader(line.substr(0, line.indexOf(":")));
-            lines[i] = {
-              key,
-              line
-            };
+            entry.line += "\r\n" + currentLine;
+          } else {
+            let colon = currentLine.indexOf(":");
+            lines.push({ key: this._normalizeHeader(currentLine.substr(0, colon)), line: currentLine });
+            keyPending = colon < 0;
           }
         }
-        this.lines = /** @type {HeaderLine[]} */
-        lines;
+        this.lines = lines;
         this.parsed = true;
       }
       /**
@@ -31424,6 +31679,52 @@ var require_mime_node = __commonJS({
       /** @type {any} */
       libmime.Libmime
     );
+    var HEADER_LINE_MIN_COST = 64;
+    function stripComments(value) {
+      if (value.indexOf("(") < 0) {
+        return value;
+      }
+      return value.split(/([\n\r\u2028\u2029])/).map((part) => {
+        let start = part.indexOf("(");
+        if (start < 0) {
+          return part;
+        }
+        let end = part.lastIndexOf(")");
+        return end > start ? part.slice(0, start) + part.slice(end + 1) : part;
+      }).join("");
+    }
+    function rfc2231ParamNames(value) {
+      let names = /* @__PURE__ */ new Set();
+      let quote = false;
+      let escaped = false;
+      let start = 0;
+      let addSegment = (end) => {
+        let segment = value.substring(start, end);
+        let eq = segment.indexOf("=");
+        if (eq < 0) {
+          return;
+        }
+        let match = segment.substring(0, eq).trim().toLowerCase().match(/^(.+?)\*(\d+\*?)?$/);
+        if (match) {
+          names.add(match[1]);
+        }
+      };
+      for (let i = 0; i < value.length; i++) {
+        let chr = value.charAt(i);
+        if (escaped) {
+          escaped = false;
+        } else if (chr === "\\") {
+          escaped = true;
+        } else if (chr === '"') {
+          quote = !quote;
+        } else if (chr === ";" && !quote) {
+          addSegment(i);
+          start = i + 1;
+        }
+      }
+      addSegment(value.length);
+      return names;
+    }
     var MimeNode = class {
       /**
        * @param {MimeNodeType | false} parentNode Parent node, or false for the root node.
@@ -31437,6 +31738,7 @@ var require_mime_node = __commonJS({
         this._parentBoundaryOwner = this.parentNode || false;
         this._headersLines = [];
         this._headerlen = 0;
+        this._headerCost = 0;
         this._parsedContentType = false;
         this._parsedContentDisposition = false;
         this._boundary = false;
@@ -31471,14 +31773,26 @@ var require_mime_node = __commonJS({
       }
       /**
        * @param {Buffer | false} [line]
-       * @returns {void}
+       * @returns {boolean} Whether the line is the empty line that ends the header block.
        */
       addHeaderChunk(line) {
         if (!line) {
-          return;
+          return false;
         }
         this._headersLines.push(line);
         this._headerlen += line.length;
+        let endsBlock = line.length === 1 && line[0] === 10 || line.length === 2 && line[0] === 13 && line[1] === 10;
+        this._headerCost += endsBlock ? line.length : Math.max(line.length, HEADER_LINE_MIN_COST);
+        return endsBlock;
+      }
+      /**
+       * What the header lines of this node count for against maxHeadSize, see HEADER_LINE_MIN_COST.
+       *
+       * @param {number} [extra] Bytes of a header line that is not stored yet.
+       * @returns {number} The cost in bytes.
+       */
+      headerCost(extra) {
+        return this._headerCost + (extra ? Math.max(extra, HEADER_LINE_MIN_COST) : 0);
       }
       /**
        * @returns {void}
@@ -31488,8 +31802,10 @@ var require_mime_node = __commonJS({
           return;
         }
         this.headers = new Headers(Buffer.concat(this._headersLines, this._headerlen), this.config);
+        this._headersLines = [];
         let headers = this.headers;
-        this._parsedContentDisposition = this.libmime.parseHeaderValue(headers.getFirst("Content-Disposition"));
+        let dispositionHeader = headers.getFirst("Content-Disposition");
+        this._parsedContentDisposition = this.libmime.parseHeaderValue(dispositionHeader);
         let parsedContentDisposition = (
           /** @type {StructuredHeader} */
           this._parsedContentDisposition
@@ -31517,7 +31833,7 @@ var require_mime_node = __commonJS({
           /** @type {StructuredHeader} */
           this._parsedContentType
         );
-        this.encoding = headers.getFirst("Content-Transfer-Encoding").replace(/\(.*\)/g, "").toLowerCase().trim();
+        this.encoding = stripComments(headers.getFirst("Content-Transfer-Encoding")).toLowerCase().trim();
         this.contentType = (parsedContentType.value || "").toLowerCase().trim() || false;
         this.charset = parsedContentType.params.charset || false;
         this.disposition = (parsedContentDisposition.value || "").toLowerCase().trim() || false;
@@ -31535,9 +31851,12 @@ var require_mime_node = __commonJS({
           }
         }
         if (this.filename) {
-          try {
-            this.filename = this.libmime.decodeWords(this.filename);
-          } catch (E) {
+          let decoded = parsedContentDisposition.params.filename ? rfc2231ParamNames(dispositionHeader).has("filename") : rfc2231ParamNames(contentHeader).has("name");
+          if (!decoded) {
+            try {
+              this.filename = this.libmime.decodeWords(this.filename);
+            } catch (E) {
+            }
           }
         }
         this.multipart = this.contentType && this.contentType.substr(0, this.contentType.indexOf("/")) === "multipart" && this.contentType.substr(this.contentType.indexOf("/") + 1) || false;
@@ -31721,6 +32040,7 @@ var require_message_splitter = __commonJS({
     var MAX_PENDING_LINE_CHUNKS = 1024;
     var BOUNDARY_LINE_SUFFIX = 2 + 2 + 2;
     var BOUNDARY_LINE_OVERHEAD = BOUNDARY_LINE_SUFFIX + 2;
+    var YIELD_BYTES = 16 * 1024;
     var HEAD = 1;
     var BODY = 2;
     function maxLenError(message) {
@@ -31761,6 +32081,8 @@ var require_message_splitter = __commonJS({
         /** @type {unknown} */
         null;
         this.inEpilogue = false;
+        this.delimiterOwner = /** @type {MimeNodeType | false} */
+        false;
         this.newNode();
         this.lineChunks = [];
         this.lineLength = 0;
@@ -31811,6 +32133,9 @@ var require_message_splitter = __commonJS({
         };
         let groupstart = this.lineLength ? -this.lineLength : 0;
         let groupend = 0;
+        let yieldPos = 0;
+        let inLine = false;
+        let resumeInLine = false;
         let checkTrailingLinebreak = (data) => {
           if (data.type === "body" && data.node.parentNode && data.value && data.value.length) {
             if (data.value[data.value.length - 1] === 10) {
@@ -31836,72 +32161,90 @@ var require_message_splitter = __commonJS({
             }
           }
         };
-        let iterateData = () => {
-          for (let len = chunk.length; i < len; i++) {
-            if (chunk[i] === 10) {
-              let start = Math.max(pos, 0);
-              pos = ++i;
-              return this.processLine(chunk.slice(start, i), false, (err, data, flush) => {
-                if (err) {
-                  this.hasFailed = true;
-                  return setImmediate(() => callback(err));
+        let iterateData;
+        let nextLine = () => {
+          if (inLine && i - yieldPos < YIELD_BYTES) {
+            resumeInLine = true;
+            return;
+          }
+          setImmediate(iterateData);
+        };
+        let onLine = (err, data, flush) => {
+          if (err) {
+            this.hasFailed = true;
+            return setImmediate(() => callback(err));
+          }
+          if (!data) {
+            return nextLine();
+          }
+          if (flush) {
+            if (group && group.type !== "none") {
+              groupend = trimBodyLineEnd(group, chunk, groupstart, groupend);
+              if (groupstart < groupend) {
+                group.value = chunk.slice(groupstart, groupend);
+                if (groupend < i && "value" in data) {
+                  data.value = chunk.slice(groupend, i);
                 }
-                if (!data) {
-                  return setImmediate(iterateData);
+              }
+              this.push(group);
+              group = {
+                type: "none"
+              };
+              groupstart = groupend = i;
+            }
+            this.push(data);
+            groupend = i;
+            return nextLine();
+          }
+          if (data.type === group.type) {
+            groupend = i;
+          } else {
+            groupend = trimBodyLineEnd(group, chunk, groupstart, groupend);
+            if (group.type !== "none" && group.type !== "node") {
+              if (groupstart !== groupend) {
+                group.value = chunk.slice(groupstart, groupend);
+                if (group.value && group.value.length) {
+                  this.push(group);
+                  group = {
+                    type: "none"
+                  };
                 }
-                if (flush) {
-                  if (group && group.type !== "none") {
-                    groupend = trimBodyLineEnd(group, chunk, groupstart, groupend);
-                    if (groupstart < groupend) {
-                      group.value = chunk.slice(groupstart, groupend);
-                      if (groupend < i && "value" in data) {
-                        data.value = chunk.slice(groupend, i);
-                      }
-                    }
-                    this.push(group);
-                    group = {
-                      type: "none"
-                    };
-                    groupstart = groupend = i;
-                  }
-                  this.push(data);
-                  groupend = i;
-                  return setImmediate(iterateData);
-                }
-                if (data.type === group.type) {
-                  groupend = i;
-                } else {
-                  groupend = trimBodyLineEnd(group, chunk, groupstart, groupend);
-                  if (group.type !== "none" && group.type !== "node") {
-                    if (groupstart !== groupend) {
-                      group.value = chunk.slice(groupstart, groupend);
-                      if (group.value && group.value.length) {
-                        this.push(group);
-                        group = {
-                          type: "none"
-                        };
-                      }
-                    }
-                  }
-                  if (data.type === "node") {
-                    this.push(data);
-                    groupstart = i;
-                    groupend = i;
-                  } else if (groupstart < 0) {
-                    groupstart = i;
-                    groupend = i;
-                    checkTrailingLinebreak(data);
-                    if (data.value && data.value.length) {
-                      this.push(data);
-                    }
-                  } else {
-                    group = data;
-                    groupstart = groupend;
-                    groupend = i;
-                  }
-                }
-                return setImmediate(iterateData);
-              });
+              }
+            }
+            if (data.type === "node") {
+              this.push(data);
+              groupstart = i;
+              groupend = i;
+            } else if (groupstart < 0) {
+              groupstart = i;
+              groupend = i;
+              checkTrailingLinebreak(data);
+              if (data.value && data.value.length) {
+                this.push(data);
+              }
+            } else {
+              group = data;
+              groupstart = groupend;
+              groupend = i;
+            }
+          }
+          return nextLine();
+        };
+        iterateData = () => {
+          yieldPos = i;
+          while (i < chunk.length) {
+            if (chunk[i] !== 10) {
+              i++;
+              continue;
+            }
+            let start = Math.max(pos, 0);
+            pos = ++i;
+            inLine = true;
+            resumeInLine = false;
+            this.processLine(chunk.slice(start, i), false, onLine);
+            inLine = false;
+            if (!resumeInLine) {
+              return;
             }
           }
           pos = trimBodyLineEnd(group, chunk, groupstart, pos);
@@ -32000,22 +32343,41 @@ var require_message_splitter = __commonJS({
         if (!this.inEpilogue && this.node._boundary && (boundary = this.compareBoundary(line, startpos, this.node._boundary))) {
           return boundary;
         }
-        if (this.node._parentBoundary && (boundary = this.compareBoundary(line, startpos, this.node._parentBoundary))) {
-          return (
-            /** @type {3 | 4} */
-            boundary + 2
-          );
+        for (let owner = this.node._parentBoundaryOwner; owner; owner = owner._parentBoundaryOwner) {
+          if (owner._boundary && (boundary = this.compareBoundary(line, startpos, owner._boundary))) {
+            this.delimiterOwner = owner;
+            return (
+              /** @type {3 | 4} */
+              boundary + 2
+            );
+          }
         }
         return false;
       }
       /**
-       * Checks the header bytes collected for the current node against maxHeadSize.
+       * Longest boundary a delimiter line on the current node could carry: the node's own
+       * boundary or that of any open ancestor multipart.
+       *
+       * @returns {number} Boundary length in bytes, 0 when no boundary applies.
+       */
+      maxBoundaryLength() {
+        let max = this.node._boundary ? this.node._boundary.length : 0;
+        for (let owner = this.node._parentBoundaryOwner; owner; owner = owner._parentBoundaryOwner) {
+          if (owner._boundary && owner._boundary.length > max) {
+            max = owner._boundary.length;
+          }
+        }
+        return max;
+      }
+      /**
+       * Checks the header bytes collected for the current node against maxHeadSize. See
+       * MimeNode#headerCost.
        *
        * @param {number} [extra] Bytes that belong to the header block but are not stored yet.
        * @returns {(Error & {code?: string}) | null} Error object if the limit was exceeded.
        */
       checkHeadSize(extra) {
-        if (this.node._headerlen + (extra || 0) > this.maxHeadSize) {
+        if (this.node.headerCost(extra) > this.maxHeadSize) {
           return maxLenError("Max header size for a MIME node exceeded");
         }
         return null;
@@ -32033,11 +32395,7 @@ var require_message_splitter = __commonJS({
         if (!this.lineLength) {
           return null;
         }
-        let maxBoundaryLength = Math.max(
-          this.node._boundary ? this.node._boundary.length : 0,
-          this.node._parentBoundary ? this.node._parentBoundary.length : 0
-        );
-        if (this.lineLength <= maxBoundaryLength + BOUNDARY_LINE_OVERHEAD) {
+        if (this.lineLength <= this.maxBoundaryLength() + BOUNDARY_LINE_OVERHEAD) {
           return null;
         }
         if (this.state === HEAD) {
@@ -32092,7 +32450,7 @@ var require_message_splitter = __commonJS({
             case 2:
               break;
             case 3: {
-              this.newNode(this.parentMultipartNode());
+              this.newNode(this.delimiterOwner);
               flush = true;
               break;
             }
@@ -32101,7 +32459,7 @@ var require_message_splitter = __commonJS({
                 this.node.parseHeaders();
                 this.push(this.node);
               }
-              let parentNode = this.parentMultipartNode();
+              let parentNode = this.delimiterOwner;
               if (parentNode) {
                 this.node = parentNode;
                 this.inEpilogue = true;
@@ -32122,12 +32480,12 @@ var require_message_splitter = __commonJS({
         }
         switch (this.state) {
           case HEAD: {
-            this.node.addHeaderChunk(line);
+            let endsBlock = this.node.addHeaderChunk(line);
             let headSizeError = this.checkHeadSize();
             if (headSizeError) {
               return next(headSizeError);
             }
-            if (final || line.length === 1 && line[0] === 10 || line.length === 2 && line[0] === 13 && line[1] === 10) {
+            if (final || endsBlock) {
               let currentNode = this.node;
               currentNode.parseHeaders();
               if (currentNode.contentType === "message/rfc822" && !this.config.ignoreEmbedded && (!currentNode.encoding || ["7bit", "8bit", "binary"].includes(currentNode.encoding)) && (this.config.defaultInlineEmbedded ? currentNode.disposition !== "attachment" : currentNode.disposition === "inline")) {
@@ -32160,15 +32518,6 @@ var require_message_splitter = __commonJS({
           }
         }
         next(null, false);
-      }
-      /**
-       * Resolves the multipart node that owns the boundary of the current node, ie. the
-       * node a sibling delimiter or a closing delimiter of _parentBoundary refers to.
-       *
-       * @returns {MimeNodeType | false} Owner of _parentBoundary or false for the root node.
-       */
-      parentMultipartNode() {
-        return this.node._parentBoundaryOwner || false;
       }
       /**
        * @param {MimeNodeType | false} [parent]
@@ -32275,9 +32624,6 @@ var require_flowed_decoder = __commonJS({
       _flush(callback) {
         if (this.chunklen) {
           let currentBody = Buffer.concat(this.chunks, this.chunklen);
-          if (this.config.encoding === "base64") {
-            currentBody = Buffer.from(currentBody.toString("binary"), "base64");
-          }
           let content = this.libmime.decodeFlowed(currentBody.toString("binary"), this.config.delSp);
           this.push(Buffer.from(content, "binary"));
         }
@@ -32445,8 +32791,7 @@ var require_node_rewriter = __commonJS({
         if (/^text\//.test(node2.contentType || "") && node2.flowed) {
           let flowDecoder = decoder;
           decoder = new FlowedDecoder({
-            delSp: node2.delSp,
-            encoding: node2.encoding || false
+            delSp: node2.delSp
           });
           flowDecoder.on(
             "error",
@@ -32683,12 +33028,80 @@ var require_mailsplit = __commonJS({
   }
 });
 
-// ../node_modules/nodemailer/lib/addressparser/index.js
+// ../node_modules/nodemailer/dist/cjs/addressparser/index.js
 var require_addressparser = __commonJS({
-  "../node_modules/nodemailer/lib/addressparser/index.js"(exports, module) {
+  "../node_modules/nodemailer/dist/cjs/addressparser/index.js"(exports, module) {
     "use strict";
+    Object.defineProperty(exports, "__esModule", { value: true });
+    var TOKEN_OPERATOR = 1;
+    var TOKEN_NO_BREAK = 2;
+    var TOKEN_DIRTY = 4;
+    var TOKEN_ESCAPES = 8;
+    var TOKEN_STARTS_ESCAPED = 16;
+    var TokenList = class {
+      constructor(str) {
+        this.str = str;
+        this.slots = new Int32Array(48);
+        this.length = 0;
+        this.cleaned = /* @__PURE__ */ new Map();
+      }
+      /**
+       * Appends a token
+       *
+       * @param kind Kind and flags of the token
+       * @param start Offset of its first character
+       * @param end Offset just past its last character
+       * @return Index of the token
+       */
+      push(kind, start, end) {
+        if ((this.length + 1) * 3 > this.slots.length) {
+          const grown = new Int32Array(this.slots.length * 2);
+          grown.set(this.slots);
+          this.slots = grown;
+        }
+        const at = this.length * 3;
+        this.slots[at] = kind;
+        this.slots[at + 1] = start;
+        this.slots[at + 2] = end;
+        return this.length++;
+      }
+      /**
+       * The character of an operator token, an empty string for a text run
+       */
+      operatorAt(index) {
+        const at = index * 3;
+        return this.slots[at] & TOKEN_OPERATOR ? this.str.charAt(this.slots[at + 1]) : "";
+      }
+      /**
+       * Whether a token is an operator
+       */
+      isOperator(index) {
+        return (this.slots[index * 3] & TOKEN_OPERATOR) !== 0;
+      }
+      /**
+       * Whether the next character continues the run of a token without whitespace in between
+       */
+      noBreak(index) {
+        return (this.slots[index * 3] & TOKEN_NO_BREAK) !== 0;
+      }
+      /**
+       * Value of a token
+       */
+      value(index) {
+        const cleaned = this.cleaned.get(index);
+        if (cleaned !== void 0) {
+          return cleaned;
+        }
+        return this.str.slice(this.slots[index * 3 + 1], this.slots[index * 3 + 2]);
+      }
+    };
+    var DOMAIN_LITERAL_TAIL = /@(\[[^[\]\\]*\])$/;
+    function _domainAt(address) {
+      const literal2 = address.charAt(address.length - 1) === "]" ? DOMAIN_LITERAL_TAIL.exec(address) : null;
+      return literal2 ? address.length - literal2[1].length - 1 : address.lastIndexOf("@");
+    }
     function _quoteLocalPart(address) {
-      const lastAt = address.lastIndexOf("@");
+      const lastAt = _domainAt(address);
       if (lastAt < 0) {
         return address;
       }
@@ -32701,8 +33114,112 @@ var require_addressparser = __commonJS({
     var HAS_WHITESPACE = /\s/;
     var QUOTED_LOCAL_ADDR = /^("(?:[^"\\]|\\[\s\S])*"@\S+)(?:\s+([\s\S]+))?$/;
     var ADDR_SPEC = /^[^@\s]+@[^@\s]+$/;
+    var LITERAL_ADDR_SPEC = /^[^@\s]+@\[[^[\]\\\s]*\]$/;
+    var QUOTED_LOCAL_DOMAIN = /^@(?:[^@\s"]+|\[[^[\]\\\s]*\])$/;
+    function _isAddrSpec(value) {
+      return ADDR_SPEC.test(value) || LITERAL_ADDR_SPEC.test(value);
+    }
     var LOOSE_ADDR_SPEC = /^[^@\s]+@\S+$/;
+    var LOOSE_TEXT_ADDR = /\s*\b[^@\s]+@[^\s]+\b\s*/y;
+    function _isSpaceCode(code) {
+      return code === 32 || code >= 9 && code <= 13 || code === 160 || code === 5760 || code >= 8192 && code <= 8202 || code === 8232 || code === 8233 || code === 8239 || code === 8287 || code === 12288 || code === 65279;
+    }
+    function _isWordCode(code) {
+      return code >= 48 && code <= 57 || code >= 65 && code <= 90 || code >= 97 && code <= 122 || code === 95;
+    }
+    function _isBoundary(text, at) {
+      return _isWordCode(text.charCodeAt(at - 1)) !== _isWordCode(text.charCodeAt(at));
+    }
+    function _indexOfAt(text, from, to) {
+      for (let i = from; i < to; i++) {
+        if (text.charCodeAt(i) === 64) {
+          return i;
+        }
+      }
+      return -1;
+    }
+    var LEADING_QUOTED_STRING = /^"(?:[^"\\]|\\[\s\S])*"/;
+    function _joinAtSpacing(value, at) {
+      if (at < 0) {
+        return value;
+      }
+      let start = at;
+      while (start > 0 && _isSpaceCode(value.charCodeAt(start - 1))) {
+        start--;
+      }
+      let end = at + 1;
+      while (end < value.length && _isSpaceCode(value.charCodeAt(end))) {
+        end++;
+      }
+      return start === at && end === at + 1 ? value : value.slice(0, start) + "@" + value.slice(end);
+    }
+    function _collapseAtSpacing(value) {
+      const quoted = LEADING_QUOTED_STRING.exec(value);
+      if (quoted) {
+        let at2 = quoted[0].length;
+        while (at2 < value.length && _isSpaceCode(value.charCodeAt(at2))) {
+          at2++;
+        }
+        if (value.charAt(at2) === "@" && value.indexOf("@", at2 + 1) < 0) {
+          return _joinAtSpacing(value, at2);
+        }
+      }
+      const at = value.indexOf("@");
+      if (at < 0 || value.indexOf("@", at + 1) >= 0 || value.lastIndexOf('"') > at) {
+        return value;
+      }
+      return _joinAtSpacing(value, at);
+    }
+    function _looseAddressStart(text) {
+      const len = text.length;
+      let pos = 0;
+      while (pos < len) {
+        while (pos < len && _isSpaceCode(text.charCodeAt(pos))) {
+          pos++;
+        }
+        if (pos >= len) {
+          break;
+        }
+        const runStart = pos;
+        let runEnd = pos;
+        while (runEnd < len && !_isSpaceCode(text.charCodeAt(runEnd))) {
+          runEnd++;
+        }
+        let at = _indexOfAt(text, runStart, runEnd);
+        if (at >= 0) {
+          let lastBoundary = -1;
+          for (let k = runEnd; k > runStart; k--) {
+            if (_isBoundary(text, k)) {
+              lastBoundary = k;
+              break;
+            }
+          }
+          let atomStart = runStart;
+          while (lastBoundary >= 0 && at >= 0) {
+            if (at > atomStart && runEnd > at + 1 && lastBoundary > at + 1) {
+              for (let start = atomStart; start < at; start++) {
+                if (_isBoundary(text, start)) {
+                  if (start > runStart) {
+                    return start;
+                  }
+                  let padded = runStart;
+                  while (padded > 0 && _isSpaceCode(text.charCodeAt(padded - 1))) {
+                    padded--;
+                  }
+                  return padded;
+                }
+              }
+            }
+            atomStart = at + 1;
+            at = _indexOfAt(text, atomStart, runEnd);
+          }
+        }
+        pos = runEnd;
+      }
+      return -1;
+    }
     function _recoverAddrSpec(data) {
+      data.address = _collapseAtSpacing(data.address);
       if (!HAS_WHITESPACE.test(data.address)) {
         return;
       }
@@ -32720,7 +33237,7 @@ var require_addressparser = __commonJS({
           return;
         }
         const parts = data.address.split(/\s+/);
-        let addrIndex = parts.findIndex((part) => ADDR_SPEC.test(part));
+        let addrIndex = parts.findIndex(_isAddrSpec);
         if (addrIndex < 0) {
           addrIndex = parts.findIndex((part) => LOOSE_ADDR_SPEC.test(part));
         }
@@ -32733,34 +33250,107 @@ var require_addressparser = __commonJS({
       data.address = address;
       data.text = [data.text].concat(rest).filter((part) => part).join(" ");
     }
-    function _handleAddress(tokens, depth) {
-      let isGroup = false;
+    function _stripAddressComments(address) {
+      const comments = [];
+      let result = "";
+      let comment = "";
+      let depth = 0;
+      let closer = "";
+      let lastChar = "";
+      let pendingSpace = false;
+      let firstChar = "";
+      let quoteSeen = false;
+      let routeEnd = -1;
+      for (let i = 0, len = address.length; i < len; i++) {
+        const chr = address.charAt(i);
+        if (depth) {
+          if (chr === "\\" && i < len - 1) {
+            comment += address.charAt(++i);
+          } else if (chr === "(") {
+            depth++;
+            comment += chr;
+          } else if (chr === ")" && !--depth) {
+            comments.push(comment.trim());
+            comment = "";
+            pendingSpace = lastChar !== "@";
+          } else {
+            comment += chr;
+          }
+          continue;
+        }
+        if (pendingSpace && chr !== "(") {
+          pendingSpace = false;
+          if (chr !== "@" && chr !== "<" && !_isSpaceCode(address.charCodeAt(i))) {
+            result += " ";
+            lastChar = " ";
+          }
+        }
+        if (closer) {
+          if (chr === "\\" && closer === '"' && i < len - 1) {
+            result += chr + address.charAt(++i);
+            lastChar = address.charAt(i);
+            continue;
+          }
+          if (chr === closer) {
+            closer = "";
+          }
+        } else if (chr === '"') {
+          closer = '"';
+          quoteSeen = true;
+        } else if (chr === ":" && routeEnd < 0 && firstChar === "@" && !quoteSeen) {
+          routeEnd = result.length + 1;
+        } else if (chr === "[") {
+          closer = "]";
+        } else if (chr === "(") {
+          depth = 1;
+          continue;
+        } else if (chr === "<") {
+          result = "";
+          lastChar = "";
+          comments.length = 0;
+          firstChar = "";
+          quoteSeen = false;
+          routeEnd = -1;
+          continue;
+        }
+        result += chr;
+        lastChar = chr;
+        if (!firstChar && !_isSpaceCode(address.charCodeAt(i))) {
+          firstChar = chr;
+        }
+      }
+      if (routeEnd >= 0 && result.indexOf("@", routeEnd) >= 0) {
+        result = result.slice(routeEnd);
+      }
+      if (depth) {
+        comments.push(comment.trim());
+      }
+      return { address: result.trim(), comments: comments.filter((text) => text) };
+    }
+    function _collectAddressParts(tokens, from, to) {
       let state = "text";
-      const addresses = [];
       const data = {
         address: [],
         comment: [],
-        group: [],
         text: [],
-        textWasQuoted: []
+        textWasQuoted: [],
+        quotedLocalAt: []
       };
       let insideQuotes = false;
-      for (let i = 0, len = tokens.length; i < len; i++) {
-        const token = tokens[i];
-        const prevToken = i ? tokens[i - 1] : null;
-        if (token.type === "operator") {
-          switch (token.value) {
+      let lastTextPureQuoted = false;
+      const lastChars = { address: "", comment: "", text: "" };
+      for (let i = from; i < to; i++) {
+        const value = tokens.value(i);
+        const prevOperator = i > from ? tokens.operatorAt(i - 1) : "";
+        const prevNoBreak = i > from && tokens.noBreak(i - 1);
+        if (tokens.isOperator(i)) {
+          switch (value) {
             case "<":
               state = "address";
               insideQuotes = false;
               break;
             case "(":
               state = "comment";
-              insideQuotes = false;
-              break;
-            case ":":
-              state = "group";
-              isGroup = true;
               insideQuotes = false;
               break;
             case '"':
@@ -32772,21 +33362,94 @@ var require_addressparser = __commonJS({
               insideQuotes = false;
               break;
           }
-        } else if (token.value) {
-          if (state === "address") {
-            token.value = token.value.replace(/^[^<]*<\s*/, "");
-          }
+        } else {
+          const opensAfterEmptyQuotedString = prevOperator === '"' && prevNoBreak && i > from + 1 && tokens.operatorAt(i - 2) === '"';
           const parts = data[state];
-          const joins = prevToken && prevToken.noBreak && parts.length && (prevToken.value !== ")" || parts[parts.length - 1].slice(-1) === "@" || token.value.charAt(0) === "@");
+          const joins = prevNoBreak && parts.length && (prevOperator !== ")" || lastChars[state] === "@" || value.charAt(0) === "@");
           if (joins) {
-            data[state][data[state].length - 1] += token.value;
+            const last = data[state].length - 1;
+            if (state === "text" && !insideQuotes) {
+              if (lastTextPureQuoted && value.charAt(0) === "@") {
+                data.quotedLocalAt[last] = data.text[last].length;
+              }
+              lastTextPureQuoted = false;
+            }
+            data[state][last] += value;
+            lastChars[state] = value.charAt(value.length - 1);
             if (state === "text" && insideQuotes) {
-              data.textWasQuoted[data.textWasQuoted.length - 1] = true;
+              data.textWasQuoted[last] = true;
             }
           } else {
-            data[state].push(token.value);
+            data[state].push(value);
+            lastChars[state] = value.charAt(value.length - 1);
             if (state === "text") {
-              data.textWasQuoted.push(insideQuotes);
+              data.textWasQuoted.push(insideQuotes || opensAfterEmptyQuotedString);
+              data.quotedLocalAt.push(opensAfterEmptyQuotedString && value.charAt(0) === "@" ? 0 : -1);
+              lastTextPureQuoted = insideQuotes;
+            }
+          }
+        }
+      }
+      let textFromComment = false;
+      if (!data.text.length && data.comment.length) {
+        data.text = data.comment;
+        data.comment = [];
+        textFromComment = true;
+      }
+      return { data, textFromComment };
+    }
+    function _groupName(tokens, from, to) {
+      return _collectAddressParts(tokens, from, to).data.text.join(" ");
+    }
+    function _handleAddress(tokens, from, to) {
+      const collected = _collectAddressParts(tokens, from, to);
+      const data = collected.data;
+      let textFromComment = collected.textFromComment;
+      const addressComments = [];
+      const addressParts = [];
+      for (const part of data.address) {
+        const stripped = _stripAddressComments(part);
+        for (const comment of stripped.comments) {
+          addressComments.push(comment);
+        }
+        if (stripped.address) {
+          addressParts.push(stripped.address);
+        }
+      }
+      data.address = addressParts;
+      if (!data.address.length && data.text.length && !textFromComment) {
+        const candidates = data.text.map((part) => _collapseAtSpacing(part));
+        for (let i = 0; i < data.text.length; i++) {
+          const local = data.quotedLocalAt[i];
+          const quotedLocal = data.textWasQuoted[i] && local >= 0 && QUOTED_LOCAL_DOMAIN.test(data.text[i].slice(local)) ? _quoteLocalPart(data.text[i]) : "";
+          if (quotedLocal || !data.textWasQuoted[i] && _isAddrSpec(candidates[i])) {
+            data.address = [quotedLocal || candidates[i]];
+            data.text.splice(i, 1);
+            data.textWasQuoted.splice(i, 1);
+            data.quotedLocalAt.splice(i, 1);
+            break;
+          }
+        }
+        if (!data.address.length) {
+          let extracted = false;
+          for (let i = 0; i < data.text.length; i++) {
+            if (!data.textWasQuoted[i]) {
+              const part = candidates[i];
+              let remainder = data.text[i];
+              const at = _looseAddressStart(part);
+              if (at >= 0) {
+                LOOSE_TEXT_ADDR.lastIndex = at;
+                const match = LOOSE_TEXT_ADDR.exec(part);
+                if (match) {
+                  data.address = [match[0].trim()];
+                  extracted = true;
+                  remainder = part.slice(0, at) + " " + part.slice(at + match[0].length);
+                }
+              }
+              data.text[i] = remainder.trim();
+              if (extracted) {
+                break;
+              }
             }
           }
         }
@@ -32795,95 +33458,57 @@ var require_addressparser = __commonJS({
         data.text = data.comment;
         data.comment = [];
       }
-      if (isGroup) {
-        data.text = data.text.join(" ");
-        let groupMembers = [];
-        if (data.group.length) {
-          const parsedGroup = addressparser(data.group.join(","), { _depth: depth + 1 });
-          parsedGroup.forEach((member) => {
-            if (member.group) {
-              groupMembers = groupMembers.concat(member.group);
-            } else {
-              groupMembers.push(member);
-            }
-          });
-        }
-        addresses.push({
-          name: data.text || "",
-          group: groupMembers
-        });
-      } else {
-        if (!data.address.length && data.text.length) {
-          for (let i = data.text.length - 1; i >= 0; i--) {
-            if (!data.textWasQuoted[i] && ADDR_SPEC.test(data.text[i])) {
-              data.address = data.text.splice(i, 1);
-              data.textWasQuoted.splice(i, 1);
-              break;
-            }
-          }
-          if (!data.address.length) {
-            let extracted = false;
-            for (let i = data.text.length - 1; i >= 0; i--) {
-              if (!data.textWasQuoted[i]) {
-                data.text[i] = data.text[i].replace(/\s*\b[^@\s]+@[^\s]+\b\s*/, (match) => {
-                  if (!extracted) {
-                    data.address = [match.trim()];
-                    extracted = true;
-                    return " ";
-                  }
-                  return match;
-                }).trim();
-                if (extracted) {
-                  break;
-                }
-              }
-            }
-          }
-        }
-        if (!data.text.length && data.comment.length) {
-          data.text = data.comment;
-          data.comment = [];
-        }
-        if (data.address.length > 1) {
-          data.text = data.text.concat(data.address.splice(1));
-        }
-        const addressFromQuotedText = !data.address.length && data.textWasQuoted.some((wasQuoted) => wasQuoted);
-        data.text = data.text.join(" ");
-        data.address = data.address.join(" ");
-        _recoverAddrSpec(data);
-        const address = {
-          address: data.address || data.text || "",
-          name: data.text || data.address || ""
-        };
-        if (address.address === address.name) {
-          if (/@/.test(address.address || "")) {
-            address.name = "";
-          } else {
-            address.address = "";
-          }
-        }
-        if (addressFromQuotedText && address.address) {
-          address.address = _quoteLocalPart(address.address);
-        }
-        addresses.push(address);
+      if (data.address.length > 1) {
+        data.text = data.text.concat(data.address.splice(1));
       }
-      return addresses;
+      const addressFromQuotedText = !data.address.length && data.textWasQuoted.some((wasQuoted) => wasQuoted);
+      data.text = data.text.join(" ");
+      data.address = data.address.join(" ");
+      if (addressFromQuotedText && data.text.indexOf("@") >= 0) {
+        data.address = _quoteLocalPart(_joinAtSpacing(data.text, _domainAt(data.text)));
+        data.text = "";
+      }
+      _recoverAddrSpec(data);
+      if (!data.text && addressComments.length) {
+        data.text = addressComments.join(" ");
+        textFromComment = true;
+      }
+      const address = {
+        address: data.address || (textFromComment ? "" : data.text) || "",
+        name: data.text || data.address || ""
+      };
+      if (address.address === address.name) {
+        if (/@/.test(address.address || "")) {
+          address.name = "";
+        } else {
+          address.address = "";
+        }
+      }
+      return address;
     }
     var Tokenizer = class {
       constructor(str) {
         this.str = (str || "").toString();
         this.operatorCurrent = "";
         this.operatorExpecting = "";
-        this.node = null;
+        this.node = -1;
         this.escaped = false;
         this.inDomainLiteral = false;
-        this.list = [];
+        this.afterAt = false;
+        this.inGroup = false;
+        this.innerQuoted = false;
+        this.innerComment = 0;
+        this.innerLiteral = false;
+        this.innerEscaped = false;
+        this.list = new TokenList(this.str);
         this.operators = {
           '"': '"',
           "(": ")",
           "<": ">",
           ",": "",
-          ":": ";",
+          // A group is read in the same pass as the rest of the list, so its ':' only marks
+          // where the name ends and its members are tokenized like any other address
+          ":": "",
           // Semicolons are not a legal delimiter per the RFC2822 grammar other
           // than for terminating a group, but they are also not valid for any
           // other use in this context.  Given that some mail clients have
@@ -32896,124 +33521,286 @@ var require_addressparser = __commonJS({
       /**
        * Tokenizes the original input string
        *
-       * @return {Array} An array of operator|text tokens
+       * @return An array of operator|text tokens
        */
       tokenize() {
-        const list = [];
-        for (let i = 0, len = this.str.length; i < len; i++) {
-          const chr = this.str.charAt(i);
-          const nextChr = i < len - 1 ? this.str.charAt(i + 1) : null;
-          this.checkChar(chr, nextChr);
+        const str = this.str;
+        const len = str.length;
+        for (let i = 0; i < len; i++) {
+          this.checkChar(str.charAt(i), i);
         }
-        this.list.forEach((node2) => {
-          node2.value = (node2.value || "").toString().trim();
-          if (node2.value) {
-            list.push(node2);
+        this._closeText(len);
+        const list = this.list;
+        const slots = list.slots;
+        let kept = 0;
+        for (let i = 0, count = list.length; i < count; i++) {
+          const kind = slots[i * 3];
+          let start = slots[i * 3 + 1];
+          let end = slots[i * 3 + 2];
+          if (kind & TOKEN_DIRTY) {
+            const value = this._cleanValue(start, end, kind).trim();
+            if (!value) {
+              continue;
+            }
+            list.cleaned.set(kept, value);
+          } else if (!(kind & TOKEN_OPERATOR)) {
+            while (start < end && _isSpaceCode(str.charCodeAt(start))) {
+              start++;
+            }
+            while (end > start && _isSpaceCode(str.charCodeAt(end - 1))) {
+              end--;
+            }
+            if (start === end) {
+              continue;
+            }
           }
-        });
+          slots[kept * 3] = kind;
+          slots[kept * 3 + 1] = start;
+          slots[kept * 3 + 2] = end;
+          kept++;
+        }
+        list.length = kept;
         return list;
+      }
+      /**
+       * Ends the text run being collected, if there is one
+       *
+       * @param end Offset just past its last character
+       */
+      _closeText(end) {
+        if (this.node >= 0) {
+          this.list.slots[this.node * 3 + 2] = end;
+          this.node = -1;
+        }
+      }
+      /**
+       * Rebuilds the value of a text run that is no plain slice of the field, applying the
+       * rules checkChar collects characters by: an escaping backslash is dropped, a line break
+       * reads as a space and any other control character is left out
+       *
+       * @param start Offset of the first character of the run
+       * @param end Offset just past its last character
+       * @param kind Kind and flags of the run
+       * @return Value of the run
+       */
+      _cleanValue(start, end, kind) {
+        const str = this.str;
+        const escapes = (kind & TOKEN_ESCAPES) !== 0;
+        let escaped = (kind & TOKEN_STARTS_ESCAPED) !== 0;
+        let value = "";
+        for (let i = start; i < end; i++) {
+          const chr = str.charAt(i);
+          if (escapes && !escaped && chr === "\\") {
+            escaped = true;
+            continue;
+          }
+          escaped = false;
+          if (chr === "\n") {
+            value += " ";
+          } else if (chr.charCodeAt(0) >= 33 || chr === " " || chr === "	") {
+            value += chr;
+          }
+        }
+        return value;
       }
       /**
        * Checks if a character is an operator or text and acts accordingly
        *
-       * @param {String} chr Character from the address field
+       * @param chr Character from the address field
+       * @param i Offset of the character in the field
        */
-      checkChar(chr, nextChr) {
+      checkChar(chr, i) {
         if (!this.escaped && !this.operatorExpecting) {
-          if (!this.inDomainLiteral && chr === "[") {
+          if (!this.inDomainLiteral && chr === "[" && this.afterAt) {
             this.inDomainLiteral = true;
           } else if (this.inDomainLiteral && (chr === "]" || chr === "," || chr === ";")) {
             this.inDomainLiteral = false;
           }
         }
-        if (this.escaped) {
-        } else if (chr === this.operatorExpecting) {
-          this.node = {
-            type: "operator",
-            value: chr
-          };
-          if (nextChr && ![" ", "	", "\r", "\n", ",", ";"].includes(nextChr)) {
-            this.node.noBreak = true;
+        let nested = false;
+        if (this.operatorExpecting === ">") {
+          nested = this._trackInner(chr);
+          if (!nested && chr === ";" && this.inGroup) {
+            this._closeText(i);
+            this.operatorExpecting = "";
+            this._resetInner();
           }
-          this.list.push(this.node);
-          this.node = null;
+        } else if (this.operatorExpecting === ")" && !this.escaped) {
+          if (chr === "(") {
+            this.innerComment++;
+          } else if (chr === ")" && this.innerComment) {
+            this.innerComment--;
+            nested = true;
+          }
+        }
+        if (this.escaped) {
+        } else if (chr === this.operatorExpecting && !nested) {
+          const nextChr = this.str.charAt(i + 1);
+          this._closeText(i);
+          this.list.push(nextChr && ![" ", "	", "\r", "\n", ",", ";"].includes(nextChr) ? TOKEN_OPERATOR | TOKEN_NO_BREAK : TOKEN_OPERATOR, i, i + 1);
+          if (chr !== ")") {
+            this.afterAt = false;
+          }
           this.operatorExpecting = "";
           this.escaped = false;
+          this._resetInner();
           return;
-        } else if (!this.operatorExpecting && !this.inDomainLiteral && chr in this.operators) {
-          this.node = {
-            type: "operator",
-            value: chr
-          };
-          this.list.push(this.node);
-          this.node = null;
+        } else if (!this.operatorExpecting && !(this.inDomainLiteral && chr === ":") && chr in this.operators) {
+          this._closeText(i);
+          this.list.push(TOKEN_OPERATOR, i, i + 1);
+          if (chr === ":") {
+            this.inGroup = true;
+          } else if (chr === ";") {
+            this.inGroup = false;
+          }
+          if (chr !== "(") {
+            this.afterAt = false;
+          }
           this.operatorExpecting = this.operators[chr];
           this.escaped = false;
+          this._resetInner();
           return;
-        } else if (['"', "'"].includes(this.operatorExpecting) && chr === "\\") {
+        } else if (['"', "'", ")"].includes(this.operatorExpecting) && chr === "\\") {
           this.escaped = true;
+          if (this.node >= 0) {
+            this.list.slots[this.node * 3] |= TOKEN_DIRTY;
+          }
           return;
         }
-        if (!this.node) {
-          this.node = {
-            type: "text",
-            value: ""
-          };
-          this.list.push(this.node);
+        if (this.node < 0) {
+          this.node = this.list.push((this.operatorExpecting === '"' || this.operatorExpecting === ")" ? TOKEN_ESCAPES : 0) | (this.escaped ? TOKEN_STARTS_ESCAPED : 0), i, i);
         }
         if (chr === "\n") {
           chr = " ";
+          this.list.slots[this.node * 3] |= TOKEN_DIRTY;
         }
-        if (chr.charCodeAt(0) >= 33 || [" ", "	"].includes(chr)) {
-          this.node.value += chr;
+        if (chr.charCodeAt(0) >= 33 || chr === " " || chr === "	") {
+          if (!this.operatorExpecting && chr !== " " && chr !== "	") {
+            this.afterAt = chr === "@";
+          }
+        } else {
+          this.list.slots[this.node * 3] |= TOKEN_DIRTY;
         }
         this.escaped = false;
       }
-    };
-    var MAX_NESTED_GROUP_DEPTH = 50;
-    function addressparser(str, options) {
-      options = options || {};
-      const depth = options._depth || 0;
-      if (depth > MAX_NESTED_GROUP_DEPTH) {
-        return [];
-      }
-      const tokenizer = new Tokenizer(str);
-      const tokens = tokenizer.tokenize();
-      const addresses = [];
-      let address = [];
-      let parsedAddresses = [];
-      tokens.forEach((token) => {
-        if (token.type === "operator" && (token.value === "," || token.value === ";")) {
-          if (address.length) {
-            addresses.push(address);
+      /**
+       * Tracks the quoted strings, comments and domain literals inside an angle-addr, which its
+       * closer must not be read from. A backslash escapes the next character inside a quoted
+       * string and a comment. A domain literal opens right after an "@" and ends at the "]".
+       * dtext holds the list separators as well, and inside the brackets they never split the
+       * list anyway.
+       *
+       * @param chr Character from the address field
+       * @return true while the character sits inside one of them, the one that closes it included
+       */
+      _trackInner(chr) {
+        if (this.innerEscaped) {
+          this.innerEscaped = false;
+          return true;
+        }
+        if (this.innerQuoted) {
+          if (chr === "\\") {
+            this.innerEscaped = true;
+          } else if (chr === '"') {
+            this.innerQuoted = false;
           }
-          address = [];
-        } else {
-          address.push(token);
+          return true;
         }
-      });
-      if (address.length) {
-        addresses.push(address);
+        if (this.innerComment) {
+          if (chr === "\\") {
+            this.innerEscaped = true;
+          } else if (chr === "(") {
+            this.innerComment++;
+          } else if (chr === ")") {
+            this.innerComment--;
+          }
+          return true;
+        }
+        if (this.innerLiteral) {
+          if (chr === "]") {
+            this.innerLiteral = false;
+          }
+          return true;
+        }
+        if (chr === '"') {
+          this.innerQuoted = true;
+          return true;
+        }
+        if (chr === "(") {
+          this.innerComment = 1;
+          return true;
+        }
+        if (chr === "[" && this.afterAt) {
+          this.innerLiteral = true;
+          return true;
+        }
+        if (!_isSpaceCode(chr.charCodeAt(0))) {
+          this.afterAt = chr === "@";
+        }
+        return false;
       }
-      addresses.forEach((addr) => {
-        const handled = _handleAddress(addr, depth);
-        for (let i = 0; i < handled.length; i++) {
-          parsedAddresses.push(handled[i]);
-        }
-      });
-      const mergedAddresses = [];
-      for (let i = parsedAddresses.length - 1; i >= 0; i--) {
-        const current = parsedAddresses[i];
-        const next = mergedAddresses.length ? mergedAddresses[mergedAddresses.length - 1] : null;
+      /**
+       * Forgets the nesting collected for the operator that just opened or ended
+       */
+      _resetInner() {
+        this.innerQuoted = false;
+        this.innerComment = 0;
+        this.innerLiteral = false;
+        this.innerEscaped = false;
+      }
+    };
+    function _mergeNameFragments(list) {
+      const merged = [];
+      for (let i = list.length - 1; i >= 0; i--) {
+        const current = list[i];
+        const next = merged.length ? merged[merged.length - 1] : null;
         if (next && current.address === "" && current.name && !current.group && next.address && next.name) {
           next.name = current.name + ", " + next.name;
         } else {
-          mergedAddresses.push(current);
+          merged.push(current);
         }
       }
-      mergedAddresses.reverse();
-      parsedAddresses = mergedAddresses;
-      if (options.flatten) {
+      return merged.reverse();
+    }
+    function _parseAddressList(str) {
+      const tokens = new Tokenizer(str).tokenize();
+      const parsedAddresses = [];
+      let group = null;
+      let members2 = [];
+      let from = 0;
+      for (let i = 0, len = tokens.length; i <= len; i++) {
+        const operator = i < len ? tokens.operatorAt(i) : "";
+        if (i < len && operator !== "," && operator !== ";" && operator !== ":") {
+          continue;
+        }
+        if (operator === ":") {
+          if (!group) {
+            group = { name: _groupName(tokens, from, i), group: [] };
+            members2 = [];
+          }
+          from = i + 1;
+          continue;
+        }
+        if (i > from) {
+          const address = _handleAddress(tokens, from, i);
+          if (group) {
+            members2.push(address);
+          } else {
+            parsedAddresses.push(address);
+          }
+        }
+        from = i + 1;
+        if (group && (operator === ";" || i === len)) {
+          group.group = _mergeNameFragments(members2);
+          parsedAddresses.push(group);
+          group = null;
+        }
+      }
+      return _mergeNameFragments(parsedAddresses);
+    }
+    function addressparser(str, options) {
+      const parsedAddresses = _parseAddressList(str);
+      if (options?.flatten) {
         const flatAddresses = [];
         const walkAddressList = (list) => {
           list.forEach((entry) => {
@@ -33028,7 +33815,9 @@ var require_addressparser = __commonJS({
       }
       return parsedAddresses;
     }
-    module.exports = addressparser;
+    exports.default = addressparser;
+    module.exports = exports.default;
+    Object.defineProperty(module.exports, "default", { value: exports.default, enumerable: false, writable: true, configurable: true });
   }
 });
 
@@ -33282,7 +34071,7 @@ var require_stream_hash = __commonJS({
         super();
         this.attachment = attachment;
         this.algo = (algo || "md5").toLowerCase();
-        this.hash = crypto.createHash(algo);
+        this.hash = crypto.createHash(this.algo);
         this.byteCount = 0;
       }
       _transform(chunk, encoding, done) {
@@ -41192,10 +41981,10 @@ var require_html_to_text = __commonJS({
         }
       );
       return function(html, metadata = void 0) {
-        return process4(html, metadata, options, picker, findBaseElements, limitedWalk);
+        return process3(html, metadata, options, picker, findBaseElements, limitedWalk);
       };
     }
-    function process4(html, metadata, options, picker, findBaseElements, walk) {
+    function process3(html, metadata, options, picker, findBaseElements, walk) {
       const maxInputLength = options.limits.maxInputLength;
       if (maxInputLength && html && html.length > maxInputLength) {
         console.warn(
@@ -44091,6 +44880,8 @@ var require_mail_parser = __commonJS({
     var MAX_LINKIFY_SEGMENT_LENGTH = 4096;
     var MAX_LINKIFY_HOST_LABELS = 6;
     var MAX_LINKIFY_WORK = 768 * 1024 * 1024;
+    var MAX_INLINED_IMAGES_SIZE = 20 * 1024 * 1024;
+    var UNSAFE_LIST_KEYS = /* @__PURE__ */ new Set(["__proto__", "constructor", "prototype"]);
     linkify.tlds(tlds).tlds("onion", true).add("git:", "http:").add("ftp:", null).set({ fuzzyIP: true, fuzzyLink: true, fuzzyEmail: true });
     function isHostChar(code) {
       return code >= 97 && code <= 122 || code >= 65 && code <= 90 || code >= 48 && code <= 57 || code === 45 || code >= 128;
@@ -44113,6 +44904,92 @@ var require_mail_parser = __commonJS({
         match.url = "https://twitter.com/" + match.url.replace(/^@/, "");
       }
     });
+    function rfc2231ParamNames(value) {
+      let names = /* @__PURE__ */ new Set();
+      let quote = false;
+      let escaped = false;
+      let start = 0;
+      let addSegment = (end) => {
+        let segment = value.substring(start, end);
+        let eq = segment.indexOf("=");
+        if (eq < 0) {
+          return;
+        }
+        let match = segment.substring(0, eq).trim().toLowerCase().match(/^(.+?)\*(\d+\*?)?$/);
+        if (match) {
+          names.add(match[1]);
+        }
+      };
+      for (let i = 0; i < value.length; i++) {
+        let chr = value.charAt(i);
+        if (escaped) {
+          escaped = false;
+        } else if (chr === "\\") {
+          escaped = true;
+        } else if (chr === '"') {
+          quote = !quote;
+        } else if (chr === ";" && !quote) {
+          addSegment(i);
+          start = i + 1;
+        }
+      }
+      addSegment(value.length);
+      return names;
+    }
+    var MAX_HTML_NESTING_DEPTH = 1e3;
+    var HTML_VOID_ELEMENTS = /* @__PURE__ */ new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "param", "source", "track", "wbr"]);
+    var HTML_IMPLIED_END_ELEMENTS = /* @__PURE__ */ new Set(["p", "li", "dt", "dd", "option", "optgroup", "tr", "td", "th", "thead", "tbody", "tfoot", "rt", "rp"]);
+    function isTagNameChar(code) {
+      return code >= 97 && code <= 122 || code >= 65 && code <= 90 || code >= 48 && code <= 57 || code === 45 || code === 58 || code === 95;
+    }
+    function exceedsHtmlNestingDepth(html, maxDepth) {
+      let stack = [];
+      let open2 = /* @__PURE__ */ new Map();
+      let len = html.length;
+      let i = html.indexOf("<");
+      while (i >= 0) {
+        let pos = i + 1;
+        if (html.startsWith("!--", pos)) {
+          let end2 = html.indexOf("-->", pos + 3);
+          i = end2 < 0 ? -1 : html.indexOf("<", end2 + 3);
+          continue;
+        }
+        let closing = html.charCodeAt(pos) === 47;
+        if (closing) {
+          pos++;
+        }
+        let nameStart = pos;
+        while (pos < len && isTagNameChar(html.charCodeAt(pos))) {
+          pos++;
+        }
+        if (pos === nameStart) {
+          i = html.indexOf("<", pos);
+          continue;
+        }
+        let name = html.slice(nameStart, pos).toLowerCase();
+        let end = html.indexOf(">", pos);
+        if (end < 0) {
+          break;
+        }
+        if (!HTML_VOID_ELEMENTS.has(name) && !HTML_IMPLIED_END_ELEMENTS.has(name)) {
+          if (!closing) {
+            stack.push(name);
+            open2.set(name, (open2.get(name) || 0) + 1);
+            if (stack.length > maxDepth) {
+              return true;
+            }
+          } else if (open2.get(name)) {
+            let popped;
+            do {
+              popped = stack.pop();
+              open2.set(popped, open2.get(popped) - 1);
+            } while (popped !== name);
+          }
+        }
+        i = html.indexOf("<", end + 1);
+      }
+      return false;
+    }
     var IconvDecoder = class extends Transform {
       constructor(Iconv, charset) {
         super();
@@ -44203,7 +45080,6 @@ var require_mail_parser = __commonJS({
         this.textAsHtml = false;
         this.linkifyWork = 0;
         this.attachmentList = [];
-        this.boundaries = [];
         this.textTypes = ["text/plain", "text/html"].concat(!this.options.keepDeliveryStatus ? "message/delivery-status" : []);
         this.decoder = this.getDecoder();
         this.chunkedPassthrough.on("error", (err) => {
@@ -44242,7 +45118,7 @@ var require_mail_parser = __commonJS({
           return {
             decodeStream(charset) {
               charset = libmime.normalizeCharset((charset || "ascii").toString());
-              if (/^jis|^iso-?2022-?jp|^EUCJP/i.test(charset)) {
+              if (/^jis|^iso-?2022-?jp/i.test(charset)) {
                 return new JPDecoder(charset);
               }
               return iconv.decodeStream(charset);
@@ -44299,7 +45175,11 @@ var require_mail_parser = __commonJS({
         if (this.finished) {
           return this.cleanup(done);
         }
-        this.waitingEnd = () => {
+        this.waitingEnd = (err) => {
+          this.waitingEnd = false;
+          if (err) {
+            return done(err);
+          }
           this.cleanup(done);
         };
       }
@@ -44333,18 +45213,23 @@ var require_mail_parser = __commonJS({
           switch (key) {
             case "content-type":
             case "content-disposition":
-            case "dkim-signature":
+            case "dkim-signature": {
+              let rfc2231 = rfc2231ParamNames(value);
               value = this.libmime.parseHeaderValue(value);
               if (value.value) {
                 value.value = this.libmime.decodeWords(value.value);
               }
               Object.keys(value && value.params || {}).forEach((key2) => {
+                if (rfc2231.has(key2)) {
+                  return;
+                }
                 try {
                   value.params[key2] = this.libmime.decodeWords(value.params[key2]);
                 } catch (E) {
                 }
               });
               break;
+            }
             case "date": {
               let dateValue = new Date(value);
               if (isNaN(dateValue)) {
@@ -44407,7 +45292,10 @@ var require_mail_parser = __commonJS({
             if (!headers.has(key)) {
               headers.set(key, [].concat(value || []));
             } else if (Array.isArray(value)) {
-              headers.set(key, headers.get(key).concat(value));
+              let list = headers.get(key);
+              for (let entry of value) {
+                list.push(entry);
+              }
             } else {
               headers.get(key).push(value);
             }
@@ -44435,7 +45323,7 @@ var require_mail_parser = __commonJS({
         headers.forEach((value, key) => {
           if (Array.isArray(value)) {
             if (singleKeys.includes(key) && value.length) {
-              headers.set(key, value[value.length - 1]);
+              headers.set(key, value[0]);
             } else if (value.length === 1) {
               headers.set(key, value[0]);
             }
@@ -44453,6 +45341,9 @@ var require_mail_parser = __commonJS({
         return headers;
       }
       parseListHeader(key, value) {
+        if (UNSAFE_LIST_KEYS.has(key)) {
+          return false;
+        }
         let addresses = addressparser(value);
         let response = {};
         let data = addresses.map((address) => {
@@ -44516,28 +45407,9 @@ var require_mail_parser = __commonJS({
         return value;
       }
       decodeAddresses(addresses) {
-        let processedAddress = /* @__PURE__ */ new WeakSet();
         for (let i = 0; i < addresses.length; i++) {
           let address = addresses[i];
           address.name = (address.name || "").toString().trim();
-          if (!address.address && /^(=\?([^?]+)\?[Bb]\?[^?]*\?=)(\s*=\?([^?]+)\?[Bb]\?[^?]*\?=)*$/.test(address.name) && !processedAddress.has(address)) {
-            let decoded = this.libmime.decodeWords(address.name);
-            if (/<[^<>]+@[^<>]+>/.test(decoded)) {
-              let parsed = addressparser(decoded);
-              if (parsed.length) {
-                parsed.forEach((entry) => {
-                  processedAddress.add(entry);
-                  addresses.push(entry);
-                });
-              }
-              addresses.splice(i, 1);
-              i--;
-              continue;
-            } else {
-              address.name = decoded;
-              continue;
-            }
-          }
           if (address.name) {
             try {
               address.name = this.libmime.decodeWords(address.name);
@@ -44644,6 +45516,7 @@ var require_mail_parser = __commonJS({
       getTextContent() {
         let text = [];
         let html = [];
+        let textConversionError = null;
         let processNode = (alternative, level, node2) => {
           if (node2.showMeta) {
             let meta2 = ["From", "Subject", "Date", "To", "Cc", "Bcc"].map((fkey) => {
@@ -44716,27 +45589,29 @@ var require_mail_parser = __commonJS({
                 html.push(this.textToHtml(node2.textContent));
               }
             } else if (node2.contentType === "text/html") {
-              let failedToParseHtml = false;
               if (!alternative && this.hasText || node2.root && !this.hasText) {
                 if (this.options.skipHtmlToText) {
                   text.push("");
-                } else if (node2.textContent.length > this.options.maxHtmlLengthToParse) {
-                  this.emit("error", new Error(`HTML too long for parsing ${node2.textContent.length} bytes`));
-                  text.push("Invalid HTML content (too long)");
-                  failedToParseHtml = true;
                 } else {
-                  try {
-                    text.push(htmlToText(node2.textContent));
-                  } catch (err) {
-                    this.emit("error", new Error("Failed to parse HTML"));
-                    text.push("Invalid HTML content");
-                    failedToParseHtml = true;
+                  let err = null;
+                  if (node2.textContent.length > this.options.maxHtmlLengthToParse) {
+                    err = new Error(`HTML too long for parsing ${node2.textContent.length} bytes`);
+                  } else if (exceedsHtmlNestingDepth(node2.textContent, MAX_HTML_NESTING_DEPTH)) {
+                    err = new Error(`HTML nested deeper than ${MAX_HTML_NESTING_DEPTH} levels`);
+                  } else {
+                    try {
+                      text.push(htmlToText(node2.textContent, { limits: { maxDepth: MAX_HTML_NESTING_DEPTH } }));
+                    } catch (cause) {
+                      err = new Error("Failed to parse HTML", { cause });
+                    }
+                  }
+                  if (err) {
+                    text.push("");
+                    textConversionError = textConversionError || err;
                   }
                 }
               }
-              if (!failedToParseHtml) {
-                html.push(node2.textContent);
-              }
+              html.push(node2.textContent);
             }
           }
           alternative = alternative || node2.contentType === "multipart/alternative";
@@ -44757,12 +45632,15 @@ var require_mail_parser = __commonJS({
           this.text = response.text = text.join("\n");
           this.textAsHtml = response.textAsHtml = text.map((part) => this.textToHtml(part)).join("<br/>\n");
         }
+        if (textConversionError) {
+          response.textConversionError = textConversionError;
+        }
         return response;
       }
       processChunk(data, done) {
         let partId = null;
         if (data._parentBoundary) {
-          partId = this._getPartId(data._parentBoundary);
+          partId = (data.partNr || []).filter((nr) => typeof nr === "number").join(".") || null;
         }
         switch (data.type) {
           case "node": {
@@ -44789,6 +45667,9 @@ var require_mail_parser = __commonJS({
               if (node2.contentType === "application/octet-stream" && data.filename) {
                 contentType = this.libmime.detectMimeType(data.filename) || "application/octet-stream";
               }
+              let released = false;
+              let waitingDrain = false;
+              let pump = null;
               let attachment = {
                 type: "attachment",
                 content: null,
@@ -44796,6 +45677,11 @@ var require_mail_parser = __commonJS({
                 partId,
                 release: () => {
                   attachment.release = null;
+                  released = true;
+                  if (waitingDrain) {
+                    waitingDrain = false;
+                    pump();
+                  }
                   if (this.waitUntilAttachmentEnd && typeof this.attachmentCallback === "function") {
                     setImmediate(this.attachmentCallback);
                   }
@@ -44804,14 +45690,31 @@ var require_mail_parser = __commonJS({
                 }
               };
               let algo = this.options.checksumAlgo || "md5";
-              let hasher = new StreamHash(attachment, algo);
+              let hasher;
+              try {
+                hasher = new StreamHash(attachment, algo);
+              } catch (err) {
+                err.message = `Checksum algorithm "${algo}" is not available: ${err.message}`;
+                return done(err);
+              }
               node2.decoder.on("error", (err) => {
                 hasher.emit("error", err);
               });
-              node2.decoder.on("readable", () => {
+              pump = () => {
                 let chunk;
                 while ((chunk = node2.decoder.read()) !== null) {
-                  hasher.write(chunk);
+                  if (hasher.write(chunk) === false && !released) {
+                    waitingDrain = true;
+                    return hasher.once("drain", () => {
+                      waitingDrain = false;
+                      pump();
+                    });
+                  }
+                }
+              };
+              node2.decoder.on("readable", () => {
+                if (!waitingDrain) {
+                  pump();
                 }
               });
               node2.decoder.once("end", () => {
@@ -44911,21 +45814,6 @@ var require_mail_parser = __commonJS({
         }
         setImmediate(done);
       }
-      _getPartId(parentBoundary) {
-        let boundaryIndex = this.boundaries.findIndex((item) => item.name === parentBoundary);
-        if (boundaryIndex === -1) {
-          this.boundaries.push({ name: parentBoundary, count: 1 });
-          boundaryIndex = this.boundaries.length - 1;
-        } else {
-          this.boundaries[boundaryIndex].count++;
-        }
-        let partId = "1";
-        for (let i = 0; i <= boundaryIndex; i++) {
-          if (i === 0) partId = this.boundaries[i].count.toString();
-          else partId += "." + this.boundaries[i].count.toString();
-        }
-        return partId;
-      }
       getAddressesHTML(value) {
         let formatSingleLevel = (addresses) => addresses.map((address) => {
           let str = '<span class="mp_address_group">';
@@ -44951,7 +45839,7 @@ var require_mail_parser = __commonJS({
         let formatSingleLevel = (addresses) => addresses.map((address) => {
           let str = "";
           if (address.name) {
-            str += `"${address.name}"` + (address.group ? ": " : "");
+            str += `"${address.name.replace(/["\\]/g, "\\$&")}"` + (address.group ? ": " : "");
           }
           if (address.address) {
             let link = address.address;
@@ -44995,12 +45883,27 @@ var require_mail_parser = __commonJS({
         let pos = 0;
         let processNext = () => {
           if (pos >= cidList.length) {
-            html = html.replace(/\bcid:([^'"\s]{1,256})/g, (match, cid) => {
-              if (cids.has(cid) && cids.get(cid).url) {
-                return cids.get(cid).url;
-              }
-              return match;
-            });
+            let maxSize = this.options.maxInlinedImagesSize;
+            if (typeof maxSize !== "number" || !(maxSize >= 0)) {
+              maxSize = MAX_INLINED_IMAGES_SIZE;
+            }
+            let inlinedSize = 0;
+            try {
+              html = html.replace(/\bcid:([^'"\s]{1,256})/g, (match, cid) => {
+                let url = cids.has(cid) && cids.get(cid).url;
+                if (!url) {
+                  return match;
+                }
+                url = String(url);
+                if (inlinedSize + url.length > maxSize) {
+                  return match;
+                }
+                inlinedSize += url.length;
+                return url;
+              });
+            } catch (err) {
+              return done(err);
+            }
             return done(null, html);
           }
           let entry = cidList[pos++];
@@ -45126,6 +46029,15 @@ var require_simple_parser = __commonJS({
           callback = callbackPromise(resolve2, reject);
         });
       }
+      let settled = false;
+      let settle2 = callback;
+      callback = (...args) => {
+        if (settled) {
+          return;
+        }
+        settled = true;
+        settle2(...args);
+      };
       options = options || {};
       let keepCidLinks = !!options.keepCidLinks;
       let mail = {
@@ -45149,7 +46061,7 @@ var require_simple_parser = __commonJS({
         }
         if (data.type === "text") {
           Object.keys(data).forEach((key) => {
-            if (["text", "html", "textAsHtml"].includes(key)) {
+            if (["text", "html", "textAsHtml", "textConversionError"].includes(key)) {
               mail[key] = data[key];
             }
           });
@@ -62434,7 +63346,7 @@ var require_turndown_cjs = __commonJS({
           throw new TypeError(input + " is not a string, or an element/document/fragment node.");
         }
         if (input === "") return "";
-        var output = process4.call(this, new RootNode(input, this.options));
+        var output = process3.call(this, new RootNode(input, this.options));
         return postProcess.call(this, output);
       },
       /**
@@ -62499,7 +63411,7 @@ var require_turndown_cjs = __commonJS({
         return escapeMarkdown(string3);
       }
     };
-    function process4(parentNode) {
+    function process3(parentNode) {
       var self = this;
       return reduce.call(parentNode.childNodes, function(output, node2) {
         node2 = new Node(node2, self.options);
@@ -62523,7 +63435,7 @@ var require_turndown_cjs = __commonJS({
     }
     function replacementForNode(node2) {
       var rule = this.rules.forNode(node2);
-      var content = process4.call(this, node2);
+      var content = process3.call(this, node2);
       var whitespace = node2.flankingWhitespace;
       if (whitespace.leading || whitespace.trailing) content = content.trim();
       return whitespace.leading + rule.replacement(content, node2, this.options) + whitespace.trailing;
@@ -62571,6 +63483,7 @@ __export(util_exports, {
   createTransparentProxy: () => createTransparentProxy,
   defineLazy: () => defineLazy,
   defineLazyInternal: () => defineLazyInternal,
+  derived: () => derived,
   esc: () => esc,
   escapeRegex: () => escapeRegex,
   explicitlyAborted: () => explicitlyAborted,
@@ -62608,9 +63521,11 @@ __export(util_exports, {
   promiseAllObject: () => promiseAllObject,
   propertyKeyTypes: () => propertyKeyTypes,
   randomString: () => randomString,
+  rawShape: () => rawShape,
   required: () => required,
   safeExtend: () => safeExtend,
   shallowClone: () => shallowClone,
+  sizeCaps: () => sizeCaps,
   slugify: () => slugify,
   stringifyPrimitive: () => stringifyPrimitive,
   toZod: () => toZod,
@@ -62648,18 +63563,22 @@ function jsonStringifyReplacer(_, value) {
     return value.toString();
   return value;
 }
-function cached(getter) {
-  const set = false;
-  return {
-    get value() {
-      if (!set) {
-        const value = getter();
-        Object.defineProperty(this, "value", { value });
-        return value;
-      }
-      throw new Error("cached value already set");
+var Cached = class {
+  constructor(getter) {
+    this._getter = getter;
+    this._value = void 0;
+  }
+  get value() {
+    const getter = this._getter;
+    if (getter !== void 0) {
+      this._value = getter();
+      this._getter = void 0;
     }
-  };
+    return this._value;
+  }
+};
+function cached(getter) {
+  return new Cached(getter);
 }
 function nullish(input) {
   return input === null || input === void 0;
@@ -62710,6 +63629,56 @@ function assignProp(target, prop, value) {
     enumerable: true,
     configurable: true
   });
+}
+function rawShape(def) {
+  const desc = Object.getOwnPropertyDescriptor(def, "shape");
+  return desc?.get ? desc.get.raw : desc?.value;
+}
+function sourceShape(schema) {
+  return rawShape(schema._zod.def) ?? schema._zod.def.shape;
+}
+function deferProp(target, key, getter) {
+  Object.defineProperty(target, key, {
+    get() {
+      const value = getter();
+      assignProp(this, key, value);
+      return value;
+    },
+    enumerable: true,
+    configurable: true
+  });
+}
+function putProp(target, key, value) {
+  if (key in target)
+    assignProp(target, key, value);
+  else
+    target[key] = value;
+}
+function mirrorShape(target, source, keys, wrap) {
+  const raw = sourceShape(source);
+  for (const key of keys) {
+    const desc = Object.getOwnPropertyDescriptor(raw, key);
+    if (!desc.enumerable)
+      continue;
+    if (desc.get) {
+      deferProp(target, key, () => {
+        const value = source._zod.def.shape[key];
+        return wrap ? wrap(value, key) : value;
+      });
+    } else
+      putProp(target, key, wrap ? wrap(desc.value, key) : desc.value);
+  }
+}
+function mirrorProps(target, source) {
+  for (const key of Reflect.ownKeys(source)) {
+    const desc = Object.getOwnPropertyDescriptor(source, key);
+    if (!desc.enumerable)
+      continue;
+    if (desc.get)
+      deferProp(target, key, () => source[key]);
+    else
+      putProp(target, key, desc.value);
+  }
 }
 function mergeDefs(...defs) {
   const mergedDescriptors = {};
@@ -62949,23 +63918,21 @@ function pick(schema, mask) {
   if (hasChecks) {
     throw new Error(".pick() cannot be used on object schemas containing refinements");
   }
-  const def = mergeDefs(schema._zod.def, {
-    get shape() {
-      const newShape = {};
-      for (const key of Reflect.ownKeys(mask)) {
-        if (!Object.prototype.hasOwnProperty.call(currDef.shape, key)) {
-          throw new Error(`Unrecognized key: "${String(key)}"`);
-        }
-        if (!mask[key])
-          continue;
-        assignProp(newShape, key, currDef.shape[key]);
-      }
-      assignProp(this, "shape", newShape);
-      return newShape;
-    },
-    checks: []
-  });
-  return clone(schema, def);
+  const newShape = {};
+  mirrorShape(newShape, schema, maskedKeys(schema, mask));
+  return clone(schema, mergeDefs(currDef, { shape: newShape, checks: [] }));
+}
+function maskedKeys(schema, mask) {
+  const raw = sourceShape(schema);
+  const keys = [];
+  for (const key of Reflect.ownKeys(mask)) {
+    if (!Object.getOwnPropertyDescriptor(raw, key)?.enumerable) {
+      throw new Error(`Unrecognized key: "${String(key)}"`);
+    }
+    if (mask[key])
+      keys.push(key);
+  }
+  return keys;
 }
 function omit(schema, mask) {
   const currDef = schema._zod.def;
@@ -62974,23 +63941,10 @@ function omit(schema, mask) {
   if (hasChecks) {
     throw new Error(".omit() cannot be used on object schemas containing refinements");
   }
-  const def = mergeDefs(schema._zod.def, {
-    get shape() {
-      const newShape = { ...schema._zod.def.shape };
-      for (const key of Reflect.ownKeys(mask)) {
-        if (!Object.prototype.hasOwnProperty.call(currDef.shape, key)) {
-          throw new Error(`Unrecognized key: "${String(key)}"`);
-        }
-        if (!mask[key])
-          continue;
-        delete newShape[key];
-      }
-      assignProp(this, "shape", newShape);
-      return newShape;
-    },
-    checks: []
-  });
-  return clone(schema, def);
+  const omitted = new Set(maskedKeys(schema, mask));
+  const newShape = {};
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)).filter((key) => !omitted.has(key)));
+  return clone(schema, mergeDefs(currDef, { shape: newShape, checks: [] }));
 }
 function extend(schema, shape) {
   if (!isPlainObject(shape)) {
@@ -62999,34 +63953,26 @@ function extend(schema, shape) {
   const checks = schema._zod.def.checks;
   const hasChecks = checks && checks.length > 0;
   if (hasChecks) {
-    const existingShape = schema._zod.def.shape;
+    const existingShape = sourceShape(schema);
     for (const key of Reflect.ownKeys(shape)) {
       if (Object.getOwnPropertyDescriptor(existingShape, key) !== void 0) {
         throw new Error("Cannot overwrite keys on object schemas containing refinements. Use `.safeExtend()` instead.");
       }
     }
   }
-  const def = mergeDefs(schema._zod.def, {
-    get shape() {
-      const _shape = { ...schema._zod.def.shape, ...shape };
-      assignProp(this, "shape", _shape);
-      return _shape;
-    }
-  });
-  return clone(schema, def);
+  return clone(schema, mergeDefs(schema._zod.def, { shape: extended(schema, shape) }));
+}
+function extended(schema, shape) {
+  const newShape = {};
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)));
+  mirrorProps(newShape, shape);
+  return newShape;
 }
 function safeExtend(schema, shape) {
   if (!isPlainObject(shape)) {
     throw new Error("Invalid input to safeExtend: expected a plain object");
   }
-  const def = mergeDefs(schema._zod.def, {
-    get shape() {
-      const _shape = { ...schema._zod.def.shape, ...shape };
-      assignProp(this, "shape", _shape);
-      return _shape;
-    }
-  });
-  return clone(schema, def);
+  return clone(schema, mergeDefs(schema._zod.def, { shape: extended(schema, shape) }));
 }
 function merge(a, b) {
   if (!b?._zod?.def) {
@@ -63035,12 +63981,11 @@ function merge(a, b) {
   if (a._zod.def.checks?.length) {
     throw new Error(".merge() cannot be used on object schemas containing refinements. Use .safeExtend() instead.");
   }
+  const newShape = {};
+  mirrorShape(newShape, a, Reflect.ownKeys(sourceShape(a)));
+  mirrorShape(newShape, b, Reflect.ownKeys(sourceShape(b)));
   const def = mergeDefs(a._zod.def, {
-    get shape() {
-      const _shape = { ...a._zod.def.shape, ...b._zod.def.shape };
-      assignProp(this, "shape", _shape);
-      return _shape;
-    },
+    shape: newShape,
     get catchall() {
       return b._zod.def.catchall;
     },
@@ -63055,67 +64000,19 @@ function partial(Class2, schema, mask, name = "partial") {
   if (hasChecks) {
     throw new Error(`.${name}() cannot be used on object schemas containing refinements`);
   }
-  const def = mergeDefs(schema._zod.def, {
-    get shape() {
-      const oldShape = schema._zod.def.shape;
-      const shape = { ...oldShape };
-      if (mask) {
-        for (const key of Reflect.ownKeys(mask)) {
-          if (!Object.prototype.hasOwnProperty.call(oldShape, key)) {
-            throw new Error(`Unrecognized key: "${String(key)}"`);
-          }
-          if (!mask[key])
-            continue;
-          shape[key] = Class2 ? new Class2({
-            type: "optional",
-            innerType: oldShape[key]
-          }) : oldShape[key];
-        }
-      } else {
-        for (const key of Reflect.ownKeys(oldShape)) {
-          shape[key] = Class2 ? new Class2({
-            type: "optional",
-            innerType: oldShape[key]
-          }) : oldShape[key];
-        }
-      }
-      assignProp(this, "shape", shape);
-      return shape;
-    },
-    checks: []
-  });
-  return clone(schema, def);
+  const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
+  const newShape = {};
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), Class2 && ((value, key) => selected && !selected.has(key) ? value : new Class2({ type: "optional", innerType: value })));
+  return clone(schema, mergeDefs(schema._zod.def, { shape: newShape, checks: [] }));
 }
 function required(Class2, schema, mask) {
-  const def = mergeDefs(schema._zod.def, {
-    get shape() {
-      const oldShape = schema._zod.def.shape;
-      const shape = { ...oldShape };
-      if (mask) {
-        for (const key of Reflect.ownKeys(mask)) {
-          if (!Object.prototype.hasOwnProperty.call(shape, key)) {
-            throw new Error(`Unrecognized key: "${String(key)}"`);
-          }
-          if (!mask[key])
-            continue;
-          shape[key] = new Class2({
-            type: "nonoptional",
-            innerType: oldShape[key]
-          });
-        }
-      } else {
-        for (const key of Reflect.ownKeys(oldShape)) {
-          shape[key] = new Class2({
-            type: "nonoptional",
-            innerType: oldShape[key]
-          });
-        }
-      }
-      assignProp(this, "shape", shape);
-      return shape;
-    }
-  });
-  return clone(schema, def);
+  const selected = mask ? new Set(maskedKeys(schema, mask)) : void 0;
+  const newShape = {};
+  mirrorShape(newShape, schema, Reflect.ownKeys(sourceShape(schema)), (value, key) => (
+    // overwrite with non-optional
+    selected && !selected.has(key) ? value : new Class2({ type: "nonoptional", innerType: value })
+  ));
+  return clone(schema, mergeDefs(schema._zod.def, { shape: newShape }));
 }
 function aborted(x, startIndex = 0) {
   if (x.aborted === true)
@@ -63148,6 +64045,18 @@ function prefixIssues(path2, issues) {
 function unwrapMessage(message) {
   return typeof message === "string" ? message : message?.message;
 }
+function sizeCaps(defChecks) {
+  const caps = [];
+  for (const ch of defChecks ?? []) {
+    const d = ch._zod.def;
+    if (!/_(length|size)$|_equals$/.test(d.check))
+      break;
+    const max = d.maximum ?? d.length ?? d.size;
+    if (max >= 0)
+      caps.push([max, ch]);
+  }
+  return caps;
+}
 function attachSchema(issues, start, inst) {
   var _a3;
   for (let i = start; i < issues.length; i++) {
@@ -63165,13 +64074,18 @@ function finalizeIssue(iss, ctx, config2) {
   }
   const schemaError = iss.schema !== iss.inst ? iss.schema?._zod.def?.error : void 0;
   const message = iss.message ? iss.message : unwrapMessage(iss.inst?._zod.def?.error?.(iss)) ?? unwrapMessage(schemaError?.(iss)) ?? unwrapMessage(ctx?.error?.(iss)) ?? unwrapMessage(config2.customError?.(iss)) ?? unwrapMessage(config2.localeError?.(iss)) ?? "Invalid input";
-  const { inst: _inst, schema: _schema, continue: _continue, input: _input, ...rest } = iss;
-  rest.path ?? (rest.path = []);
-  rest.message = message;
-  if (ctx?.reportInput) {
-    rest.input = _input;
+  const full = {};
+  for (const k of Object.keys(iss)) {
+    if (k === "inst" || k === "schema" || k === "continue" || k === "input" || k === "__proto__")
+      continue;
+    full[k] = iss[k];
   }
-  return rest;
+  full.path ?? (full.path = []);
+  full.message = message;
+  if (ctx?.reportInput) {
+    full.input = iss.input;
+  }
+  return full;
 }
 function getSizableOrigin(input) {
   if (input instanceof Set)
@@ -63298,6 +64212,23 @@ function own(inst, key, value, enumerable = true) {
 function hide(inst, key, value) {
   return own(inst, key, value, false);
 }
+// @__NO_SIDE_EFFECTS__
+function derived(computes, table) {
+  for (const key in computes) {
+    const compute = computes[key];
+    Object.defineProperty(table, key, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return own(this, key, compute(this));
+      },
+      set(value) {
+        own(this, key, value);
+      }
+    });
+  }
+  return table;
+}
 function defineBound(proto, key, fn) {
   Object.defineProperty(proto, key, {
     configurable: true,
@@ -63422,8 +64353,7 @@ function $constructor(name, initializer3, proto, params) {
       } finally {
         _zodDesc.value = void 0;
       }
-    }
-    if (inst._zod.traits.has(name)) {
+    } else if (inst._zod.traits.has(name)) {
       return;
     }
     inst._zod.traits.add(name);
@@ -63513,16 +64443,12 @@ var _messageDesc = {
   enumerable: true,
   configurable: true
 };
-var _zodDesc2 = { value: void 0, enumerable: false };
 var _issuesDesc = { value: void 0, enumerable: false };
 var _installedToString = /* @__PURE__ */ new WeakSet([Object.prototype, Error.prototype]);
 var initializer = (inst, def) => {
   inst.name = "$ZodError";
-  _zodDesc2.value = inst._zod;
-  Object.defineProperty(inst, "_zod", _zodDesc2);
   _issuesDesc.value = def;
   Object.defineProperty(inst, "issues", _issuesDesc);
-  _zodDesc2.value = void 0;
   _issuesDesc.value = void 0;
   Object.defineProperty(inst, "message", _messageDesc);
   const proto = Object.getPrototypeOf(inst);
@@ -63658,23 +64584,69 @@ var _safeParse = (_Err) => (schema, value, _ctx) => {
   if (result instanceof Promise) {
     throw new $ZodAsyncError();
   }
-  return result.issues.length ? {
-    success: false,
-    error: new (_Err ?? $ZodError)(result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
-  } : { success: true, data: result.value };
+  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
 };
 var safeParse = /* @__PURE__ */ _safeParse($ZodRealError);
+function failure(Err, issues, ctx) {
+  let error2;
+  return {
+    success: false,
+    get error() {
+      if (!error2) {
+        error2 = new Err(issues.map((iss) => finalizeIssue(iss, ctx, config())));
+        issues = void 0;
+        ctx = void 0;
+      }
+      return error2;
+    },
+    set error(e) {
+      error2 = e;
+      issues = void 0;
+      ctx = void 0;
+    }
+  };
+}
 var _safeParseAsync = (_Err) => async (schema, value, _ctx) => {
   const ctx = _ctx ? { ..._ctx, async: true } : { async: true };
   let result = schema._zod.run({ value, issues: [] }, ctx);
   if (result instanceof Promise)
     result = await result;
-  return result.issues.length ? {
-    success: false,
-    error: new _Err(result.issues.map((iss) => finalizeIssue(iss, ctx, config())))
-  } : { success: true, data: result.value };
+  return result.issues.length ? failure(_Err, result.issues, ctx) : { success: true, data: result.value };
 };
-var safeParseAsync = /* @__PURE__ */ _safeParseAsync($ZodRealError);
+var COMPILE_INVALID = /* @__PURE__ */ Symbol.for("zod.compile.invalid");
+var COMPILE_FALLBACK = /* @__PURE__ */ Symbol.for("zod.compile.fallback");
+var validate = ((schema, value, _ctx) => {
+  const validator = schema._zod.bag.validator;
+  if (validator !== void 0) {
+    if (validator(value) !== COMPILE_INVALID)
+      return true;
+    if (validator.definite === true && _ctx === void 0)
+      return false;
+  }
+  return validateFallback(schema, value, _ctx);
+});
+function validateFallback(schema, value, _ctx) {
+  const ctx = _ctx ? { ..._ctx, async: false, abortEarly: true } : { async: false, abortEarly: true };
+  const fallbackRun = schema._zod.bag.fallbackRun;
+  let result;
+  if (fallbackRun) {
+    ctx[COMPILE_FALLBACK] = true;
+    result = fallbackRun({ value, issues: [] }, ctx);
+  } else {
+    result = schema._zod.run({ value, issues: [] }, ctx);
+  }
+  if (result instanceof Promise) {
+    throw new $ZodAsyncError();
+  }
+  return result.issues.length === 0;
+}
+var validateAsync = async (schema, value, _ctx) => {
+  const ctx = _ctx ? { ..._ctx, async: true, abortEarly: true } : { async: true, abortEarly: true };
+  let result = schema._zod.run({ value, issues: [] }, ctx);
+  if (result instanceof Promise)
+    result = await result;
+  return result.issues.length === 0;
+};
 var _encode = (_Err) => {
   const parse3 = _parse(_Err);
   const fn = (schema, value, _ctx, _params) => {
@@ -63737,8 +64709,8 @@ var uuid = (version2) => {
     return /^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[1-8][0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12}|00000000-0000-0000-0000-000000000000|ffffffff-ffff-ffff-ffff-ffffffffffff)$/;
   return new RegExp(`^([0-9a-fA-F]{8}-[0-9a-fA-F]{4}-${version2}[0-9a-fA-F]{3}-[89abAB][0-9a-fA-F]{3}-[0-9a-fA-F]{12})$`);
 };
-var email = /^(?!\.)(?!.*\.\.)([A-Za-z0-9_'+\-\.]*)[A-Za-z0-9_+-]@([A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
-var _emoji = `^[\\p{Extended_Pictographic}\\p{Emoji_Component}]+$`;
+var email = /^(?:[A-Za-z0-9_'+\-]+\.)*[A-Za-z0-9_'+\-]*[A-Za-z0-9_+-]@(?:[A-Za-z0-9][A-Za-z0-9\-]*\.)+[A-Za-z]{2,}$/;
+var _emoji = `^(?=[\\s\\S]*[\\p{Extended_Pictographic}\\p{Regional_Indicator}\\u20E3])[\\p{Extended_Pictographic}\\p{Emoji_Component}]+$`;
 function emoji() {
   return new RegExp(_emoji, "u");
 }
@@ -63747,7 +64719,7 @@ var ipv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|(
 var cidrv4 = /^((25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\.){3}(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9][0-9]|[0-9])\/([0-9]|[1-2][0-9]|3[0-2])$/;
 var cidrv6 = /^(([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,7}:|([0-9a-fA-F]{1,4}:){1,6}:[0-9a-fA-F]{1,4}|([0-9a-fA-F]{1,4}:){1,5}(:[0-9a-fA-F]{1,4}){1,2}|([0-9a-fA-F]{1,4}:){1,4}(:[0-9a-fA-F]{1,4}){1,3}|([0-9a-fA-F]{1,4}:){1,3}(:[0-9a-fA-F]{1,4}){1,4}|([0-9a-fA-F]{1,4}:){1,2}(:[0-9a-fA-F]{1,4}){1,5}|[0-9a-fA-F]{1,4}:((:[0-9a-fA-F]{1,4}){1,6})|:((:[0-9a-fA-F]{1,4}){1,7}|:))\/(12[0-8]|1[01][0-9]|[1-9]?[0-9])$/;
 var base64 = /^$|^(?:[0-9a-zA-Z+/]{4})*(?:(?:[0-9a-zA-Z+/]{2}==)|(?:[0-9a-zA-Z+/]{3}=))?$/;
-var base64url = /^[A-Za-z0-9_-]*$/;
+var base64url = /^(?:[A-Za-z0-9_-]{4})*(?:[A-Za-z0-9_-]{2,3})?$/;
 var httpProtocol = /^https?$/;
 var e164 = /^\+[1-9]\d{6,14}$/;
 var dateSource = `(?:(?:\\d\\d[2468][048]|\\d\\d[13579][26]|\\d\\d0[48]|[02468][048]00|[13579][26]00)-02-29|\\d{4}-(?:(?:0[13578]|1[02])-(?:0[1-9]|[12]\\d|3[01])|(?:0[469]|11)-(?:0[1-9]|[12]\\d|30)|(?:02)-(?:0[1-9]|1\\d|2[0-8])))`;
@@ -63771,10 +64743,7 @@ function datetime(args) {
   const timeRegex = args.local ? `${qualified}|${timeSource({ precision: args.precision })}` : qualified;
   return new RegExp(`^${dateSource}T(?:${timeRegex})$`);
 }
-var string = (params) => {
-  const regex = params ? `[\\s\\S]{${params?.minimum ?? 0},${params?.maximum ?? ""}}` : `[\\s\\S]*`;
-  return new RegExp(`^${regex}$`);
-};
+var anyString = /^[\s\S]{0,}$/;
 var integer = /^-?\d+$/;
 var number = /^-?\d+(?:\.\d+)?$/;
 var boolean = /^(?:true|false)$/i;
@@ -63801,16 +64770,6 @@ var numericOriginMap = {
 var $ZodCheckLessThan = /* @__PURE__ */ $constructor("$ZodCheckLessThan", (inst, def) => {
   $ZodCheck.init(inst, def);
   const origin = numericOriginMap[typeof def.value];
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    const curr = (def.inclusive ? bag.maximum : bag.exclusiveMaximum) ?? Number.POSITIVE_INFINITY;
-    if (def.value < curr) {
-      if (def.inclusive)
-        bag.maximum = def.value;
-      else
-        bag.exclusiveMaximum = def.value;
-    }
-  });
   inst._zod.check = (payload) => {
     if (def.inclusive ? payload.value <= def.value : payload.value < def.value) {
       return;
@@ -63829,16 +64788,6 @@ var $ZodCheckLessThan = /* @__PURE__ */ $constructor("$ZodCheckLessThan", (inst,
 var $ZodCheckGreaterThan = /* @__PURE__ */ $constructor("$ZodCheckGreaterThan", (inst, def) => {
   $ZodCheck.init(inst, def);
   const origin = numericOriginMap[typeof def.value];
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    const curr = (def.inclusive ? bag.minimum : bag.exclusiveMinimum) ?? Number.NEGATIVE_INFINITY;
-    if (def.value > curr) {
-      if (def.inclusive)
-        bag.minimum = def.value;
-      else
-        bag.exclusiveMinimum = def.value;
-    }
-  });
   inst._zod.check = (payload) => {
     if (def.inclusive ? payload.value >= def.value : payload.value > def.value) {
       return;
@@ -63856,10 +64805,6 @@ var $ZodCheckGreaterThan = /* @__PURE__ */ $constructor("$ZodCheckGreaterThan", 
 });
 var $ZodCheckMultipleOf = /* @__PURE__ */ $constructor("$ZodCheckMultipleOf", (inst, def) => {
   $ZodCheck.init(inst, def);
-  inst._zod.onattach.push((inst2) => {
-    var _a3;
-    (_a3 = inst2._zod.bag).multipleOf ?? (_a3.multipleOf = def.value);
-  });
   inst._zod.check = (payload) => {
     if (typeof payload.value !== typeof def.value)
       throw new Error("Cannot mix number and bigint in multiple_of check.");
@@ -63885,14 +64830,6 @@ var $ZodCheckNumberFormat = /* @__PURE__ */ $constructor("$ZodCheckNumberFormat"
   const isInt = def.format?.includes("int");
   const origin = isInt ? "int" : "number";
   const [minimum, maximum] = NUMBER_FORMAT_RANGES[def.format];
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    bag.format = def.format;
-    bag.minimum = minimum;
-    bag.maximum = maximum;
-    if (isInt)
-      bag.pattern = integer;
-  });
   inst._zod.check = (payload) => {
     const input = payload.value;
     if (isInt) {
@@ -63962,11 +64899,6 @@ var $ZodCheckMaxLength = /* @__PURE__ */ $constructor("$ZodCheckMaxLength", (ins
   var _a3;
   $ZodCheck.init(inst, def);
   (_a3 = inst._zod.def).when ?? (_a3.when = _whenHasLength);
-  inst._zod.onattach.push((inst2) => {
-    const curr = inst2._zod.bag.maximum ?? Number.POSITIVE_INFINITY;
-    if (def.maximum < curr)
-      inst2._zod.bag.maximum = def.maximum;
-  });
   inst._zod.check = (payload) => {
     const input = payload.value;
     const units = input.length;
@@ -63989,11 +64921,6 @@ var $ZodCheckMinLength = /* @__PURE__ */ $constructor("$ZodCheckMinLength", (ins
   var _a3;
   $ZodCheck.init(inst, def);
   (_a3 = inst._zod.def).when ?? (_a3.when = _whenHasLength);
-  inst._zod.onattach.push((inst2) => {
-    const curr = inst2._zod.bag.minimum ?? Number.NEGATIVE_INFINITY;
-    if (def.minimum > curr)
-      inst2._zod.bag.minimum = def.minimum;
-  });
   inst._zod.check = (payload) => {
     const input = payload.value;
     const units = input.length;
@@ -64016,12 +64943,6 @@ var $ZodCheckLengthEquals = /* @__PURE__ */ $constructor("$ZodCheckLengthEquals"
   var _a3;
   $ZodCheck.init(inst, def);
   (_a3 = inst._zod.def).when ?? (_a3.when = _whenHasLength);
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    bag.minimum = def.length;
-    bag.maximum = def.length;
-    bag.length = def.length;
-  });
   inst._zod.check = (payload) => {
     const input = payload.value;
     const units = input.length;
@@ -64044,14 +64965,6 @@ var $ZodCheckLengthEquals = /* @__PURE__ */ $constructor("$ZodCheckLengthEquals"
 var $ZodCheckStringFormat = /* @__PURE__ */ $constructor("$ZodCheckStringFormat", (inst, def) => {
   var _a3, _b;
   $ZodCheck.init(inst, def);
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    bag.format = def.format;
-    if (def.pattern) {
-      bag.patterns ?? (bag.patterns = /* @__PURE__ */ new Set());
-      bag.patterns.add(def.pattern);
-    }
-  });
   if (def.pattern)
     (_a3 = inst._zod).check ?? (_a3.check = (payload) => {
       def.pattern.lastIndex = 0;
@@ -64101,11 +65014,6 @@ var $ZodCheckIncludes = /* @__PURE__ */ $constructor("$ZodCheckIncludes", (inst,
   const escapedRegex = escapeRegex(def.includes);
   const pattern = new RegExp(typeof def.position === "number" ? `^.{${def.position},}${escapedRegex}` : escapedRegex);
   def.pattern = pattern;
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    bag.patterns ?? (bag.patterns = /* @__PURE__ */ new Set());
-    bag.patterns.add(pattern);
-  });
   inst._zod.check = (payload) => {
     if (payload.value.includes(def.includes, def.position))
       return;
@@ -64124,11 +65032,6 @@ var $ZodCheckStartsWith = /* @__PURE__ */ $constructor("$ZodCheckStartsWith", (i
   $ZodCheck.init(inst, def);
   const pattern = new RegExp(`^${escapeRegex(def.prefix)}.*`);
   def.pattern ?? (def.pattern = pattern);
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    bag.patterns ?? (bag.patterns = /* @__PURE__ */ new Set());
-    bag.patterns.add(pattern);
-  });
   inst._zod.check = (payload) => {
     if (payload.value.startsWith(def.prefix))
       return;
@@ -64147,11 +65050,6 @@ var $ZodCheckEndsWith = /* @__PURE__ */ $constructor("$ZodCheckEndsWith", (inst,
   $ZodCheck.init(inst, def);
   const pattern = new RegExp(`.*${escapeRegex(def.suffix)}$`);
   def.pattern ?? (def.pattern = pattern);
-  inst._zod.onattach.push((inst2) => {
-    const bag = inst2._zod.bag;
-    bag.patterns ?? (bag.patterns = /* @__PURE__ */ new Set());
-    bag.patterns.add(pattern);
-  });
   inst._zod.check = (payload) => {
     if (payload.value.endsWith(def.suffix))
       return;
@@ -64181,10 +65079,14 @@ var Doc = class {
     this.args = args;
     this.closed = closed;
   }
+  // the compiler catches a child's throw and keeps writing into this doc, so the indent has to unwind with it
   indented(fn) {
     this.indent += 1;
-    fn(this);
-    this.indent -= 1;
+    try {
+      fn(this);
+    } finally {
+      this.indent -= 1;
+    }
   }
   write(arg) {
     if (typeof arg === "function") {
@@ -64213,8 +65115,8 @@ ${content.join("\n")}
 // node_modules/zod/v4/core/versions.js
 var version = {
   major: 4,
-  minor: 5,
-  patch: 4
+  minor: 6,
+  patch: 7
 };
 
 // node_modules/zod/v4/core/schemas.js
@@ -64327,15 +65229,22 @@ var $ZodType = /* @__PURE__ */ $constructor("$ZodType", (inst, def) => {
     own(this, "~standard", value);
   }
 });
-var toStandardResult = (r) => r.success ? { value: r.data } : { issues: r.error?.issues };
+var toStandardResult = (r, ctx) => r.issues.length ? { issues: r.issues.map((iss) => finalizeIssue(iss, ctx, config())) } : { value: r.value };
+async function validateAsync2(inst, value) {
+  const ctx = { async: true };
+  return toStandardResult(await inst._zod.run({ value, issues: [] }, ctx), ctx);
+}
 function standardProps(inst) {
   return {
     validate: (value) => {
+      const ctx = { async: false };
       try {
-        return toStandardResult(safeParse(inst, value));
+        const r = inst._zod.run({ value, issues: [] }, ctx);
+        if (!(r instanceof Promise))
+          return toStandardResult(r, ctx);
       } catch (_) {
-        return safeParseAsync(inst, value).then(toStandardResult);
       }
+      return validateAsync2(inst, value);
     },
     vendor: "zod",
     version: 1
@@ -64343,7 +65252,7 @@ function standardProps(inst) {
 }
 var $ZodString = /* @__PURE__ */ $constructor("$ZodString", (inst, def) => {
   $ZodType.init(inst, def);
-  inst._zod.pattern = [...inst?._zod.bag?.patterns ?? []].pop() ?? string(inst._zod.bag);
+  inst._zod.pattern = def.pattern ?? anyString;
   inst._zod.parse = (payload, _) => {
     if (def.coerce)
       try {
@@ -64395,11 +65304,32 @@ var $ZodEmail = /* @__PURE__ */ $constructor("$ZodEmail", (inst, def) => {
 });
 var URL_BAD_FORMAT = 1;
 var URL_UNPARSEABLE = 2;
+function canParseURL(input) {
+  try {
+    if (typeof URL !== "undefined" && typeof URL.canParse === "function")
+      return URL.canParse(input);
+    new URL(input);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function validateURL(trimmed, def) {
+  if (!("normalize" in def) && !("hostname" in def) && !("protocol" in def)) {
+    return canParseURL(trimmed) || URL_UNPARSEABLE;
+  }
+  return parseURLObject(trimmed, def);
+}
 function parseURLObject(trimmed, def) {
   if (!def.normalize && def.protocol?.source === httpProtocol.source && !/^https?:\/\//i.test(trimmed)) {
     return URL_BAD_FORMAT;
   }
   try {
+    if (typeof URL !== "undefined") {
+      const URLStatic = URL;
+      if (typeof URLStatic.parse === "function")
+        return URLStatic.parse(trimmed) ?? URL_UNPARSEABLE;
+    }
     return new URL(trimmed);
   } catch {
     return URL_UNPARSEABLE;
@@ -64422,7 +65352,7 @@ var $ZodURL = /* @__PURE__ */ $constructor("$ZodURL", (inst, def) => {
   inst._zod.check = (payload) => {
     try {
       const trimmed = payload.value.trim();
-      const url = parseURLObject(trimmed, def);
+      const url = validateURL(trimmed, def);
       if (url === URL_BAD_FORMAT) {
         payload.issues.push({
           code: "invalid_format",
@@ -64442,6 +65372,10 @@ var $ZodURL = /* @__PURE__ */ $constructor("$ZodURL", (inst, def) => {
           inst,
           continue: !def.abort
         });
+        return;
+      }
+      if (url === true) {
+        payload.value = stripTabAndNewline(trimmed);
         return;
       }
       if (def.hostname && !urlHostnameOk(url, def.hostname)) {
@@ -64512,12 +65446,6 @@ var $ZodKSUID = /* @__PURE__ */ $constructor("$ZodKSUID", (inst, def) => {
 var $ZodISODateTime = /* @__PURE__ */ $constructor("$ZodISODateTime", (inst, def) => {
   def.pattern ?? (def.pattern = datetime(def));
   $ZodStringFormat.init(inst, def);
-  if (def.local || def.precision === -1) {
-    inst._zod.bag.laxFormat = true;
-    inst._zod.onattach.push((s) => {
-      s._zod.bag.laxFormat = true;
-    });
-  }
 });
 var $ZodISODate = /* @__PURE__ */ $constructor("$ZodISODate", (inst, def) => {
   def.pattern ?? (def.pattern = date);
@@ -64534,23 +65462,16 @@ var $ZodISODuration = /* @__PURE__ */ $constructor("$ZodISODuration", (inst, def
 var $ZodIPv4 = /* @__PURE__ */ $constructor("$ZodIPv4", (inst, def) => {
   def.pattern ?? (def.pattern = ipv4);
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.format = `ipv4`;
 });
 var ipv6Alphabet = /^[0-9a-fA-F:.]+$/;
 function isValidIPv6(value) {
   if (!ipv6Alphabet.test(value))
     return false;
-  try {
-    new URL(`http://[${value}]`);
-    return true;
-  } catch {
-    return false;
-  }
+  return canParseURL(`http://[${value}]`);
 }
 var $ZodIPv6 = /* @__PURE__ */ $constructor("$ZodIPv6", (inst, def) => {
   def.pattern ?? (def.pattern = ipv6);
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.format = `ipv6`;
   inst._zod.check = (payload) => {
     if (!isValidIPv6(payload.value)) {
       payload.issues.push({
@@ -64610,10 +65531,10 @@ function isValidBase64(data) {
     return false;
   }
 }
+var base64Charset = /^[0-9a-zA-Z+/]*={0,2}$/;
 var $ZodBase64 = /* @__PURE__ */ $constructor("$ZodBase64", (inst, def) => {
-  def.pattern ?? (def.pattern = base64);
+  def.pattern ?? (def.pattern = base64Charset);
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.contentEncoding = "base64";
   inst._zod.check = (payload) => {
     if (isValidBase64(payload.value))
       return;
@@ -64626,17 +65547,17 @@ var $ZodBase64 = /* @__PURE__ */ $constructor("$ZodBase64", (inst, def) => {
     });
   };
 });
+var base64urlCharset = /^[A-Za-z0-9_-]*$/;
 function isValidBase64URL(data) {
-  if (!base64url.test(data))
+  if (!base64urlCharset.test(data))
     return false;
   const base642 = data.replace(/[-_]/g, (c) => c === "-" ? "+" : "/");
   const padded = base642.padEnd(Math.ceil(base642.length / 4) * 4, "=");
   return isValidBase64(padded);
 }
 var $ZodBase64URL = /* @__PURE__ */ $constructor("$ZodBase64URL", (inst, def) => {
-  def.pattern ?? (def.pattern = base64url);
+  def.pattern ?? (def.pattern = base64urlCharset);
   $ZodStringFormat.init(inst, def);
-  inst._zod.bag.contentEncoding = "base64url";
   inst._zod.check = (payload) => {
     if (isValidBase64URL(payload.value))
       return;
@@ -64689,7 +65610,7 @@ var $ZodJWT = /* @__PURE__ */ $constructor("$ZodJWT", (inst, def) => {
 });
 var $ZodNumber = /* @__PURE__ */ $constructor("$ZodNumber", (inst, def) => {
   $ZodType.init(inst, def);
-  inst._zod.pattern = inst._zod.bag.pattern ?? number;
+  inst._zod.pattern = number;
   inst._zod.parse = (payload, _ctx) => {
     if (def.coerce)
       try {
@@ -64769,6 +65690,29 @@ var $ZodNever = /* @__PURE__ */ $constructor("$ZodNever", (inst, def) => {
     return payload;
   };
 });
+function capSize(inst, size) {
+  const caps = sizeCaps(inst._zod.def.checks);
+  if (!caps.length)
+    return;
+  const cap = Math.min(...caps.map((c) => c[0]));
+  const parse3 = inst._zod.parse;
+  inst._zod.parse = (payload, ctx) => {
+    const n = size(payload.value);
+    if (n > cap && !ctx?.skipChecks && ctx?.direction !== "backward") {
+      for (const [max, ch] of sizeCaps(inst._zod.def.checks)) {
+        if (n > max && ch._zod.def.when(payload)) {
+          const start = payload.issues.length;
+          ch._zod.check(payload);
+          payload.issues[start].continue = false;
+          attachSchema(payload.issues, start, inst);
+          return payload;
+        }
+      }
+    }
+    return parse3(payload, ctx);
+  };
+}
+var arraySize = (input) => Array.isArray(input) ? input.length : -1;
 function handleArrayResult(result, final, index) {
   if (result.issues.length) {
     final.issues.push(...prefixIssues(index, result.issues));
@@ -64792,6 +65736,7 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     }
     payload.value = memo2 ? memo2.alloc(inst, payload, Array(input.length), ctx) : Array(input.length);
     const proms = [];
+    const abortEarly = ctx?.abortEarly;
     for (let i = 0; i < input.length; i++) {
       const item = input[i];
       const result = def.element._zod.run({
@@ -64802,6 +65747,8 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
         proms.push(result.then((result2) => handleArrayResult(result2, payload, i)));
       } else {
         handleArrayResult(result, payload, i);
+        if (abortEarly && result.issues.length !== 0 && aborted(result))
+          break;
       }
     }
     if (proms.length) {
@@ -64809,6 +65756,7 @@ var $ZodArray = /* @__PURE__ */ $constructor("$ZodArray", (inst, def) => {
     }
     return payload;
   };
+  capSize(inst, arraySize);
 });
 function handlePropertyResult(result, final, key, input, optin, optout) {
   const isPresent = key in input;
@@ -64834,7 +65782,7 @@ function handlePropertyResult(result, final, key, input, optin, optout) {
     return;
   }
   if (result.value === void 0) {
-    if (isPresent) {
+    if (isPresent || optin === "defaulted" && !isOptionalOut) {
       final.value[key] = void 0;
     }
   } else {
@@ -64863,14 +65811,20 @@ function normalizeDef(def) {
     optionalKeys: new Set(okeys)
   };
 }
-function handleCatchall(proms, input, payload, ctx, def, inst) {
+function handleCatchall(proms, input, payload, ctx, def, inst, abortEarly) {
   const unrecognized = [];
   const keySet = def.keySet;
   const _catchall = def.catchall._zod;
   const t = _catchall.def.type;
   const optin = _catchall.optin;
   const optout = _catchall.optout;
+  let seen = 0;
   for (const key in input) {
+    if (abortEarly && payload.issues.length !== seen) {
+      if (aborted(payload, seen))
+        break;
+      seen = payload.issues.length;
+    }
     if (keySet.has(key))
       continue;
     if (key === "__proto__") {
@@ -64905,23 +65859,19 @@ function handleCatchall(proms, input, payload, ctx, def, inst) {
     return payload;
   });
 }
-var propShapes = /* @__PURE__ */ new WeakMap();
 var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
   $ZodType.init(inst, def);
   const desc = Object.getOwnPropertyDescriptor(def, "shape");
-  if (!desc?.get) {
-    const sh = def.shape;
-    propShapes.set(def, sh);
-    Object.defineProperty(def, "shape", {
-      get: () => {
-        const newSh = { ...sh };
-        Object.defineProperty(def, "shape", {
-          value: newSh
-        });
-        propShapes.set(def, newSh);
-        return newSh;
-      }
-    });
+  const sh = desc?.get ? desc.get.raw : def.shape ?? {};
+  if (sh) {
+    const get = () => {
+      const newSh = { ...sh };
+      Object.defineProperty(def, "shape", { value: newSh });
+      get.raw = newSh;
+      return newSh;
+    };
+    get.raw = sh;
+    Object.defineProperty(def, "shape", { get });
   }
   const _normalized = cached(() => normalizeDef(def));
   defineLazyInternal(inst, "propValues", (zod) => {
@@ -64961,7 +65911,14 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     payload.value = memo2 ? memo2.alloc(inst, payload, {}, ctx) : {};
     const proms = [];
     const shape = value.shape;
+    const abortEarly = ctx?.abortEarly;
+    let seen = payload.issues.length;
     for (const key of value.allKeys) {
+      if (abortEarly && payload.issues.length !== seen) {
+        if (aborted(payload, seen))
+          break;
+        seen = payload.issues.length;
+      }
       if (key === "__proto__")
         continue;
       const el = shape[key];
@@ -64977,7 +65934,7 @@ var $ZodObject = /* @__PURE__ */ $constructor("$ZodObject", (inst, def) => {
     if (!catchall) {
       return proms.length ? Promise.all(proms).then(() => payload) : payload;
     }
-    return handleCatchall(proms, input, payload, ctx, _normalized.value, inst);
+    return handleCatchall(proms, input, payload, ctx, _normalized.value, inst, abortEarly === true);
   };
 });
 var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) => {
@@ -64991,10 +65948,16 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
     const doc = new Doc(["payload", "ctx"], { shape, inst, memo: memo2, syms });
     const parseStr = (k) => `shape[${k}]._zod.run({ value: input[${k}], issues: [] }, ctx)`;
     const prefixStr = (id, k) => `
+          let ${id}_ab = false;
           for (let i = 0; i < ${id}.issues.length; i++) {
             const iss = ${id}.issues[i];
             iss.path = iss.path ? [${k}, ...iss.path] : [${k}];
             payload.issues.push(iss);
+            if (iss.continue !== true) ${id}_ab = true;
+          }
+          if (${id}_ab && ctx && ctx.abortEarly) {
+            payload.value = newResult;
+            return payload;
           }`;
     doc.write(`const input = payload.value;`);
     const ids = /* @__PURE__ */ Object.create(null);
@@ -65040,6 +66003,10 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
             input: undefined,
             path: [${k}]
           });
+          if (ctx && ctx.abortEarly) {
+            payload.value = newResult;
+            return payload;
+          }
         }
 
         if (${id}_present) {
@@ -65051,16 +66018,16 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
         doc.write(`
         if (${id}.issues.length) {${prefixStr(id, k)}
         }
-        
-        if (${id}.value === undefined) {
-          if (${isPresent}) {
-            newResult[${k}] = undefined;
-          }
+      `);
+        if (optin === "defaulted") {
+          doc.write(`newResult[${k}] = ${id}.value;`);
         } else {
+          doc.write(`
+        if (${id}.value !== undefined || ${isPresent}) {
           newResult[${k}] = ${id}.value;
         }
-
       `);
+        }
       }
     }
     doc.write(`payload.value = newResult;`);
@@ -65092,7 +66059,7 @@ var $ZodObjectJIT = /* @__PURE__ */ $constructor("$ZodObjectJIT", (inst, def) =>
       payload = fastpass(payload, ctx);
       if (!catchall)
         return payload;
-      return handleCatchall([], input, payload, ctx, value, inst);
+      return handleCatchall([], input, payload, ctx, value, inst, ctx?.abortEarly === true);
     }
     return superParse(payload, ctx);
   };
@@ -65162,16 +66129,37 @@ var $ZodUnion = /* @__PURE__ */ $constructor("$ZodUnion", (inst, def) => {
     });
   };
 });
+function discriminatorMap(def) {
+  const map = /* @__PURE__ */ new Map();
+  for (const option of def.options) {
+    const values = option._zod.propValues?.[def.discriminator];
+    if (!values || values.size === 0)
+      throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(option)}"`);
+    for (const value of values) {
+      if (map.has(value)) {
+        if (value !== void 0)
+          throw new Error(`Duplicate discriminator value "${String(value)}"`);
+        map.set(value, null);
+      } else {
+        map.set(value, option);
+      }
+    }
+  }
+  return map;
+}
 var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnion", (inst, def) => {
   def.inclusive = false;
   $ZodUnion.init(inst, def);
   const _super = inst._zod.parse;
   defineLazyInternal(inst, "propValues", (zod) => {
     const propValues = {};
+    let undefinedCount = 0;
     for (const option of zod.def.options) {
       const pv = option._zod.propValues;
       if (!pv || Object.keys(pv).length === 0)
         throw new Error(`Invalid discriminated union option at index "${zod.def.options.indexOf(option)}"`);
+      if (pv[zod.def.discriminator]?.has(void 0))
+        undefinedCount++;
       for (const [k, v] of Object.entries(pv)) {
         if (!Object.prototype.hasOwnProperty.call(propValues, k)) {
           assignProp(propValues, k, /* @__PURE__ */ new Set());
@@ -65181,30 +66169,17 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
         }
       }
     }
+    if (!zod.def.unionFallback && undefinedCount > 1)
+      propValues[zod.def.discriminator]?.delete(void 0);
     return propValues;
   });
   def.options.forEach((option, i) => {
-    const propShape = propShapes.get(option._zod.def);
+    const propShape = rawShape(option._zod.def);
     if (propShape && !Object.prototype.hasOwnProperty.call(propShape, def.discriminator)) {
       throw new Error(`Invalid discriminated union option at index "${i}"`);
     }
   });
-  const disc = cached(() => {
-    const opts = def.options;
-    const map = /* @__PURE__ */ new Map();
-    for (const o of opts) {
-      const values = o._zod.propValues?.[def.discriminator];
-      if (!values || values.size === 0)
-        throw new Error(`Invalid discriminated union option at index "${def.options.indexOf(o)}"`);
-      for (const v of values) {
-        if (map.has(v)) {
-          throw new Error(`Duplicate discriminator value "${String(v)}"`);
-        }
-        map.set(v, o);
-      }
-    }
-    return map;
-  });
+  const disc = cached(() => discriminatorMap(def));
   inst._zod.parse = (payload, ctx) => {
     const input = payload.value;
     if (!isObject(input)) {
@@ -65216,8 +66191,9 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
       });
       return payload;
     }
-    const opt = disc.value.get(input?.[def.discriminator]);
-    if (opt) {
+    const value = input?.[def.discriminator];
+    const opt = disc.value.get(value);
+    if (opt && (value !== void 0 || ctx.direction !== "backward")) {
       return opt._zod.run(payload, ctx);
     }
     if (def.unionFallback || ctx.direction === "backward") {
@@ -65228,7 +66204,7 @@ var $ZodDiscriminatedUnion = /* @__PURE__ */ $constructor("$ZodDiscriminatedUnio
       errors: [],
       note: "No matching discriminator",
       discriminator: def.discriminator,
-      options: Array.from(disc.value.keys()),
+      options: Array.from(disc.value.keys()).filter((value2) => disc.value.get(value2) !== null),
       input,
       path: [def.discriminator],
       inst
@@ -65510,8 +66486,10 @@ var $ZodEnum = /* @__PURE__ */ $constructor("$ZodEnum", (inst, def) => {
   const values = getEnumValues(def.entries);
   const valuesSet = new Set(values);
   inst._zod.values = valuesSet;
-  const patternValues = values.filter((k) => propertyKeyTypes.has(typeof k));
-  inst._zod.pattern = new RegExp(patternValues.length ? `^(${patternValues.map((o) => escapeRegex(o.toString())).join("|")})$` : "^[^\\s\\S]$");
+  defineLazyInternal(inst, "pattern", (zod) => {
+    const patternValues = getEnumValues(zod.def.entries).filter((k) => propertyKeyTypes.has(typeof k));
+    return new RegExp(patternValues.length ? `^(${patternValues.map((o) => escapeRegex(o.toString())).join("|")})$` : "^[^\\s\\S]$");
+  });
   inst._zod.parse = (payload, _ctx) => {
     const input = payload.value;
     if (valuesSet.has(input)) {
@@ -65530,7 +66508,10 @@ var $ZodLiteral = /* @__PURE__ */ $constructor("$ZodLiteral", (inst, def) => {
   $ZodType.init(inst, def);
   const values = new Set(def.values);
   inst._zod.values = values;
-  inst._zod.pattern = new RegExp(def.values.length ? `^(${def.values.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$` : "^[^\\s\\S]$");
+  defineLazyInternal(inst, "pattern", (zod) => {
+    const vals = zod.def.values;
+    return new RegExp(vals.length ? `^(${vals.map((o) => typeof o === "string" ? escapeRegex(o) : o ? escapeRegex(o.toString()) : String(o)).join("|")})$` : "^[^\\s\\S]$");
+  });
   inst._zod.parse = (payload, _ctx) => {
     const input = payload.value;
     if (values.has(input)) {
@@ -65814,28 +66795,53 @@ var $ZodCyclicError = class extends Error {
 };
 var STATE = "~memo";
 var NO_ISSUES = [];
+function isRef(value) {
+  return value !== null && typeof value === "object";
+}
 function cloneIssues(issues) {
   return issues.map((iss) => iss.path ? { ...iss, path: iss.path.slice() } : { ...iss });
 }
 var recursive = /* @__PURE__ */ new WeakMap();
-function isRecursive(inst, stack) {
+var NONE = 0;
+var ASSUMED = 1;
+var PROVEN = 2;
+function isRecursive(inst, stack, resolve2) {
   const cached2 = recursive.get(inst);
   if (cached2 !== void 0)
-    return cached2;
+    return cached2 ? PROVEN : NONE;
   if (stack.has(inst))
-    return true;
+    return PROVEN;
   stack.add(inst);
-  let result = false;
+  let result = NONE;
   const check = (child) => {
-    if (!result && child?._zod && isRecursive(child, stack))
-      result = true;
+    if (result !== PROVEN && child?._zod) {
+      const answer = isRecursive(child, stack, resolve2);
+      if (answer > result)
+        result = answer;
+    }
+  };
+  const shape = (sh, spread) => {
+    let answer = NONE;
+    for (const key of Reflect.ownKeys(sh)) {
+      const desc = Object.getOwnPropertyDescriptor(sh, key);
+      if (spread && !desc.enumerable)
+        continue;
+      const child = desc.get ? ASSUMED : desc.value?._zod ? isRecursive(desc.value, stack, resolve2) : NONE;
+      if (child > answer)
+        answer = child;
+    }
+    return answer;
+  };
+  const merge2 = (answer) => {
+    if (answer > result)
+      result = answer;
   };
   const def = inst._zod.def;
   const kind = def.type;
   switch (kind) {
     case "object": {
-      for (const key of Reflect.ownKeys(def.shape))
-        check(def.shape[key]);
+      const raw = rawShape(def);
+      merge2(raw ? shape(raw, true) : ASSUMED);
       check(def.catchall);
       break;
     }
@@ -65882,10 +66888,12 @@ function isRecursive(inst, stack) {
       check(def.input);
       check(def.output);
       break;
-    // reading `_zod.innerType` resolves the getter once and caches it
-    case "lazy":
-      check(inst._zod.innerType);
+    // `$ZodLazy` caches its inner on the def, so a resolved edge is followed exactly
+    case "lazy": {
+      const inner = def._cachedInner ?? (resolve2 ? inst._zod.innerType : void 0);
+      merge2(inner ? isRecursive(inner, stack, false) : ASSUMED);
       break;
+    }
     // a leaf by choice: `parts` are regex fragments, not data positions
     case "template_literal":
     // leaves
@@ -65927,13 +66935,17 @@ function isRecursive(inst, stack) {
     }
   }
   stack.delete(inst);
-  recursive.set(inst, result);
-  return result;
+  return settle(inst, result);
+}
+function settle(inst, answer) {
+  if (answer !== ASSUMED)
+    recursive.set(inst, answer === PROVEN);
+  return answer;
 }
 function bucketFor(state, inst) {
   let bucket = state.buckets.get(inst);
   if (!bucket) {
-    bucket = /* @__PURE__ */ new Map();
+    bucket = /* @__PURE__ */ new WeakMap();
     state.buckets.set(inst, bucket);
   }
   return bucket;
@@ -65969,6 +66981,7 @@ var memo = {
   attach(inst) {
     var _a3;
     let isRecursiveInst;
+    let rechecked = false;
     let lastCtx;
     let lastBucket;
     (_a3 = inst._zod).deferred ?? (_a3.deferred = []);
@@ -65976,20 +66989,24 @@ var memo = {
       const base = inst._zod.parse;
       const wrapped = (payload, ctx) => {
         if (isRecursiveInst === void 0) {
-          isRecursiveInst = isRecursive(inst, /* @__PURE__ */ new Set());
-          if (!isRecursiveInst) {
+          const walked = isRecursive(inst, /* @__PURE__ */ new Set(), false);
+          if (walked === NONE) {
             inst._zod.parse = base;
             if (inst._zod.run === wrapped)
               inst._zod.run = base;
             return base(payload, ctx);
           }
+          if (walked === PROVEN || rechecked)
+            isRecursiveInst = true;
+          else
+            rechecked = true;
         }
         const input = payload.value;
-        if (input === null || typeof input !== "object")
+        if (!isRef(input))
           return base(payload, ctx);
         let state = ctx[STATE];
         if (!state) {
-          state = { buckets: /* @__PURE__ */ new Map(), backEdges: void 0 };
+          state = { buckets: /* @__PURE__ */ new WeakMap(), backEdges: void 0 };
           ctx[STATE] = state;
         }
         let bucket;
@@ -66008,7 +67025,7 @@ var memo = {
               payload.issues.push(...cloneIssues(hit.issues));
           } else {
             payload.memo = true;
-            state.backEdges ?? (state.backEdges = /* @__PURE__ */ new Set());
+            state.backEdges ?? (state.backEdges = /* @__PURE__ */ new WeakSet());
             state.backEdges.add(hit.value);
           }
           return payload;
@@ -66040,7 +67057,7 @@ function memoizer() {
 }
 function isBackEdge(ctx, value) {
   const backEdges = ctx[STATE]?.backEdges;
-  return backEdges !== void 0 && value !== null && typeof value === "object" && backEdges.has(value);
+  return backEdges !== void 0 && isRef(value) && backEdges.has(value);
 }
 
 // node_modules/zod/v4/locales/en.js
@@ -66083,7 +67100,9 @@ var error = () => {
     base64url: "base64url-encoded string",
     json_string: "JSON string",
     e164: "E.164 number",
+    currency_code: "currency code",
     credit_card: "credit card number",
+    iban: "IBAN",
     jwt: "JWT",
     template_literal: "input"
   };
@@ -66215,12 +67234,14 @@ function registry() {
 var globalRegistry = globalThis.__zod_globalRegistry;
 
 // node_modules/zod/v4/core/api.js
+function snapshotChecks(def) {
+  if (def.checks)
+    def.checks = [...def.checks];
+  return def;
+}
 // @__NO_SIDE_EFFECTS__
 function _string(Class2, params) {
-  return new Class2({
-    type: "string",
-    ...normalizeParams(params)
-  });
+  return new Class2(snapshotChecks({ type: "string", ...normalizeParams(params) }));
 }
 // @__NO_SIDE_EFFECTS__
 function _email(Class2, params) {
@@ -66487,11 +67508,7 @@ function _isoDuration(Class2, params) {
 }
 // @__NO_SIDE_EFFECTS__
 function _number(Class2, params) {
-  return new Class2({
-    type: "number",
-    checks: [],
-    ...normalizeParams(params)
-  });
+  return new Class2(snapshotChecks({ type: "number", checks: [], ...normalizeParams(params) }));
 }
 // @__NO_SIDE_EFFECTS__
 function _int(Class2, params) {
@@ -66788,7 +67805,7 @@ function handleUnrepresentable(schema, ctx, json, params, message) {
   Object.assign(json, result);
   return true;
 }
-function process2(schema, ctx, _params = { path: [], schemaPath: [] }) {
+function processSchema(schema, ctx, _params = { path: [], schemaPath: [] }) {
   var _a3;
   const def = schema._zod.def;
   const seen = ctx.seen.get(schema);
@@ -66827,7 +67844,7 @@ function process2(schema, ctx, _params = { path: [], schemaPath: [] }) {
     if (parent) {
       if (!result.ref)
         result.ref = parent;
-      process2(parent, ctx, params);
+      processSchema(parent, ctx, params);
       ctx.seen.get(parent).isParent = true;
     }
   }
@@ -66934,7 +67951,6 @@ Set the \`cycles\` parameter to \`"ref"\` to resolve cyclical schemas with defs.
     if (seen.count > 1) {
       if (ctx.reused === "ref") {
         extractToDef(entry);
-        continue;
       }
     }
   }
@@ -67262,19 +68278,107 @@ function isTransforming(_schema, _ctx) {
 }
 var createToJSONSchemaMethod = (schema, processors = {}) => (params) => {
   const ctx = initializeContext({ ...params, processors });
-  process2(schema, ctx);
+  processSchema(schema, ctx);
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
 var createStandardJSONSchemaMethod = (schema, io, processors = {}) => (params) => {
   const { libraryOptions, target } = params ?? {};
   const ctx = initializeContext({ ...libraryOptions ?? {}, target, io, processors });
-  process2(schema, ctx);
+  processSchema(schema, ctx);
   extractDefs(ctx, schema);
   return finalize(ctx, schema);
 };
 
 // node_modules/zod/v4/core/json-schema-processors.js
+var narrowMin = (agg, key, value) => {
+  if (agg[key] === void 0 || value > agg[key])
+    agg[key] = value;
+};
+var narrowMax = (agg, key, value) => {
+  if (agg[key] === void 0 || value < agg[key])
+    agg[key] = value;
+};
+var narrowBoth = (agg, value) => {
+  narrowMin(agg, "minimum", value);
+  narrowMax(agg, "maximum", value);
+};
+var addDivisor = (agg, value) => {
+  agg.multipleOf ?? (agg.multipleOf = []);
+  if (!agg.multipleOf.includes(value))
+    agg.multipleOf.push(value);
+};
+var addPattern = (agg, pattern) => {
+  agg.patterns ?? (agg.patterns = /* @__PURE__ */ new Set());
+  agg.patterns.add(pattern);
+};
+var intersectMime = (agg, mime) => {
+  agg.mime = agg.mime ? agg.mime.filter((m) => mime.includes(m)) : [...mime];
+};
+var setFormat = (agg, format) => {
+  agg.format = format;
+  if (format.includes("int"))
+    agg.isInt = true;
+};
+var minContributor = (agg, def) => narrowMin(agg, "minimum", def.minimum);
+var maxContributor = (agg, def) => narrowMax(agg, "maximum", def.maximum);
+var formatContributor = (ranges) => (agg, def) => {
+  setFormat(agg, def.format);
+  const [minimum, maximum] = ranges[def.format];
+  narrowMin(agg, "minimum", minimum);
+  narrowMax(agg, "maximum", maximum);
+};
+var contributors = {
+  greater_than: (agg, def) => narrowMin(agg, def.inclusive ? "minimum" : "exclusiveMinimum", def.value),
+  less_than: (agg, def) => narrowMax(agg, def.inclusive ? "maximum" : "exclusiveMaximum", def.value),
+  multiple_of: (agg, def) => addDivisor(agg, def.value),
+  number_format: formatContributor(NUMBER_FORMAT_RANGES),
+  bigint_format: formatContributor(BIGINT_FORMAT_RANGES),
+  min_length: minContributor,
+  max_length: maxContributor,
+  length_equals: (agg, def) => narrowBoth(agg, def.length),
+  min_size: minContributor,
+  max_size: maxContributor,
+  size_equals: (agg, def) => narrowBoth(agg, def.size),
+  string_format: (agg, def) => {
+    setFormat(agg, def.format);
+    if (def.pattern)
+      addPattern(agg, def.pattern);
+    if (def.format === "base64" || def.format === "base64url")
+      agg.contentEncoding = def.format;
+    if (def.local || def.precision === -1)
+      agg.laxFormat = true;
+  },
+  mime_type: (agg, def) => intersectMime(agg, def.mime)
+};
+function aggregateChecks(schema) {
+  const agg = {};
+  const def = schema._zod.def;
+  const list = schema._zod.traits.has("$ZodCheck") ? [schema, ...def.checks ?? []] : def.checks ?? [];
+  for (const ch of list)
+    contributors[ch._zod.def.check]?.(agg, ch._zod.def);
+  const bag = schema._zod.bag;
+  if (bag.minimum !== void 0)
+    narrowMin(agg, "minimum", bag.minimum);
+  if (bag.exclusiveMinimum !== void 0)
+    narrowMin(agg, "exclusiveMinimum", bag.exclusiveMinimum);
+  if (bag.maximum !== void 0)
+    narrowMax(agg, "maximum", bag.maximum);
+  if (bag.exclusiveMaximum !== void 0)
+    narrowMax(agg, "exclusiveMaximum", bag.exclusiveMaximum);
+  if (bag.multipleOf !== void 0)
+    addDivisor(agg, bag.multipleOf);
+  if (bag.format !== void 0) {
+    agg.format ?? (agg.format = bag.format);
+    if (bag.format.includes("int"))
+      agg.isInt = true;
+  }
+  if (bag.mime)
+    intersectMime(agg, bag.mime);
+  for (const pattern of bag.patterns ?? [])
+    addPattern(agg, pattern);
+  return agg;
+}
 var formatMap = {
   guid: "uuid",
   url: "uri",
@@ -67283,10 +68387,15 @@ var formatMap = {
   regex: ""
   // do not set
 };
+var exactPatterns = /* @__PURE__ */ new Map([
+  [base64Charset, base64],
+  [base64urlCharset, base64url]
+]);
+var exactPattern = (p) => exactPatterns.get(p) ?? p;
 var stringProcessor = (schema, ctx, _json, _params) => {
   const json = _json;
   json.type = "string";
-  const { minimum, maximum, format, patterns, contentEncoding, laxFormat } = schema._zod.bag;
+  const { minimum, maximum, format, patterns, contentEncoding, laxFormat } = aggregateChecks(schema);
   if (typeof minimum === "number")
     json.minLength = minimum;
   if (typeof maximum === "number")
@@ -67302,7 +68411,7 @@ var stringProcessor = (schema, ctx, _json, _params) => {
   if (contentEncoding)
     json.contentEncoding = contentEncoding;
   if (patterns && patterns.size > 0) {
-    const patternList = [...patterns];
+    const patternList = [...patterns].map(exactPattern);
     if (patternList.length === 1)
       json.pattern = patternList[0].source;
     else if (patternList.length > 1) {
@@ -67317,11 +68426,8 @@ var stringProcessor = (schema, ctx, _json, _params) => {
 };
 var numberProcessor = (schema, ctx, _json, params) => {
   const json = _json;
-  const { minimum, maximum, format, multipleOf, exclusiveMaximum, exclusiveMinimum } = schema._zod.bag;
-  if (typeof format === "string" && format.includes("int"))
-    json.type = "integer";
-  else
-    json.type = "number";
+  const { minimum, maximum, multipleOf, exclusiveMaximum, exclusiveMinimum, isInt } = aggregateChecks(schema);
+  json.type = isInt ? "integer" : "number";
   const exMin = typeof exclusiveMinimum === "number" && exclusiveMinimum >= (minimum ?? Number.NEGATIVE_INFINITY);
   const exMax = typeof exclusiveMaximum === "number" && exclusiveMaximum <= (maximum ?? Number.POSITIVE_INFINITY);
   const legacy = ctx.target === "draft-04" || ctx.target === "openapi-3.0";
@@ -67345,11 +68451,19 @@ var numberProcessor = (schema, ctx, _json, params) => {
   } else if (typeof maximum === "number") {
     json.maximum = maximum;
   }
-  if (typeof multipleOf === "number") {
-    if (Number.isFinite(multipleOf) && multipleOf !== 0)
-      json.multipleOf = Math.abs(multipleOf);
-    else
-      handleUnrepresentable(schema, ctx, json, params, `A multipleOf divisor of ${multipleOf} cannot be represented in JSON Schema`);
+  if (multipleOf) {
+    const divisors = /* @__PURE__ */ new Set();
+    for (const divisor of multipleOf) {
+      if (Number.isFinite(divisor) && divisor !== 0)
+        divisors.add(Math.abs(divisor));
+      else
+        handleUnrepresentable(schema, ctx, json, params, `A multipleOf divisor of ${divisor} cannot be represented in JSON Schema`);
+    }
+    const [first, ...rest] = divisors;
+    if (first !== void 0)
+      json.multipleOf = first;
+    if (rest.length)
+      json.allOf = [...json.allOf ?? [], ...rest.map((m) => ({ multipleOf: m }))];
   }
 };
 var booleanProcessor = (_schema, _ctx, json, _params) => {
@@ -67431,13 +68545,13 @@ var transformProcessor = (schema, ctx, json, params) => {
 var arrayProcessor = (schema, ctx, _json, params) => {
   const json = _json;
   const def = schema._zod.def;
-  const { minimum, maximum } = schema._zod.bag;
+  const { minimum, maximum } = aggregateChecks(schema);
   if (typeof minimum === "number")
     json.minItems = minimum;
   if (typeof maximum === "number")
     json.maxItems = maximum;
   json.type = "array";
-  json.items = process2(def.element, ctx, {
+  json.items = processSchema(def.element, ctx, {
     ...params,
     path: [...params.path, "items"]
   });
@@ -67463,22 +68577,20 @@ var objectProcessor = (schema, ctx, _json, params) => {
   json.type = "object";
   json.properties = {};
   for (const key in shape) {
-    assignProp(json.properties, key, process2(shape[key], ctx, {
+    assignProp(json.properties, key, processSchema(shape[key], ctx, {
       ...params,
       path: [...params.path, "properties", key]
     }));
   }
-  const allKeys = new Set(Object.keys(shape));
-  const requiredKeys = new Set([...allKeys].filter((key) => {
+  const requiredKeys = [];
+  for (const key of Object.keys(shape)) {
     const field = def.shape[key];
-    if (ctx.io === "input") {
-      return inputOptin(field) === void 0;
-    } else {
-      return field._zod.optout === void 0;
+    if (ctx.io === "input" ? inputOptin(field) === void 0 : field._zod.optout === void 0) {
+      requiredKeys.push(key);
     }
-  }));
-  if (requiredKeys.size > 0) {
-    json.required = Array.from(requiredKeys);
+  }
+  if (requiredKeys.length > 0) {
+    json.required = requiredKeys;
   }
   if (def.catchall?._zod.def.type === "never") {
     json.additionalProperties = false;
@@ -67486,7 +68598,7 @@ var objectProcessor = (schema, ctx, _json, params) => {
     if (ctx.io === "output")
       json.additionalProperties = false;
   } else if (def.catchall) {
-    json.additionalProperties = process2(def.catchall, ctx, {
+    json.additionalProperties = processSchema(def.catchall, ctx, {
       ...params,
       path: [...params.path, "additionalProperties"]
     });
@@ -67495,7 +68607,7 @@ var objectProcessor = (schema, ctx, _json, params) => {
 var unionProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
   const isExclusive = def.inclusive === false;
-  const options = def.options.map((x, i) => process2(x, ctx, {
+  const options = def.options.map((x, i) => processSchema(x, ctx, {
     ...params,
     path: [...params.path, isExclusive ? "oneOf" : "anyOf", i]
   }));
@@ -67507,11 +68619,11 @@ var unionProcessor = (schema, ctx, json, params) => {
 };
 var intersectionProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
-  const a = process2(def.left, ctx, {
+  const a = processSchema(def.left, ctx, {
     ...params,
     path: [...params.path, "allOf", 0]
   });
-  const b = process2(def.right, ctx, {
+  const b = processSchema(def.right, ctx, {
     ...params,
     path: [...params.path, "allOf", 1]
   });
@@ -67591,20 +68703,19 @@ var recordProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
   json.type = "object";
   const keyType = def.keyType;
-  const keyBag = keyType._zod.bag;
-  const patterns = keyBag?.patterns;
+  const patterns = aggregateChecks(keyType).patterns;
   if (def.mode === "loose" && patterns && patterns.size > 0) {
-    const valueSchema = process2(def.valueType, ctx, {
+    const valueSchema = processSchema(def.valueType, ctx, {
       ...params,
       path: [...params.path, "patternProperties", "*"]
     });
     json.patternProperties = {};
     for (const pattern of patterns) {
-      assignProp(json.patternProperties, pattern.source, valueSchema);
+      assignProp(json.patternProperties, exactPattern(pattern).source, valueSchema);
     }
   } else {
     if (ctx.target === "draft-07" || ctx.target === "draft-2020-12") {
-      json.propertyNames = process2(def.keyType, ctx, {
+      json.propertyNames = processSchema(def.keyType, ctx, {
         ...params,
         path: [...params.path, "propertyNames"]
       });
@@ -67616,7 +68727,7 @@ var recordProcessor = (schema, ctx, _json, params) => {
       }
       pending.push(schema);
     }
-    json.additionalProperties = process2(def.valueType, ctx, {
+    json.additionalProperties = processSchema(def.valueType, ctx, {
       ...params,
       path: [...params.path, "additionalProperties"]
     });
@@ -67632,7 +68743,7 @@ var recordProcessor = (schema, ctx, _json, params) => {
 };
 var nullableProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
-  const inner = process2(def.innerType, ctx, params);
+  const inner = processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   if (ctx.target === "openapi-3.0") {
     seen.ref = def.innerType;
@@ -67643,7 +68754,7 @@ var nullableProcessor = (schema, ctx, json, params) => {
 };
 var nonoptionalProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
-  process2(def.innerType, ctx, params);
+  processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
@@ -67663,7 +68774,7 @@ function serializeDefaultValue(value, schema, ctx, json, params) {
 }
 var defaultProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
-  process2(def.innerType, ctx, params);
+  processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
   const value = serializeDefaultValue(def.defaultValue, schema, ctx, json, params);
@@ -67672,7 +68783,7 @@ var defaultProcessor = (schema, ctx, json, params) => {
 };
 var prefaultProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
-  process2(def.innerType, ctx, params);
+  processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
   if (ctx.io !== "input")
@@ -67683,7 +68794,7 @@ var prefaultProcessor = (schema, ctx, json, params) => {
 };
 var catchProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
-  process2(def.innerType, ctx, params);
+  processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
   let catchValue;
@@ -67699,20 +68810,20 @@ var pipeProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
   const inIsTransform = def.in._zod.traits.has("$ZodTransform");
   const innerType = ctx.io === "input" ? inIsTransform ? def.out : def.in : def.out;
-  process2(innerType, ctx, params);
+  processSchema(innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = innerType;
 };
 var readonlyProcessor = (schema, ctx, json, params) => {
   const def = schema._zod.def;
-  process2(def.innerType, ctx, params);
+  processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
   json.readOnly = true;
 };
 var optionalProcessor = (schema, ctx, _json, params) => {
   const def = schema._zod.def;
-  process2(def.innerType, ctx, params);
+  processSchema(def.innerType, ctx, params);
   const seen = ctx.seen.get(schema);
   seen.ref = def.innerType;
 };
@@ -67734,24 +68845,24 @@ function safeParse2(schema, data) {
 function getObjectShape(schema) {
   if (!schema)
     return void 0;
-  let rawShape;
+  let rawShape2;
   if (isZ4Schema(schema)) {
     const v4Schema = schema;
-    rawShape = v4Schema._zod?.def?.shape;
+    rawShape2 = v4Schema._zod?.def?.shape;
   } else {
     const v3Schema = schema;
-    rawShape = v3Schema.shape;
+    rawShape2 = v3Schema.shape;
   }
-  if (!rawShape)
+  if (!rawShape2)
     return void 0;
-  if (typeof rawShape === "function") {
+  if (typeof rawShape2 === "function") {
     try {
-      return rawShape();
+      return rawShape2();
     } catch {
       return void 0;
     }
   }
-  return rawShape;
+  return rawShape2;
 }
 function getLiteralValue(schema) {
   if (isZ4Schema(schema)) {
@@ -67981,6 +69092,12 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
   set spa(value) {
     util_exports.own(this, "spa", value);
   },
+  validate(data, params) {
+    return validate(this, data, params);
+  },
+  validateAsync(data, params) {
+    return validateAsync(this, data, params);
+  },
   encode: function _encode2(data, params) {
     return encode2(this, data, params, { callee: _encode2 });
   },
@@ -68017,61 +69134,65 @@ var ZodType = /* @__PURE__ */ $constructor("ZodType", (inst, def) => {
     return this._zod.def;
   }
 });
-var _ZodString = /* @__PURE__ */ $constructor("_ZodString", (inst, def) => {
-  $ZodString.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => stringProcessor(inst, ctx, json, params);
-  const bag = inst._zod.bag;
-  inst.format = bag.format ?? null;
-  inst.minLength = bag.minimum ?? null;
-  inst.maxLength = bag.maximum ?? null;
-}, {
-  regex(...args) {
-    return this.check(_regex(...args));
+var _ZodString = /* @__PURE__ */ $constructor(
+  "_ZodString",
+  (inst, def) => {
+    $ZodString.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => stringProcessor(inst, ctx, json, params);
   },
-  includes(...args) {
-    return this.check(_includes(...args));
-  },
-  startsWith(...args) {
-    return this.check(_startsWith(...args));
-  },
-  endsWith(...args) {
-    return this.check(_endsWith(...args));
-  },
-  min(...args) {
-    return this.check(_minLength(...args));
-  },
-  max(...args) {
-    return this.check(_maxLength(...args));
-  },
-  length(...args) {
-    return this.check(_length(...args));
-  },
-  nonempty(...args) {
-    return this.check(_minLength(1, ...args));
-  },
-  lowercase(params) {
-    return this.check(_lowercase(params));
-  },
-  uppercase(params) {
-    return this.check(_uppercase(params));
-  },
-  trim() {
-    return this.check(_trim());
-  },
-  normalize(...args) {
-    return this.check(_normalize(...args));
-  },
-  toLowerCase() {
-    return this.check(_toLowerCase());
-  },
-  toUpperCase() {
-    return this.check(_toUpperCase());
-  },
-  slugify() {
-    return this.check(_slugify());
-  }
-});
+  /* @__PURE__ */ util_exports.derived({
+    format: (inst) => aggregateChecks(inst).format ?? null,
+    minLength: (inst) => aggregateChecks(inst).minimum ?? null,
+    maxLength: (inst) => aggregateChecks(inst).maximum ?? null
+  }, {
+    regex(...args) {
+      return this.check(_regex(...args));
+    },
+    includes(...args) {
+      return this.check(_includes(...args));
+    },
+    startsWith(...args) {
+      return this.check(_startsWith(...args));
+    },
+    endsWith(...args) {
+      return this.check(_endsWith(...args));
+    },
+    min(...args) {
+      return this.check(_minLength(...args));
+    },
+    max(...args) {
+      return this.check(_maxLength(...args));
+    },
+    length(...args) {
+      return this.check(_length(...args));
+    },
+    nonempty(...args) {
+      return this.check(_minLength(1, ...args));
+    },
+    lowercase(params) {
+      return this.check(_lowercase(params));
+    },
+    uppercase(params) {
+      return this.check(_uppercase(params));
+    },
+    trim() {
+      return this.check(_trim());
+    },
+    normalize(...args) {
+      return this.check(_normalize(...args));
+    },
+    toLowerCase() {
+      return this.check(_toLowerCase());
+    },
+    toUpperCase() {
+      return this.check(_toUpperCase());
+    },
+    slugify() {
+      return this.check(_slugify());
+    }
+  })
+);
 var ZodString = /* @__PURE__ */ $constructor("ZodString", (inst, def) => {
   $ZodString.init(inst, def);
   _ZodString.init(inst, def);
@@ -68254,63 +69375,76 @@ var ZodJWT = /* @__PURE__ */ $constructor("ZodJWT", (inst, def) => {
   $ZodJWT.init(inst, def);
   ZodStringFormat.init(inst, def);
 });
-var ZodNumber = /* @__PURE__ */ $constructor("ZodNumber", (inst, def) => {
-  $ZodNumber.init(inst, def);
-  ZodType.init(inst, def);
-  inst._zod.processJSONSchema = (ctx, json, params) => numberProcessor(inst, ctx, json, params);
-  const bag = inst._zod.bag;
-  inst.minValue = Math.max(bag.minimum ?? Number.NEGATIVE_INFINITY, bag.exclusiveMinimum ?? Number.NEGATIVE_INFINITY) ?? null;
-  inst.maxValue = Math.min(bag.maximum ?? Number.POSITIVE_INFINITY, bag.exclusiveMaximum ?? Number.POSITIVE_INFINITY) ?? null;
-  inst.isInt = (bag.format ?? "").includes("int") || Number.isSafeInteger(bag.multipleOf ?? 0.5);
-  inst.isFinite = true;
-  inst.format = bag.format ?? null;
-}, {
-  gt(value, params) {
-    return this.check(_gt(value, params));
+var ZodNumber = /* @__PURE__ */ $constructor(
+  "ZodNumber",
+  (inst, def) => {
+    $ZodNumber.init(inst, def);
+    ZodType.init(inst, def);
+    inst._zod.processJSONSchema = (ctx, json, params) => numberProcessor(inst, ctx, json, params);
+    inst.isFinite = true;
   },
-  gte(value, params) {
-    return this.check(_gte(value, params));
-  },
-  min(value, params) {
-    return this.check(_gte(value, params));
-  },
-  lt(value, params) {
-    return this.check(_lt(value, params));
-  },
-  lte(value, params) {
-    return this.check(_lte(value, params));
-  },
-  max(value, params) {
-    return this.check(_lte(value, params));
-  },
-  int(params) {
-    return this.check(int(params));
-  },
-  safe(params) {
-    return this.check(int(params));
-  },
-  positive(params) {
-    return this.check(_gt(0, params));
-  },
-  nonnegative(params) {
-    return this.check(_gte(0, params));
-  },
-  negative(params) {
-    return this.check(_lt(0, params));
-  },
-  nonpositive(params) {
-    return this.check(_lte(0, params));
-  },
-  multipleOf(value, params) {
-    return this.check(_multipleOf(value, params));
-  },
-  step(value, params) {
-    return this.check(_multipleOf(value, params));
-  },
-  finite() {
-    return this;
-  }
-});
+  /* @__PURE__ */ util_exports.derived({
+    minValue: (inst) => {
+      const { minimum, exclusiveMinimum } = aggregateChecks(inst);
+      return Math.max(minimum ?? Number.NEGATIVE_INFINITY, exclusiveMinimum ?? Number.NEGATIVE_INFINITY);
+    },
+    maxValue: (inst) => {
+      const { maximum, exclusiveMaximum } = aggregateChecks(inst);
+      return Math.min(maximum ?? Number.POSITIVE_INFINITY, exclusiveMaximum ?? Number.POSITIVE_INFINITY);
+    },
+    isInt: (inst) => {
+      const { isInt, multipleOf } = aggregateChecks(inst);
+      return !!isInt || !!multipleOf?.some(Number.isSafeInteger);
+    },
+    format: (inst) => aggregateChecks(inst).format ?? null
+  }, {
+    gt(value, params) {
+      return this.check(_gt(value, params));
+    },
+    gte(value, params) {
+      return this.check(_gte(value, params));
+    },
+    min(value, params) {
+      return this.check(_gte(value, params));
+    },
+    lt(value, params) {
+      return this.check(_lt(value, params));
+    },
+    lte(value, params) {
+      return this.check(_lte(value, params));
+    },
+    max(value, params) {
+      return this.check(_lte(value, params));
+    },
+    int(params) {
+      return this.check(int(params));
+    },
+    safe(params) {
+      return this.check(int(params));
+    },
+    positive(params) {
+      return this.check(_gt(0, params));
+    },
+    nonnegative(params) {
+      return this.check(_gte(0, params));
+    },
+    negative(params) {
+      return this.check(_lt(0, params));
+    },
+    nonpositive(params) {
+      return this.check(_lte(0, params));
+    },
+    multipleOf(value, params) {
+      return this.check(_multipleOf(value, params));
+    },
+    step(value, params) {
+      return this.check(_multipleOf(value, params));
+    },
+    finite() {
+      return this;
+    }
+  })
+);
 function number2(params) {
   return _number(ZodNumber, params);
 }
@@ -68390,19 +69524,19 @@ var ZodObject = /* @__PURE__ */ $constructor("ZodObject", (inst, def) => {
     return _enum(Object.keys(this._zod.def.shape));
   },
   catchall(catchall) {
-    return this.clone({ ...this._zod.def, catchall });
+    return this.clone(util_exports.mergeDefs(this._zod.def, { catchall }));
   },
   passthrough() {
-    return this.clone({ ...this._zod.def, catchall: unknown() });
+    return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: unknown() }));
   },
   loose() {
-    return this.clone({ ...this._zod.def, catchall: unknown() });
+    return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: unknown() }));
   },
   strict() {
-    return this.clone({ ...this._zod.def, catchall: never() });
+    return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: never() }));
   },
   strip() {
-    return this.clone({ ...this._zod.def, catchall: void 0 });
+    return this.clone(util_exports.mergeDefs(this._zod.def, { catchall: void 0 }));
   },
   extend(incoming) {
     return util_exports.extend(this, incoming);
@@ -68511,7 +69645,7 @@ var ZodEnum = /* @__PURE__ */ $constructor("ZodEnum", (inst, def) => {
   ZodType.init(inst, def);
   inst._zod.processJSONSchema = (ctx, json, params) => enumProcessor(inst, ctx, json, params);
   inst.enum = def.entries;
-  inst.options = Object.values(def.entries);
+  inst.options = [...inst._zod.values];
   const keys = new Set(Object.keys(def.entries));
   inst.extract = (values, params) => {
     const newEntries = {};
@@ -70374,6 +71508,9 @@ var Protocol = class {
       this.setRequestHandler(GetTaskPayloadRequestSchema, async (request, extra) => {
         const handleTaskResult = async () => {
           const taskId = request.params.taskId;
+          if (!await this._taskStore.getTask(taskId, extra.sessionId)) {
+            throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
+          }
           if (this._taskMessageQueue) {
             let queuedMessage;
             while (queuedMessage = await this._taskMessageQueue.dequeue(taskId, extra.sessionId)) {
@@ -70404,12 +71541,12 @@ var Protocol = class {
             throw new McpError(ErrorCode.InvalidParams, `Task not found: ${taskId}`);
           }
           if (!isTerminal(task.status)) {
-            await this._waitForTaskUpdate(taskId, extra.signal);
+            await this._waitForTaskUpdate(taskId, extra.signal, extra.sessionId);
             return await handleTaskResult();
           }
           if (isTerminal(task.status)) {
             const result = await this._taskStore.getTaskResult(taskId, extra.sessionId);
-            this._clearTaskQueue(taskId);
+            this._clearTaskQueue(taskId, extra.sessionId);
             return {
               ...result,
               _meta: {
@@ -70446,7 +71583,7 @@ var Protocol = class {
             throw new McpError(ErrorCode.InvalidParams, `Cannot cancel task in terminal status: ${task.status}`);
           }
           await this._taskStore.updateTaskStatus(request.params.taskId, "cancelled", "Client cancelled task execution.", extra.sessionId);
-          this._clearTaskQueue(request.params.taskId);
+          this._clearTaskQueue(request.params.taskId, extra.sessionId);
           const cancelledTask = await this._taskStore.getTask(request.params.taskId, extra.sessionId);
           if (!cancelledTask) {
             throw new McpError(ErrorCode.InvalidParams, `Task not found after cancellation: ${request.params.taskId}`);
@@ -70574,6 +71711,19 @@ var Protocol = class {
     const handler = this._requestHandlers.get(request.method) ?? this.fallbackRequestHandler;
     const capturedTransport = this._transport;
     const relatedTaskId = request.params?._meta?.[RELATED_TASK_META_KEY]?.taskId;
+    const sessionId = capturedTransport?.sessionId;
+    const store = this._taskStore;
+    let relatedTaskFound = true;
+    let relatedTaskLookup;
+    if (relatedTaskId && store && this._taskMessageQueue && sessionId !== void 0) {
+      relatedTaskFound = false;
+      relatedTaskLookup = (async () => {
+        if (!await store.getTask(relatedTaskId, sessionId)) {
+          throw new McpError(ErrorCode.InvalidParams, `Task not found: ${relatedTaskId}`);
+        }
+        relatedTaskFound = true;
+      })();
+    }
     if (handler === void 0) {
       const errorResponse = {
         jsonrpc: "2.0",
@@ -70583,7 +71733,10 @@ var Protocol = class {
           message: "Method not found"
         }
       };
-      if (relatedTaskId && this._taskMessageQueue) {
+      if (relatedTaskId && relatedTaskLookup) {
+        const queuedError = { type: "error", message: errorResponse, timestamp: Date.now() };
+        relatedTaskLookup.then(() => this._enqueueTaskMessage(relatedTaskId, queuedError, sessionId), () => capturedTransport?.send(errorResponse)).catch((error2) => this._onerror(new Error(`Failed to send an error response: ${error2}`)));
+      } else if (relatedTaskId && this._taskMessageQueue) {
         this._enqueueTaskMessage(relatedTaskId, {
           type: "error",
           message: errorResponse,
@@ -70634,7 +71787,10 @@ var Protocol = class {
       closeSSEStream: extra?.closeSSEStream,
       closeStandaloneSSEStream: extra?.closeStandaloneSSEStream
     };
-    Promise.resolve().then(() => {
+    (relatedTaskLookup ?? Promise.resolve()).then(() => {
+      if (relatedTaskLookup && abortController.signal.aborted) {
+        throw new McpError(ErrorCode.ConnectionClosed, "Request was cancelled");
+      }
       if (taskCreationParams) {
         this.assertTaskHandlerCapability(request.method);
       }
@@ -70669,7 +71825,7 @@ var Protocol = class {
           ...error2["data"] !== void 0 && { data: error2["data"] }
         }
       };
-      if (relatedTaskId && this._taskMessageQueue) {
+      if (relatedTaskId && this._taskMessageQueue && relatedTaskFound) {
         await this._enqueueTaskMessage(relatedTaskId, {
           type: "error",
           message: errorResponse,
@@ -71149,7 +72305,7 @@ var Protocol = class {
       throw new Error("Cannot enqueue task message: taskStore and taskMessageQueue are not configured");
     }
     const maxQueueSize = this._options?.maxTaskQueueSize;
-    await this._taskMessageQueue.enqueue(taskId, message, sessionId, maxQueueSize);
+    await this._taskMessageQueue.enqueue(taskId, message, sessionId ?? this._transport?.sessionId, maxQueueSize);
   }
   /**
    * Clears the message queue for a task and rejects any pending request resolvers.
@@ -71178,12 +72334,13 @@ var Protocol = class {
    * Uses polling to check for updates at the task's configured poll interval.
    * @param taskId The task ID to wait for
    * @param signal Abort signal to cancel the wait
+   * @param sessionId Session of the request that waits, passed to the task store
    * @returns Promise that resolves when an update occurs or rejects if aborted
    */
-  async _waitForTaskUpdate(taskId, signal) {
+  async _waitForTaskUpdate(taskId, signal, sessionId) {
     let interval = this._options?.defaultTaskPollInterval ?? 1e3;
     try {
-      const task = await this._taskStore?.getTask(taskId);
+      const task = await this._taskStore?.getTask(taskId, sessionId);
       if (task?.pollInterval) {
         interval = task.pollInterval;
       }
@@ -71975,7 +73132,7 @@ var Server = class extends Protocol {
 };
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
-import process3 from "node:process";
+import process2 from "node:process";
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/shared/stdio.js
 var STDIO_DEFAULT_MAX_BUFFER_SIZE = 10 * 1024 * 1024;
@@ -72016,7 +73173,7 @@ function serializeMessage(message) {
 
 // node_modules/@modelcontextprotocol/sdk/dist/esm/server/stdio.js
 var StdioServerTransport = class {
-  constructor(_stdin = process3.stdin, _stdout = process3.stdout, options) {
+  constructor(_stdin = process2.stdin, _stdout = process2.stdout, options) {
     this._stdin = _stdin;
     this._stdout = _stdout;
     this._started = false;
@@ -72088,6 +73245,7 @@ import { dirname as dirname2, join as join3 } from "path";
 var package_default = {
   name: "apple-pim-mcp",
   version: "3.19.0",
+  private: true,
   description: "MCP server for Apple PIM, a Personal Information Manager for Calendar, Reminders, Contacts, and Mail",
   type: "module",
   main: "dist/server.js",
@@ -72105,7 +73263,7 @@ var package_default = {
   },
   devDependencies: {
     esbuild: "^0.28.2",
-    vitest: "^4.1.11"
+    vitest: "^5.0.2"
   }
 };
 
@@ -72346,7 +73504,10 @@ function findSwiftBinDir(extraLocations = []) {
 function relativeDateString(daysOffset) {
   const date3 = /* @__PURE__ */ new Date();
   date3.setDate(date3.getDate() + daysOffset);
-  return date3.toISOString().split("T")[0];
+  const year = date3.getFullYear();
+  const month = String(date3.getMonth() + 1).padStart(2, "0");
+  const day = String(date3.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
 var DEFAULT_TIMEOUT_MS = 3e4;
 var PROMPT_TIMEOUT_MS = 12e4;
@@ -73130,7 +74291,7 @@ var tools = [
   },
   {
     name: "apple-pim",
-    description: "PIM system management. Actions: status (check authorization), authorize (request permissions), config_show (view config), config_init (discover calendars/lists), schema (show input schema).",
+    description: "PIM system management. Actions: status (check each domain's permissionStatus), authorize (request permissions), config_show (view config), config_init (discover calendars/lists), schema (show input schema).",
     inputSchema: {
       type: "object",
       properties: {
@@ -73507,15 +74668,15 @@ async function handleCalendar(args, runCLI2) {
     case "events":
       cliArgs.push("events");
       if (args.calendar) cliArgs.push("--calendar", args.calendar);
-      if (args.lastDays !== void 0) {
-        cliArgs.push("--from", relativeDateString(-args.lastDays));
-      } else if (args.from) {
+      if (args.from) {
         cliArgs.push("--from", args.from);
+      } else if (args.lastDays !== void 0) {
+        cliArgs.push("--from", relativeDateString(-args.lastDays));
       }
-      if (args.nextDays !== void 0) {
-        cliArgs.push("--to", relativeDateString(args.nextDays));
-      } else if (args.to) {
+      if (args.to) {
         cliArgs.push("--to", args.to);
+      } else if (args.nextDays !== void 0) {
+        cliArgs.push("--to", relativeDateString(args.nextDays));
       }
       if (args.limit) cliArgs.push("--limit", String(args.limit));
       return await runCLI2("calendar-cli", cliArgs);
@@ -74192,12 +75353,14 @@ async function handleApplePim(args, runCLI2) {
           const auth = result.authorization || "unknown";
           status[domain.name] = {
             enabled: true,
+            permissionStatus: auth,
             authorization: auth,
             message: result.message || statusMessages[auth] || `Status: ${auth}`
           };
         } catch (err) {
           status[domain.name] = {
             enabled: false,
+            permissionStatus: "error",
             authorization: "error",
             message: err.message
           };
