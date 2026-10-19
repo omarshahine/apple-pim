@@ -27,7 +27,7 @@ jobs:
           node-version: 24
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       # astro build -> cf-wrangler build (Build Output) -> cf deploy --prebuilt
       - name: Build and deploy to Workers static assets
