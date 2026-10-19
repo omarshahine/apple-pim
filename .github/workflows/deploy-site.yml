@@ -1,4 +1,4 @@
-name: Deploy Site to Cloudflare Pages
+name: Deploy Site to Cloudflare Workers
 
 on:
   push:
@@ -11,7 +11,12 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      deployments: write
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+    defaults:
+      run:
+        working-directory: site
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
@@ -22,16 +27,12 @@ jobs:
           node-version: 24
 
       - name: Install dependencies
-        run: npm install
-        working-directory: site
+        run: npm ci
 
-      - name: Build Astro site
-        run: npm run build
-        working-directory: site
+      # astro build -> cf-wrangler build (Build Output) -> cf deploy --prebuilt
+      - name: Build and deploy to Workers static assets
+        run: npm run deploy -- --message "${GITHUB_SHA}"
 
-      - name: Deploy to Cloudflare Pages
-        uses: cloudflare/wrangler-action@953926a2e2182532811c01a25e53647d93bf07c0  # v4
-        with:
-          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          command: pages deploy site/dist --project-name=apple-pim
+      # The omarknows.app zone caches HTML at the edge; drop this host's copy.
+      - name: Purge edge cache
+        run: npx cf cache purge -z omarknows.app --body '{"hosts":["apple-pim.omarknows.app"]}' --force
