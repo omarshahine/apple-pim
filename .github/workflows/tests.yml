@@ -101,7 +101,10 @@ jobs:
       - name: Setup Node
         uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7
         with:
-          node-version: 20
+          # npm 10 (Node 20/22) crashes in arborist #loadPeerSet ("Cannot read
+          # properties of null (reading 'edgesOut')") resolving vitest 4.1.12's
+          # vite 8 peer set; npm 11 resolves it. Node 20 is also EOL.
+          node-version: 24
 
       - name: Install root dependencies
         run: npm install
