@@ -138,7 +138,7 @@ The OpenClaw plugin is published as `apple-pim-cli` on both ClawHub and NPM.
 
 ### Automated (CI)
 
-ClawHub, NPM, and Homebrew publishing are automated via GitHub Actions when a version tag is pushed. The tag workflows do not create a GitHub Release, so that remains an explicit release step.
+ClawHub and NPM publish from the version tag push. `release-signed-artifacts.yml` also runs on the tag: it signs and notarizes the CLIs and helper (several minutes), then creates a **draft** GitHub Release carrying them. Homebrew publishes on `release: published`, so publishing that draft is the explicit human step and the trigger for the tap bump. Never `gh release create` the tag yourself before the draft exists: the release goes public without the signed assets and the Homebrew job 404s on `apple-pim-clis-X.Y.Z-universal.zip` (happened on v3.19.1; fixed by rerunning the Homebrew workflow once the assets landed).
 
 ```bash
 # 1. Follow the publishing checklist below
@@ -176,7 +176,7 @@ npm publish
 1. Run `scripts/bump-version.sh X.Y.Z` to update all five version sources and rebuild `mcp-server/dist/server.js`
 2. Run `scripts/check-versions.sh` and the relevant tests and builds
 3. Commit the release bump, create an annotated `vX.Y.Z` tag, then push the commit and tag
-4. Create the GitHub Release explicitly with release notes; no workflow creates it
+4. Wait for `Release Signed Artifacts` to finish and create the draft release, then write the notes and publish it: `gh release edit vX.Y.Z --notes-file notes.md --draft=false`
 5. Verify the NPM, ClawHub, and Homebrew workflows and confirm the new version in each registry
 
 ### Verify / Install
