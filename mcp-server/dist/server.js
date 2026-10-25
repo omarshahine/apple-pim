@@ -73244,7 +73244,7 @@ import { dirname as dirname2, join as join3 } from "path";
 // package.json
 var package_default = {
   name: "apple-pim-mcp",
-  version: "3.19.1",
+  version: "3.19.2",
   private: true,
   description: "MCP server for Apple PIM, a Personal Information Manager for Calendar, Reminders, Contacts, and Mail",
   type: "module",
