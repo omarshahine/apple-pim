@@ -73593,6 +73593,39 @@ async function reapStaleHelpers() {
   }
   return reaped;
 }
+function isOpenWaitFailure(openStderr) {
+  const lines = openStderr.split("\n").map((l) => l.trim()).filter(Boolean);
+  return lines.length > 0 && lines.every((l) => l.includes("Unable to block on application"));
+}
+var DISPATCHER_APPEAR_GRACE_MS = 5e3;
+var DISPATCHER_POLL_MS = 250;
+function escapeRegex2(s) {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+function fileHasContent(path2) {
+  try {
+    return readFileSync(path2).length > 0;
+  } catch {
+    return false;
+  }
+}
+async function awaitDispatcherExit(scratch, outFile, errFile, isCancelled = () => false, { pgrep = (pattern) => runQuick("/usr/bin/pgrep", ["-f", pattern]), pollMs = DISPATCHER_POLL_MS, appearGraceMs = DISPATCHER_APPEAR_GRACE_MS } = {}) {
+  const pattern = escapeRegex2(scratch);
+  const start = Date.now();
+  let seen = false;
+  while (!isCancelled()) {
+    const { out } = await pgrep(pattern);
+    const resident = out.trim() !== "";
+    if (resident) {
+      seen = true;
+    } else if (seen || fileHasContent(outFile) || fileHasContent(errFile)) {
+      return;
+    } else if (Date.now() - start >= appearGraceMs) {
+      return;
+    }
+    await new Promise((r) => setTimeout(r, pollMs));
+  }
+}
 var helperChain = Promise.resolve();
 var helperReadsCalendarStore = /* @__PURE__ */ new Map();
 function runViaHelper(cli, args, env, timeoutMs, binDir) {
@@ -73643,9 +73676,14 @@ async function launchHelper(cli, args, env, timeoutMs, binDir) {
     proc.stderr.on("data", (data) => {
       openStderr += data.toString();
     });
-    proc.on("close", (code) => {
-      clearTimeout(timer);
+    proc.on("close", async (code) => {
       if (killed) return;
+      const openCouldNotWait = isOpenWaitFailure(openStderr);
+      if (openCouldNotWait) {
+        await awaitDispatcherExit(scratch, outFile, errFile, () => killed);
+        if (killed) return;
+      }
+      clearTimeout(timer);
       let stdout = "";
       let stderr = "";
       try {
@@ -73657,7 +73695,7 @@ async function launchHelper(cli, args, env, timeoutMs, binDir) {
       } catch {
       }
       cleanup();
-      const isFailure = code !== 0 || stdout === "" && stderr !== "";
+      const isFailure = openCouldNotWait ? stdout === "" : code !== 0 || stdout === "" && stderr !== "";
       if (isFailure) {
         let msg = stderr || openStderr || `Helper exited with code ${code}`;
         if (msg.includes("-1712")) {
@@ -73666,11 +73704,18 @@ async function launchHelper(cli, args, env, timeoutMs, binDir) {
         reject(new Error(msg));
         return;
       }
+      let parsed;
       try {
-        resolve2(JSON.parse(stdout));
+        parsed = JSON.parse(stdout);
       } catch {
         resolve2({ success: true, output: stdout });
+        return;
       }
+      if (openCouldNotWait && parsed && parsed.success === false) {
+        reject(new Error(parsed.error || stderr || "Helper CLI reported failure"));
+        return;
+      }
+      resolve2(parsed);
     });
     proc.on("error", (err) => {
       clearTimeout(timer);
