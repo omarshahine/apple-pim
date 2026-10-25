@@ -73637,7 +73637,7 @@ function runViaHelper(cli, args, env, timeoutMs, binDir) {
   );
   return chained;
 }
-async function launchHelper(cli, args, env, timeoutMs, binDir) {
+async function launchHelper(cli, args, env, timeoutMs, binDir, { openBin = "/usr/bin/open" } = {}) {
   await reapStaleHelpers();
   return new Promise((resolve2, reject) => {
     const scratch = mkdtempSync(join(tmpdir(), "pim-helper-"));
@@ -73660,7 +73660,7 @@ async function launchHelper(cli, args, env, timeoutMs, binDir) {
       ...args
     ];
     const helperEnv = { ...env, APPLE_PIM_BIN_DIR: binDir };
-    const proc = spawnProcess("/usr/bin/open", openArgs, { env: helperEnv });
+    const proc = spawnProcess(openBin, openArgs, { env: helperEnv });
     let openStderr = "";
     let killed = false;
     const timer = setTimeout(() => {

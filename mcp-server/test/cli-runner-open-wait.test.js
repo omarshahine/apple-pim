@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { spawn } from "node:child_process";
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { awaitDispatcherExit, isOpenWaitFailure } from "../../lib/cli-runner.js";
+import { awaitDispatcherExit, isOpenWaitFailure, launchHelper } from "../../lib/cli-runner.js";
 
 // `open -W` sometimes exits 1 with "Unable to block on applications (initial call to
 // kevent() failed: No such process)" while the helper runs to completion. The runner used
@@ -117,5 +117,87 @@ onMac("awaitDispatcherExit against a real pgrep", () => {
     } finally {
       rmSync(scratch, { recursive: true, force: true });
     }
+  });
+});
+
+// End to end through launchHelper with a stand-in for /usr/bin/open. The fake parses the
+// real `-W -a <app> --args <cli> <out> <err> ...` argv, starts a detached dispatcher whose
+// argv carries <out> (as the real one does), and returns at once with the stderr and exit
+// code chosen by FAKE_OPEN_RC / FAKE_OPEN_ERR. The dispatcher writes FAKE_PAYLOAD only after
+// a delay, so every case below has `open` returning BEFORE the helper has finished. The
+// dispatcher must not inherit the fake's stdio: launchd starts the real one, so it never
+// holds open's pipes, and if it did, node's "close" would wait for it and hide the race.
+onMac("launchHelper when open -W cannot wait", () => {
+  const KEVENT =
+    "Unable to block on applications (initial call to kevent() failed: No such process)";
+  let dir;
+  let fakeOpen;
+
+  afterEach(() => {
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    dir = undefined;
+  });
+
+  function setup() {
+    dir = mkdtempSync(join(tmpdir(), "pim-fake-open-"));
+    fakeOpen = join(dir, "open");
+    writeFileSync(
+      fakeOpen,
+      [
+        "#!/bin/zsh",
+        "while [[ $1 != --args ]]; do shift; done; shift",
+        'out="$2"; err="$3"',
+        "/bin/zsh -c 'sleep 0.4; print -rn -- \"$FAKE_PAYLOAD\" > \"$1\"' dispatcher \"$out\" </dev/null >/dev/null 2>&1 &!",
+        'print -r -- "$FAKE_OPEN_ERR" >&2',
+        'exit "$FAKE_OPEN_RC"',
+        "",
+      ].join("\n"),
+    );
+    chmodSync(fakeOpen, 0o755);
+  }
+
+  const run = (env) =>
+    launchHelper("contacts-cli", ["auth-status"], { PATH: "/usr/bin:/bin", ...env }, 10_000, dir, {
+      openBin: fakeOpen,
+    });
+
+  it("resolves the helper's output when open exits 1 (the smoke-test failure)", async () => {
+    setup();
+    await expect(
+      run({ FAKE_OPEN_RC: "1", FAKE_OPEN_ERR: KEVENT, FAKE_PAYLOAD: '{"authorization":"authorized"}' }),
+    ).resolves.toEqual({ authorization: "authorized" });
+  });
+
+  it("waits for the output when open exits 0 before the helper finishes", async () => {
+    setup();
+    await expect(
+      run({
+        FAKE_OPEN_RC: "0",
+        FAKE_OPEN_ERR: "Unable to block on application (GetProcessPID() returned 18446744073709551016)",
+        FAKE_PAYLOAD: '{"authorization":"authorized"}',
+      }),
+    ).resolves.toEqual({ authorization: "authorized" });
+  });
+
+  it("rejects a completed success:false payload, since the exit code is gone", async () => {
+    setup();
+    await expect(
+      run({
+        FAKE_OPEN_RC: "1",
+        FAKE_OPEN_ERR: KEVENT,
+        FAKE_PAYLOAD: '{"success":false,"error":"SMTP auth failed"}',
+      }),
+    ).rejects.toThrow("SMTP auth failed");
+  });
+
+  it("still fails a real launch error", async () => {
+    setup();
+    await expect(
+      run({
+        FAKE_OPEN_RC: "1",
+        FAKE_OPEN_ERR: "LSOpenURLsWithRole() failed with error -1712",
+        FAKE_PAYLOAD: '{"authorization":"authorized"}',
+      }),
+    ).rejects.toThrow("-1712");
   });
 });
