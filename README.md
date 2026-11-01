@@ -26,7 +26,7 @@ Native macOS integration for Calendar, Reminders, Contacts, and Mail using Event
 
 - macOS 13.0 or later
 - Swift 5.9 or later (comes with Xcode 15+)
-- Node.js 18+ (for MCP server or OpenClaw plugin)
+- Node.js 18+ for the MCP server; Node.js 22.13+ for the OpenClaw plugin (your OpenClaw host may require a newer version)
 - **Mail.app** must be running for mail mutations, sends, and content search (it is not launched automatically). Mail *reads* use the local SQLite index and work with Mail.app closed.
 
 ## Installation
@@ -759,6 +759,11 @@ The CLI accepts various date formats:
 Timezone offsets are preserved end-to-end through the CLI layer, so `2024-01-15T19:00:00-07:00` creates the event at the correct local time.
 
 ## Development
+
+Building the OpenClaw package with tsup 9 requires Node.js 22.18+ on the
+22.x line, 24.11+ on the 24.x line, or 26+. This development requirement is
+separate from the plugin runtime minimum of 22.13. CI builds and tests the
+package on the minimum supported build version, Node.js 22.18.0.
 
 ### Testing CLIs Directly
 
