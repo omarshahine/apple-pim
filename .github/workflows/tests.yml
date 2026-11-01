@@ -216,6 +216,39 @@ jobs:
         run: |
           echo "### OpenClaw plugin tests: RAN against openclaw@$VERSION" >> "$GITHUB_STEP_SUMMARY"
 
+  openclaw-minimum-node:
+    name: OpenClaw Minimum Build Node
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
+        with:
+          # The current OpenClaw SDK enforces its own install-time Node floor.
+          node-version: 24
+
+      - name: Install root dependencies
+        run: npm install
+
+      - name: Install plugin dependencies
+        working-directory: openclaw
+        # Pure build/tests run on Linux; the native Swift CLIs are macOS-only.
+        run: npm install --force
+
+      - name: Select the minimum supported compiler Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
+        with:
+          # Build/test compatibility is separate from the SDK's install-time floor.
+          node-version: 22.18.0
+
+      - name: Build OpenClaw plugin
+        working-directory: openclaw
+        run: npm run build
+
+      - name: Test OpenClaw plugin
+        working-directory: openclaw
+        run: npm test
+
   version-check:
     name: Version Consistency
     runs-on: ubuntu-latest

@@ -99,7 +99,7 @@
     "typescript": "^7.0.2",
     "@types/node": "^26.4.0",
     "@types/mailparser": "^3.4.6",
-    "tsup": "^8.5.0",
+    "tsup": "^9.0.0",
     "openclaw": "^2026.8.2"
   }
 }
