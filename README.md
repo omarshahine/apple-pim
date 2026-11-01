@@ -762,8 +762,10 @@ Timezone offsets are preserved end-to-end through the CLI layer, so `2024-01-15T
 
 Building the OpenClaw package with tsup 9 requires Node.js 22.18+ on the
 22.x line, 24.11+ on the 24.x line, or 26+. This development requirement is
-separate from the plugin runtime minimum of 22.13. CI builds and tests the
-package on the minimum supported build version, Node.js 22.18.0.
+separate from the plugin runtime minimum of 22.13. Install development
+dependencies using a current Node.js 24 LTS release: the OpenClaw SDK also
+enforces its own, newer installation requirement. CI installs on Node.js 24,
+then builds and tests the plugin on the minimum compiler version, 22.18.0.
 
 ### Testing CLIs Directly
 

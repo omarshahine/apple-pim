@@ -224,8 +224,8 @@ jobs:
 
       - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
         with:
-          # tsup 9's development floor. The plugin runtime remains Node 22.13+.
-          node-version: 22.18.0
+          # The current OpenClaw SDK enforces its own install-time Node floor.
+          node-version: 24
 
       - name: Install root dependencies
         run: npm install
@@ -234,6 +234,12 @@ jobs:
         working-directory: openclaw
         # Pure build/tests run on Linux; the native Swift CLIs are macOS-only.
         run: npm install --force
+
+      - name: Select the minimum supported compiler Node
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1  # v7
+        with:
+          # Build/test compatibility is separate from the SDK's install-time floor.
+          node-version: 22.18.0
 
       - name: Build OpenClaw plugin
         working-directory: openclaw
