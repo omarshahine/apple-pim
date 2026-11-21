@@ -298,6 +298,12 @@ listed for that sender is the only evidence that binds a *mailbox* to a signer. 
 sender with no signing domains listed can never be verified, and `auth-check` says so in its
 warnings.
 
+Some receivers, including Gmail for some messages, report a DKIM pass and `header.i`
+(the signing agent identity) without `header.d` (the signing domain). A pass without an
+explicit signing domain cannot satisfy `expectedDkimDomains`. In this case `auth-check`
+reports the DKIM pass with a warning explaining that the signer was not reported; it does
+not infer the signing domain from `header.i`.
+
 There is deliberately no `requireDkim`. SPF authenticates an envelope *domain*, so on any
 shared domain (gmail.com, a company domain, a hosting provider) every user of it passes
 aligned SPF and would authenticate as every other. Waiving DKIM would leave nothing
