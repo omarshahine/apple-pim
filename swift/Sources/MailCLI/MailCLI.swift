@@ -2631,8 +2631,8 @@ struct AuthCheck: AsyncParsableCommand {
             throw CLIError.jxaError("Unexpected result from message lookup")
         }
 
-        try await evaluate(
-            msgDict: msgDict, trustedFile: trustedFile, loadWarnings: loadWarnings)
+        outputJSON(evaluateAuthPayload(
+            msgDict: msgDict, trustedFile: trustedFile, loadWarnings: loadWarnings))
     }
 
     /// JXA fallback for header access when the SQLite/emlx path cannot serve the message.
@@ -2673,23 +2673,10 @@ struct AuthCheck: AsyncParsableCommand {
         return msgDict
     }
 
-    /// Emit a result for a path that never computed the DKIM/SPF checks.
-    ///
-    /// `evaluated` is the field callers need: `unknown` alone cannot distinguish "the
-    /// headers were read and were genuinely inconclusive" from "nothing ran", and anything
-    /// treating the second as the first silently gets no check at all. It reports whether
-    /// `checks` was populated, so an empty `checks` is never ambiguous.
-    private func outputUnevaluated(
-        verdict: String, sender: String, matchedContact: String, warnings: [String]
-    ) {
-        outputJSON(unevaluatedAuthPayload(
-            verdict: verdict, sender: sender,
-            matchedContact: matchedContact, warnings: warnings))
-    }
-
-    private func evaluate(
+    /// Evaluate message headers without accessing the mail store or writing output.
+    func evaluateAuthPayload(
         msgDict: [String: Any], trustedFile: TrustedSendersFile, loadWarnings: [String] = []
-    ) async throws {
+    ) -> [String: Any] {
         // Extract sender email. Prefer the structured address when the engine supplied one:
         // the SQLite path reads it straight out of the Envelope Index, so no attacker-chosen
         // display name has been folded into it. Re-parsing the flattened string is the
@@ -2701,10 +2688,9 @@ struct AuthCheck: AsyncParsableCommand {
             : structuredSender.lowercased()
 
         guard !senderEmail.isEmpty else {
-            outputUnevaluated(
+            return unevaluatedAuthPayload(
                 verdict: "unknown", sender: "", matchedContact: "",
                 warnings: loadWarnings + ["Could not extract sender email from message"])
-            return
         }
 
         // Look up trusted sender
@@ -2724,23 +2710,21 @@ struct AuthCheck: AsyncParsableCommand {
         let headerText = normalizeHeaders(msgDict["allHeaders"])
 
         guard !headerText.isEmpty else {
-            outputUnevaluated(
+            return unevaluatedAuthPayload(
                 verdict: "unknown", sender: senderEmail,
                 matchedContact: senderConfig?.name ?? "",
                 warnings: loadWarnings
                     + ["allHeaders field is empty — JXA may not have returned headers"])
-            return
         }
 
         // Parse Authentication-Results
         let allAuthResults = parseAuthenticationResults(headerText)
 
         guard !allAuthResults.isEmpty else {
-            outputUnevaluated(
+            return unevaluatedAuthPayload(
                 verdict: "unknown", sender: senderEmail,
                 matchedContact: senderConfig?.name ?? "",
                 warnings: loadWarnings + ["No Authentication-Results headers found"])
-            return
         }
 
         // Keep only results stamped by our own boundary. Authentication-Results lives inside
@@ -2751,7 +2735,7 @@ struct AuthCheck: AsyncParsableCommand {
         let observedIds = allAuthResults.map { normalizeAuthservId($0.authservId) }.filter { !$0.isEmpty }
 
         guard !trustedIds.isEmpty else {
-            outputUnevaluated(
+            return unevaluatedAuthPayload(
                 verdict: "unknown", sender: senderEmail,
                 matchedContact: senderConfig?.name ?? "",
                 warnings: loadWarnings + [
@@ -2762,13 +2746,12 @@ struct AuthCheck: AsyncParsableCommand {
                         + "Observed authserv-ids on this message: \(Set(observedIds).sorted().joined(separator: ", ")). "
                         + "Add the ones your own boundary stamps to trustedAuthservIds in trusted-senders.json.",
                 ])
-            return
         }
 
         let authResults = allAuthResults.filter { authservIdMatches($0.authservId, trusted: trustedIds) }
 
         guard !authResults.isEmpty else {
-            outputUnevaluated(
+            return unevaluatedAuthPayload(
                 verdict: "suspicious", sender: senderEmail,
                 matchedContact: senderConfig?.name ?? "",
                 warnings: loadWarnings + [
@@ -2776,7 +2759,6 @@ struct AuthCheck: AsyncParsableCommand {
                         + "(trusted: \(trustedIds.joined(separator: ", ")); "
                         + "observed: \(Set(observedIds).sorted().joined(separator: ", ")))",
                 ])
-            return
         }
 
         // Evaluate
@@ -2793,18 +2775,26 @@ struct AuthCheck: AsyncParsableCommand {
         // Aggregate SPF — pick first non-nil
         let aggregatedSpf = authResults.compactMap { $0.spf }.first
 
-        let anyDkimPass = allDkim.contains { $0.result == "pass" }
-        let matchingDkim = allDkim.filter { $0.result == "pass" && checkDkimDomain($0.signingDomain, expected: expectedDkim) }
+        let dkimPasses = allDkim.filter { $0.result == "pass" }
+        let reportedDkimPass = dkimPasses.first { !$0.signingDomain.isEmpty } ?? dkimPasses.first
+        // header.i is the signing agent identity (AUID), not the signing domain (SDID).
+        // RFC 6376 §§3.5, 6.1.1 allow the AUID domain to be a subdomain of the SDID.
+        let signerNotReported = reportedDkimPass?.signingDomain.isEmpty == true
+        let matchingDkim = dkimPasses.first { checkDkimDomain($0.signingDomain, expected: expectedDkim) }
         let allSigningDomains = allDkim.map { $0.signingDomain }
 
         // Build DKIM check report
         var dkimCheck: [String: Any]
-        if let best = matchingDkim.first {
+        if let best = matchingDkim {
             dkimCheck = ["result": "pass", "signingDomain": best.signingDomain, "expected": expectedDkim, "match": true, "allSigningDomains": allSigningDomains]
-        } else if anyDkimPass {
-            let firstPass = allDkim.first { $0.result == "pass" }!
+        } else if let firstPass = reportedDkimPass {
             dkimCheck = ["result": "pass", "signingDomain": firstPass.signingDomain, "expected": expectedDkim, "match": false, "allSigningDomains": allSigningDomains]
-            if enrolled {
+            if signerNotReported {
+                warnings.append(
+                    "DKIM passed, but Authentication-Results did not report the signing domain (header.d). "
+                        + "A reported header.i is not a substitute; the signer could not be verified."
+                )
+            } else if enrolled {
                 warnings.append("DKIM passed but no signing domain in \(allSigningDomains) matches expected \(expectedDkim)")
             }
         } else if let first = allDkim.first {
@@ -2872,7 +2862,7 @@ struct AuthCheck: AsyncParsableCommand {
             if enrolled && !dkimPass {
                 warnings.append("DKIM required but result is '\(dkimCheck["result"] ?? "none")'")
             }
-            if enrolled && dkimPass && !dkimDomainOk {
+            if enrolled && dkimPass && !dkimDomainOk && !signerNotReported {
                 warnings.append("DKIM passed but signing domain mismatch — possible spoofing")
             }
             if enrolled && requireSpf && !spfPass {
@@ -2890,7 +2880,7 @@ struct AuthCheck: AsyncParsableCommand {
             warnings.append("Sender \(senderEmail) not in trusted-senders.json")
         }
 
-        outputJSON([
+        return [
             "verdict": verdict,
             "sender": senderEmail,
             "matchedContact": senderConfig?.name ?? "",
@@ -2900,7 +2890,7 @@ struct AuthCheck: AsyncParsableCommand {
             ],
             "evaluated": true,
             "warnings": warnings
-        ])
+        ]
     }
 
     // MARK: - Private Helpers
@@ -3037,8 +3027,10 @@ struct AuthCheck: AsyncParsableCommand {
 
     /// Check if a signing domain matches any expected domain (exact or subdomain).
     private func checkDkimDomain(_ signing: String, expected: [String]) -> Bool {
+        guard !signing.isEmpty else { return false }
         for domain in expected {
             let d = domain.lowercased()
+            guard !d.isEmpty else { continue }
             if signing == d || signing.hasSuffix("." + d) {
                 return true
             }
