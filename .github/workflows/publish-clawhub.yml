@@ -110,7 +110,9 @@ jobs:
           done
 
       - name: Publish to ClawHub
+        id: publish
         run: |
+          set -o pipefail
           clawhub package publish openclaw/ \
             --family code-plugin \
             --name apple-pim-cli \
@@ -120,7 +122,15 @@ jobs:
             --tags "latest" \
             --source-repo "${{ github.repository }}" \
             --source-commit "${{ github.sha }}" \
-            --source-ref "${{ github.ref_name }}"
+            --source-ref "${{ github.ref_name }}" 2>&1 | tee publish.log
+          # ClawHub holds an update back until its security scans finish, which can take
+          # longer than any reasonable wait ("Update submitted for X; pending security
+          # scans before it becomes public"). That is an accepted upload, not a failure.
+          if grep -qi 'pending security scan' publish.log; then
+            echo "pending_scan=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "pending_scan=false" >> "$GITHUB_OUTPUT"
+          fi
 
       # `clawhub package inspect apple-pim-cli` with no version prints whatever is
       # currently latest and exits 0 either way, so it proved nothing about THIS
@@ -128,15 +138,36 @@ jobs:
       # it an assertion: the CLI exits 1 on "Version not found", so the loop ends
       # only when the tag's version is actually resolvable.
       - name: Verify the published version is live on ClawHub
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+          PENDING_SCAN: ${{ steps.publish.outputs.pending_scan }}
         run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          for attempt in $(seq 1 20); do
+          # A direct publish should be live within 5 minutes. One held for security scans
+          # gets 15, and if it is still held after that the run passes with a warning: the
+          # upload was accepted, and failing would only make a good release look broken.
+          ATTEMPTS=20
+          [ "$PENDING_SCAN" = "true" ] && ATTEMPTS=60
+          for attempt in $(seq 1 "$ATTEMPTS"); do
             if clawhub package inspect apple-pim-cli --version "$VERSION" --json > inspect.json; then
               echo "apple-pim-cli@$VERSION is live on ClawHub."
               exit 0
             fi
-            echo "Attempt $attempt: $VERSION not on ClawHub yet; retrying in 15s..."
+            echo "Attempt $attempt/$ATTEMPTS: $VERSION not on ClawHub yet; retrying in 15s..."
             sleep 15
           done
+          if [ "$PENDING_SCAN" = "true" ]; then
+            echo "::warning::apple-pim-cli@$VERSION was accepted by ClawHub but is still held for security scans. It goes live when they pass; check with: clawhub package inspect apple-pim-cli --version $VERSION"
+            {
+              echo "### ClawHub: pending security scans"
+              echo ""
+              echo "\`apple-pim-cli@$VERSION\` was uploaded and is waiting on ClawHub's security scans."
+              echo "It becomes public when they pass. Confirm later with:"
+              echo ""
+              echo "\`\`\`"
+              echo "clawhub package inspect apple-pim-cli --version $VERSION"
+              echo "\`\`\`"
+            } >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
           echo "::error::apple-pim-cli@$VERSION never appeared on ClawHub after 5 minutes"
           exit 1
