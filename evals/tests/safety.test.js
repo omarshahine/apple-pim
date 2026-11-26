@@ -113,6 +113,9 @@ describe("Category 4: Safety Properties", () => {
       const covered = new Set([
         "lists", "items", "get", "search", "create", "complete",
         "update", "delete", "batch_create", "batch_complete", "batch_delete",
+        // Private ReminderKit writes: tool-call-correctness.yaml rem-set-flag-*, rem-add-subtask,
+        // rem-move-subtask-*, rem-set-section, rem-set-tags-*.
+        "set_flag", "add_subtask", "move_subtask", "set_section", "set_tags",
         "schema",
       ]);
       for (const action of actions) {

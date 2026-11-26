@@ -128,15 +128,29 @@ public struct DomainFilterConfig: Codable, Equatable, Sendable {
     public var enabled: Bool
     public var mode: FilterMode
     public var items: [String]
+    /// Reminders only: allow reminder-cli's private ReminderKit writes (flags, subtasks,
+    /// sections, tags). Off unless the file says `"privateWrites": true`. A profile that
+    /// defines its own `reminders` section replaces this one, so it must set it too.
+    /// Encoded only when on, so other domains' sections stay unchanged.
+    public var privateWrites: Bool
 
-    public init(enabled: Bool = true, mode: FilterMode = .all, items: [String] = []) {
+    public init(enabled: Bool = true, mode: FilterMode = .all, items: [String] = [], privateWrites: Bool = false) {
         self.enabled = enabled
         self.mode = mode
         self.items = items
+        self.privateWrites = privateWrites
     }
 
     enum CodingKeys: String, CodingKey {
-        case enabled, mode, items
+        case enabled, mode, items, privateWrites
+    }
+
+    public func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encode(enabled, forKey: .enabled)
+        try c.encode(mode, forKey: .mode)
+        try c.encode(items, forKey: .items)
+        if privateWrites { try c.encode(true, forKey: .privateWrites) }
     }
 
     /// `{"enabled": false}` and `{"enabled": true}` are complete sections. A list of items
@@ -145,6 +159,7 @@ public struct DomainFilterConfig: Codable, Equatable, Sendable {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         enabled = try c.decodeIfPresent(Bool.self, forKey: .enabled) ?? true
         items = try c.decodeIfPresent([String].self, forKey: .items) ?? []
+        privateWrites = try c.decodeIfPresent(Bool.self, forKey: .privateWrites) ?? false
         if let mode = try c.decodeIfPresent(FilterMode.self, forKey: .mode) {
             self.mode = mode
         } else if items.isEmpty {

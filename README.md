@@ -12,7 +12,7 @@ Native macOS integration for Calendar, Reminders, Contacts, and Mail using Event
 ## Features
 
 - **Calendar Management**: List calendars, create/read/update/delete events, search by date/title, attendee support (add/replace attendees via CalDAV invitation emails), event availability including subscribed calendars. See [Calendar store read path](#calendar-store-read-path---engine-sqlite)
-- **Reminder Management**: List reminder lists, create/complete/update/delete reminders, search
+- **Reminder Management**: List reminder lists, create/complete/update/delete reminders, search. Reads include sections, subtasks, tags, flags, rich links and attachments from the Reminders database; flags, subtasks, sections and tags can be written through opt-in, verified ReminderKit calls. See [Reminders metadata](#reminders-metadata-sections-subtasks-tags-flags)
 - **Contact Management**: List groups, create/read/update/delete contacts, search by name/email/phone, birthday support (with or without year)
 - **Mail Integration**: List accounts/mailboxes, read/search/send/reply/move/delete messages, update flags, attachment support (metadata, save-to-disk, send/reply with attachments), verify sender authentication
 - **Fast Local Mail Reads**: Read commands query Apple Mail's local Envelope Index (SQLite) directly — 10–200× faster than AppleScript automation, and they work even when Mail.app is closed. Automatic fallback to JXA when Full Disk Access isn't granted. See [Direct SQLite read path](#direct-sqlite-read-path---engine-sqlite)
@@ -608,6 +608,76 @@ EventKit still finds and expands every event.
 - Force a specific path with `--engine sqlite` or `--engine eventkit`; responses
   that read the store include `"engine": "sqlite"`. The flag is CLI-only.
 
+### Reminders metadata (sections, subtasks, tags, flags)
+
+EventKit has no API for sections, subtasks, tags, flags, urgent state, rich links
+or attachments. `reminder-cli` reads them from the Reminders Core Data store
+(`~/Library/Group Containers/group.com.apple.reminders/Container_v1/Stores/Data-*.sqlite`)
+and can write a few of them through Apple's private ReminderKit framework.
+
+**Reads (on by default).** `items`, `get` and `search` add these fields to each
+reminder, and `lists` adds each list's `sections`:
+
+| Field | Meaning |
+|-------|---------|
+| `flagged`, `urgent` | Reminders' flag and urgent state |
+| `parentId`, `isSubtask`, `subtaskIds` | Subtask relationships (one level, as in Reminders) |
+| `section` | `{id, name}` of the reminder's section, or `null` |
+| `tags` | Tag names, without `#` |
+| `richLinks` | URLs attached as rich links (distinct from `url`, EventKit's hidden field) |
+| `attachments` | `{type, filename, uti, size, width, height, path}`; `path` is `null` when the file is not on this Mac |
+
+- The store is only ever opened **read-only** (`SQLITE_OPEN_READONLY` +
+  `PRAGMA query_only`). Nothing in apple-pim writes it.
+- Requires **Full Disk Access** — check `reminder-cli auth-status`
+  (`remindersStore.readable`). On a host without it these commands use Apple PIM
+  Helper when it is installed and can read the store, as calendar's store reads do.
+- `--metadata auto` (default) adds a top-level `metadata` object:
+  `{"available": true, "source": "reminders-store"}`, or `{"available": false,
+  "reason": "..."}` with the EventKit fields still returned. `--metadata off`
+  skips the store; `--metadata required` fails without it. MCP/OpenClaw: `metadata`.
+
+**Private writes (off by default).** Five commands write through ReminderKit, the
+framework Reminders.app itself uses, so changes sync through iCloud normally. They
+work only after you turn on one switch for this Mac:
+
+```bash
+reminder-cli config private-writes --on    # or --off; no flag shows the state
+```
+
+That sets `"privateWrites": true` in the `reminders` section of
+`~/.config/apple-pim/config.json` (or `$APPLE_PIM_CONFIG_DIR`), leaving every other
+key as it was; you can also edit the file by hand or use `/apple-pim:configure`. A
+profile with its own `reminders` section replaces the base one, so set it there too.
+There is no per-call opt-in, and the tools cannot change the switch.
+
+| CLI | Tool action | Does |
+|-----|-------------|------|
+| `set-flag --id ID [--unflag]` | `set_flag` (`flagged`) | Flag or unflag |
+| `add-subtask --parent ID --title T` | `add_subtask` (`parentId`, `title`) | Create a subtask (title only; use `update` for due/notes) |
+| `move-subtask --id ID (--parent ID \| --top-level)` | `move_subtask` (`parentId` / `topLevel`) | Nest under a top-level reminder in the same list, or un-nest |
+| `set-section --id ID --section NAME_OR_ID` | `set_section` (`section`) | Put a reminder into a section of its own list |
+| `set-tags --id ID [--add T]... [--remove T]...` | `set_tags` (`addTags`, `removeTags`) | Add/remove tags |
+
+ReminderKit is a private, unsupported framework that can change in any macOS
+update, so each write is guarded:
+
+1. With `reminders.privateWrites` off (the default), every command stops before
+   touching Reminders and says how to turn it on.
+2. PIMConfig list filtering applies to the reminder and, for subtasks, the parent.
+3. Preconditions are checked first (one level of subtasks, same list, section
+   exists and is unambiguous). A write that would change nothing is skipped.
+4. Exactly one ReminderKit save. A save error is reported and never retried.
+5. The database is read back until it shows the change and the fields the
+   operation must not touch are unchanged (for sections, every other reminder's
+   section too). Otherwise the command fails with what it observed, without retrying.
+   Because of this, private writes need Full Disk Access and refuse to run without it.
+
+Not supported: removing a reminder from a section, smart lists, templates,
+groceries, list groups, image attachments, and moving reminders across lists.
+The ReminderKit calls follow [remctl](https://github.com/viticci/remctl) (MIT),
+which tests them against a live store on macOS 26 and 27.
+
 ## Tools Reference
 
 5 domain-level tools, each with an `action` parameter:
@@ -615,7 +685,7 @@ EventKit still finds and expands every event.
 | Tool | Actions | Domain |
 |------|---------|--------|
 | `calendar` / `apple_pim_calendar` | `list`, `events`, `get`, `search`, `create`, `update`, `delete`, `batch_create` | Calendar events via EventKit |
-| `reminder` / `apple_pim_reminder` | `lists`, `items`, `get`, `search`, `create`, `complete`, `update`, `delete`, `batch_create`, `batch_complete`, `batch_delete` | Reminders via EventKit |
+| `reminder` / `apple_pim_reminder` | `lists`, `items`, `get`, `search`, `create`, `complete`, `update`, `delete`, `batch_create`, `batch_complete`, `batch_delete`, plus opt-in private writes `set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags` | Reminders via EventKit; sections/subtasks/tags read from the Reminders database, written through ReminderKit |
 | `contact` / `apple_pim_contact` | `containers`, `groups`, `list`, `search`, `get`, `create`, `update`, `delete` | Contacts framework |
 | `mail` / `apple_pim_mail` | `accounts`, `mailboxes`, `messages`, `get`, `search`, `send`, `reply`, `save_attachment`, `update`, `move`, `delete`, `batch_update`, `batch_delete`, `auth_check` | Mail.app via JXA/AppleScript |
 | `apple-pim` / `apple_pim_system` | `status`, `authorize`, `config_show`, `config_init` | Authorization & configuration |
@@ -719,7 +789,7 @@ Check System Settings > Privacy & Security:
 - **Calendars**: Ensure Terminal/Claude Code has access
 - **Reminders**: Ensure Terminal/Claude Code has access
 - **Contacts**: Ensure Terminal/Claude Code has access
-- **Full Disk Access** (subscribed calendars' availability): grant it to Terminal/Claude Code, or to Apple PIM Helper.app; a grant made to the helper is seen after the MCP server or gateway restarts
+- **Full Disk Access** (subscribed calendars' availability; Reminders sections, subtasks, tags and flags, and private Reminders writes): grant it to Terminal/Claude Code, or to Apple PIM Helper.app; a grant made to the helper is seen after the MCP server or gateway restarts
 
 You may need to restart your app after granting permissions.
 

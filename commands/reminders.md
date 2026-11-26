@@ -64,6 +64,16 @@ Use `reminder` with action `delete` to remove a single reminder:
 Use `reminder` with action `batch_delete` to remove multiple reminders at once:
 - Required: `ids` (array of reminder IDs)
 
+### Sections, Subtasks, Tags and Flags
+Reads (`items`, `get`, `search`) include `flagged`, `urgent`, `parentId`, `isSubtask`, `subtaskIds`, `section`, `tags`, `richLinks` and `attachments`; `lists` includes each list's `sections`. They need Full Disk Access; when `metadata.available` is `false`, say so and quote `metadata.reason`.
+
+Writing them uses Apple's private ReminderKit framework. These actions work only when `reminders.privateWrites` is on in the PIM config (off by default; turn on with `reminder-cli config private-writes --on` or `/apple-pim:configure`). If the switch is off, the error says how to turn it on. Do not turn it on yourself; that is the user's decision. Each is read back and verified; if one fails, report it and do not retry:
+- `set_flag`: `id`, optional `flagged: false` to unflag
+- `add_subtask`: `parentId`, `title` (then `update` the new ID for due date or notes)
+- `move_subtask`: `id` plus `parentId` (same list, top-level parent) or `topLevel: true`
+- `set_section`: `id`, `section` (name or ID from `lists`)
+- `set_tags`: `id`, `addTags` and/or `removeTags`
+
 ### Batch Create
 Use `reminder` with action `batch_create` to create multiple reminders in one operation:
 - Required: `reminders` (array of reminder objects, each with at least `title`)

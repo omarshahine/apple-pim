@@ -24,6 +24,9 @@ public struct ConfigFormatter {
         lines.append(domainFilterLine("Calendars", config.calendars))
         // Reminders
         lines.append(domainFilterLine("Reminders", config.reminders))
+        if config.reminders.privateWrites {
+            lines.append("  Private Reminders writes (flags, subtasks, sections, tags): on")
+        }
         // Contacts
         lines.append(domainFilterLine("Contacts", config.contacts))
         // Mail

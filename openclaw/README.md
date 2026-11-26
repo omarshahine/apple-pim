@@ -26,7 +26,7 @@ Requires macOS 13+ and Swift 5.9+ (Xcode 15+).
 | Tool | Domain |
 |------|--------|
 | `apple_pim_calendar` | List, create, read, update, delete events; search by date/title; attendees; recurrence; batch create |
-| `apple_pim_reminder` | List lists, create, complete, update, delete reminders; search; recurrence; batch create |
+| `apple_pim_reminder` | List lists, create, complete, update, delete reminders; search; recurrence; batch create; read sections, subtasks, tags and flags (Full Disk Access); verified private writes for flags, subtasks, sections and tags once `reminders.privateWrites` is turned on in the PIM config |
 | `apple_pim_contact` | List groups, create, read, update, delete contacts; search by name/email/phone; birthdays |
 | `apple_pim_mail` | List accounts/mailboxes, read, search, send, reply, move, delete; flags; attachments; verify sender auth |
 | `apple_pim_system` | Permission status and diagnostics |

@@ -23,6 +23,11 @@ struct ReminderCLI: AsyncParsableCommand {
             BatchCompleteReminder.self,
             BatchDeleteReminder.self,
             RepairDates.self,
+            SetFlag.self,
+            AddSubtask.self,
+            MoveSubtask.self,
+            SetSection.self,
+            SetTags.self,
             ConfigCommand.self,
         ]
     )
@@ -56,10 +61,19 @@ struct AuthStatus: ParsableCommand {
             default: status = "unknown"
             }
         }
-        let result: [String: Any] = ["authorization": status]
+        let result = reminderAuthStatusPayload(authorization: status)
         let data = try JSONSerialization.data(withJSONObject: result)
         print(String(data: data, encoding: .utf8)!)
     }
+}
+
+/// `authorization` is Reminders (EventKit) access. `remindersStore.readable` says whether this
+/// process can read the Reminders database that supplies sections, subtasks, tags and the
+/// rest of the metadata EventKit does not expose; it is probed by opening it, independent of
+/// `authorization`, and reflects Full Disk Access. lib/cli-runner.js routes on it.
+func reminderAuthStatusPayload(authorization: String, storesDirectory: URL? = nil) -> [String: Any] {
+    let readable = (try? ReminderMetadataStore.open(storesDirectory: storesDirectory)) != nil
+    return ["authorization": authorization, "remindersStore": ["readable": readable]]
 }
 
 // MARK: - Shared Utilities
@@ -664,18 +678,22 @@ struct ListLists: AsyncParsableCommand {
 
     @OptionGroup var pimOptions: PIMOptions
 
+    @OptionGroup var metadataOptions: MetadataOptions
+
     func run() async throws {
         try await requestReminderAccess()
 
         let config = pimOptions.loadConfig()
         try checkRemindersEnabled(config: config)
         let lists = allowedLists(config: config)
-        let result = lists.map { listToDict($0) }
+        let (result, metadataStatus) = try enrichLists(lists.map { listToDict($0) }, mode: metadataOptions.metadata)
 
-        outputJSON([
+        var payload: [String: Any] = [
             "success": true,
             "lists": result
-        ])
+        ]
+        if let metadataStatus { payload["metadata"] = metadataStatus }
+        outputJSON(payload)
     }
 }
 
@@ -698,6 +716,8 @@ struct ListReminders: AsyncParsableCommand {
 
     @Option(name: .long, help: "Maximum number of reminders")
     var limit: Int = 100
+
+    @OptionGroup var metadataOptions: MetadataOptions
 
     func run() async throws {
         try await requestReminderAccess()
@@ -787,14 +807,16 @@ struct ListReminders: AsyncParsableCommand {
             .prefix(limit)
             .map { reminderToDict($0) }
 
+        let (enriched, metadataStatus) = try enrichReminders(Array(filtered), mode: metadataOptions.metadata)
         var result: [String: Any] = [
             "success": true,
-            "reminders": Array(filtered),
-            "count": filtered.count
+            "reminders": enriched,
+            "count": enriched.count
         ]
         if let f = filter {
             result["filter"] = f
         }
+        if let metadataStatus { result["metadata"] = metadataStatus }
 
         outputJSON(result)
     }
@@ -811,6 +833,8 @@ struct GetReminder: AsyncParsableCommand {
     @Option(name: .long, help: "Reminder ID")
     var id: String
 
+    @OptionGroup var metadataOptions: MetadataOptions
+
     func run() async throws {
         try await requestReminderAccess()
 
@@ -823,10 +847,13 @@ struct GetReminder: AsyncParsableCommand {
 
         try validateReminderAccess(reminder, config: config)
 
-        outputJSON([
+        let (enriched, metadataStatus) = try enrichReminders([reminderToDict(reminder)], mode: metadataOptions.metadata)
+        var result: [String: Any] = [
             "success": true,
-            "reminder": reminderToDict(reminder)
-        ])
+            "reminder": enriched[0]
+        ]
+        if let metadataStatus { result["metadata"] = metadataStatus }
+        outputJSON(result)
     }
 }
 
@@ -849,6 +876,8 @@ struct SearchReminders: AsyncParsableCommand {
 
     @Option(name: .long, help: "Maximum results")
     var limit: Int = 50
+
+    @OptionGroup var metadataOptions: MetadataOptions
 
     func run() async throws {
         try await requestReminderAccess()
@@ -884,12 +913,15 @@ struct SearchReminders: AsyncParsableCommand {
             .prefix(limit)
             .map { reminderToDict($0) }
 
-        outputJSON([
+        let (enriched, metadataStatus) = try enrichReminders(Array(filtered), mode: metadataOptions.metadata)
+        var result: [String: Any] = [
             "success": true,
             "query": query,
-            "reminders": Array(filtered),
-            "count": filtered.count
-        ])
+            "reminders": enriched,
+            "count": enriched.count
+        ]
+        if let metadataStatus { result["metadata"] = metadataStatus }
+        outputJSON(result)
     }
 }
 
@@ -1673,7 +1705,7 @@ struct ConfigCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "config",
         abstract: "Manage PIM configuration",
-        subcommands: [ConfigShow.self, ConfigInit.self]
+        subcommands: [ConfigShow.self, ConfigInit.self, ConfigPrivateWrites.self]
     )
 }
 
