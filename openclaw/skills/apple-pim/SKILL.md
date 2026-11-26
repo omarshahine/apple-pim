@@ -27,7 +27,7 @@ This plugin provides 5 tools:
 | Tool | Actions | Domain |
 |------|---------|--------|
 | `apple_pim_calendar` | `list`, `events`, `get`, `search`, `create`, `update`, `delete`, `batch_create` | Calendar events via EventKit |
-| `apple_pim_reminder` | `lists`, `items`, `get`, `search`, `create`, `complete`, `update`, `delete`, `batch_create`, `batch_complete`, `batch_delete` | Reminders via EventKit |
+| `apple_pim_reminder` | `lists`, `items`, `get`, `search`, `create`, `complete`, `update`, `delete`, `batch_create`, `batch_complete`, `batch_delete`, `set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags` | Reminders via EventKit, plus sections/subtasks/tags from the Reminders database |
 | `apple_pim_contact` | `groups`, `list`, `search`, `get`, `create`, `update`, `delete` | Contacts framework |
 | `apple_pim_mail` | `accounts`, `mailboxes`, `messages`, `get`, `search`, `send`, `reply`, `update`, `move`, `delete`, `batch_update`, `batch_delete`, `auth_check` | Mail.app via JXA/AppleScript |
 | `apple_pim_system` | `status`, `authorize`, `config_show`, `config_init` | Authorization & configuration |
@@ -156,6 +156,8 @@ Override path with `trustedSenders` parameter: `apple_pim_mail({ action: "auth_c
 1. **Default to incomplete reminders** when listing
 2. **Use filters**: `overdue` for urgent, `today` for daily planning, `week` for review
 3. **Use batch operations** (`batch_complete`, `batch_delete`) for multiple items
+4. **Sections, subtasks, tags, flags** appear on reads when Full Disk Access allows; `metadata.available: false` means they are missing, not empty — tell the user the `reason`
+5. **Private writes** (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`) use Apple's unsupported ReminderKit and are off by default: pass `private: true` only for a change the user asked for. Each is read back and verified; if one fails, report it and do not retry
 
 ### Contact Management
 1. **Preserve existing data** when updating (only modify changed fields)

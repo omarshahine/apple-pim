@@ -228,21 +228,34 @@ When reading events/reminders, the `recurrence` array includes:
 
 ### What EventKit cannot reach
 
-These are Reminders/Calendar features with no EventKit API. **Say so and stop — do not
-improvise an adjacent thing.** Writing `#tag` into a title, creating five flat reminders to
-stand in for a checklist, or putting "SUBTASK:" in the notes produces data the user did not ask
-for and has to clean up by hand.
+These Reminders features have no EventKit API. Some are reachable another way (below);
+for the rest, **say so and stop — do not improvise an adjacent thing.** Writing `#tag` into a
+title, creating five flat reminders to stand in for a checklist, or putting "SUBTASK:" in the
+notes produces data the user did not ask for and has to clean up by hand.
 
-| Feature | Status |
-| --- | --- |
-| Subtasks / nesting | **Verified dead.** `parentID` (type `EKObjectID`) accepts a `setValue` in memory but does not survive `eventStore.save()`; every object ID comes back temporary, and AppleScript's `container` is read-only. Only the Reminders UI can create the relationship |
-| Tags | No API — a `#tag` in a title or note is inert text, not a tag |
-| Flag | No API. Distinct from priority, which *is* supported |
-| Attached images / files | No API. Part of why a link has to live in `notes` to be reachable |
-| Sections within a list | No API |
-| Smart Lists | No API |
-| Remind me when messaging | No API |
-| Assignee on a shared list | No API |
+| Feature | Read | Write |
+| --- | --- | --- |
+| Subtasks / nesting | `parentId`, `isSubtask`, `subtaskIds` on reads | `add_subtask`, `move_subtask` (private) |
+| Tags | `tags` on reads | `set_tags` (private) |
+| Flag | `flagged` on reads (distinct from priority) | `set_flag` (private) |
+| Sections within a list | `section` on reads; `sections` on `lists` | `set_section` (private); removing from a section is not supported |
+| Urgent | `urgent` on reads | Not supported |
+| Rich links / attached images / files | `richLinks`, `attachments` (metadata) on reads | Not supported. A link still has to live in `notes` to be visible |
+| Smart Lists, templates, groceries, list groups | — | Not supported |
+| Remind me when messaging | — | No API |
+| Assignee on a shared list | — | Not supported |
+
+Reads come from the Reminders database and need Full Disk Access. When the result's
+`metadata.available` is `false`, these fields are absent: say so (the `reason` tells the user
+what to grant) instead of concluding a reminder has no tags or subtasks. EventKit's own
+`parentID` route is still dead (it does not survive `eventStore.save()`); the writes above go
+through Apple's private ReminderKit framework instead.
+
+**Private writes** (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`) are off
+by default and need `private: true` on each call. Only use them when the user asked for that
+change. Each is read back and verified; on failure the error says what was observed and the
+write was **not** retried, so do not retry it yourself either: report it and let the user check
+Reminders.app. Subtasks are one level deep and stay in the parent's list.
 
 Calendar's `url` field is **not** on this list: Calendar renders `EKEvent.url` as a live link in
 the event inspector, so `url` on an event reaches the user as-is and needs no mirroring. Only

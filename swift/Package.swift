@@ -32,11 +32,22 @@ let package = Package(
             ],
             path: "Sources/CalendarCLI"
         ),
+        // Objective-C bridge to Apple's private ReminderKit, loaded at runtime with dlopen
+        // (no link-time dependency on a private framework). Used only by opt-in
+        // `reminder-cli --private` writes.
+        .target(
+            name: "ReminderKitShim",
+            path: "Sources/ReminderKitShim",
+            publicHeadersPath: "include",
+            cSettings: [.unsafeFlags(["-fobjc-arc"])],
+            linkerSettings: [.linkedFramework("Foundation")]
+        ),
         .executableTarget(
             name: "ReminderCLI",
             dependencies: [
                 .product(name: "ArgumentParser", package: "swift-argument-parser"),
                 "PIMConfig",
+                "ReminderKitShim",
             ],
             path: "Sources/ReminderCLI"
         ),
@@ -68,7 +79,7 @@ let package = Package(
         ),
         .testTarget(
             name: "ReminderCLITests",
-            dependencies: ["ReminderCLI"],
+            dependencies: ["ReminderCLI", "ReminderKitShim"],
             path: "Tests/ReminderCLITests"
         ),
         .testTarget(

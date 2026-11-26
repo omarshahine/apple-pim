@@ -46,7 +46,8 @@ Each Swift CLI is a standalone binary that reads from macOS frameworks, validate
 | `lib/handlers/` | Domain handlers: calendar, reminder, contact, mail, apple-pim |
 | `swift/Sources/PIMConfig` | Shared config library (filtering, profiles, validation) |
 | `swift/Sources/CalendarCLI` | EventKit calendar CLI |
-| `swift/Sources/ReminderCLI` | EventKit reminders CLI |
+| `swift/Sources/ReminderCLI` | EventKit reminders CLI, plus read-only Reminders store metadata and verified private writes |
+| `swift/Sources/ReminderKitShim` | ObjC bridge to private ReminderKit (dlopen), used only by `reminder-cli --private` writes |
 | `swift/Sources/ContactsCLI` | Contacts framework CLI |
 | `swift/Sources/MailCLI` | Mail.app JXA-based CLI |
 | `mcp-server/server.js` | MCP adapter (imports lib/, thin pass-through) |
@@ -257,13 +258,11 @@ Durable memory promoted from `~/.claude/projects/-Users-omarshahine-GitHub-apple
 - Mail.app must be running — checked via `NSWorkspace.shared.runningApplications`
 - 30-second timeout on JXA execution
 
-## Subtask/Parent Relationships (DOES NOT WORK)
-- `EKReminder` has undocumented KVC: `parentID` (type `EKObjectID`), `setParentID:`, `clearParentID`
-- Writing broken: setValue works in memory but NOT through `eventStore.save()` — doesn't persist on refetch
-- `parentID` is typed `EKObjectID` (internal), not `String` — even with correct type, save doesn't serialize
-- AppleScript `container` property is read-only — assignment fails with "Can't set that"
-- All EKObjectIDs come back as temporary (`isTemporary: true`) — no way to get persistent IDs
-- No programmatic way to create/modify subtask relationships. Only Reminders.app UI can do this.
+## Subtask/Parent Relationships, Sections, Tags, Flags
+- **EventKit cannot do it.** `EKReminder`'s undocumented KVC `parentID` (`EKObjectID`) accepts `setValue` in memory but does not survive `eventStore.save()`; object IDs come back temporary; AppleScript `container` is read-only. Do not retry that route.
+- **Reads:** `swift/Sources/ReminderCLI/ReminderStore.swift` reads the Reminders Core Data store read-only (`Container_v1/Stores/Data-*.sqlite`, Full Disk Access). EventKit `calendarItemIdentifier` == `ZREMCDREMINDER.ZCKIDENTIFIER`, and `calendarIdentifier` == `ZREMCDBASELIST.ZCKIDENTIFIER`. Entity numbers come from `Z_PRIMARYKEY` and the `ZREMINDERn` relationship column is probed per entity, never hardcoded (both drift between macOS versions). Sections come from the list's `ZMEMBERSHIPSOFREMINDERSINSECTIONSASDATA` JSON (newest `modifiedOn` wins, obsolete = no section).
+- **Writes:** `swift/Sources/ReminderKitShim` (ObjC, ReminderKit via dlopen, no link-time dependency) + `PrivateWrites.swift`. Off by default (`--private`), PIMConfig-checked, one save, read back and verified, never retried. Selector shapes follow remctl (MIT); only paths remctl tests live are used. Section removal, smart lists, templates, groceries, groups and cross-list moves are deliberately unsupported.
+- Never write the Reminders SQLite store directly, and never exercise private writes against the user's real lists in tests: unit tests use fixture stores and fakes.
 
 ## Build
 - `cd swift && swift build -c release` compiles all 4 CLIs

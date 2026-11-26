@@ -136,3 +136,83 @@ cases:
     input: { action: batch_create, reminders: [] }
     expect:
       throws: "cannot be empty"
+
+  # Reminders metadata reads and private ReminderKit writes
+  - id: rem-items-metadata-mode
+    tool: reminder
+    description: "metadata mode passes through on reads"
+    input: { action: items, metadata: "required" }
+    expect:
+      cli_args_pairs:
+        - ["--metadata", "required"]
+
+  - id: rem-items-metadata-invalid
+    tool: reminder
+    description: "Unknown metadata mode is rejected before the CLI runs"
+    input: { action: items, metadata: "always" }
+    expect:
+      throws: "metadata must be one of"
+
+  - id: rem-set-flag-requires-private
+    tool: reminder
+    description: "Private writes are off by default"
+    input: { action: set_flag, id: "R1" }
+    expect:
+      throws: "off by default"
+
+  - id: rem-set-flag-unflag
+    tool: reminder
+    description: "flagged:false maps to --unflag, private:true to --private"
+    input: { action: set_flag, id: "R1", flagged: false, private: true }
+    expect:
+      cli_args_contain: ["set-flag", "--private", "--unflag"]
+
+  - id: rem-add-subtask
+    tool: reminder
+    description: "add_subtask maps parentId and title"
+    input: { action: add_subtask, parentId: "P1", title: "Step one", private: true }
+    expect:
+      cli_args_pairs:
+        - ["--parent", "P1"]
+        - ["--title", "Step one"]
+      cli_args_contain: ["add-subtask", "--private"]
+
+  - id: rem-move-subtask-top-level
+    tool: reminder
+    description: "topLevel maps to --top-level"
+    input: { action: move_subtask, id: "R1", topLevel: true, private: true }
+    expect:
+      cli_args_contain: ["move-subtask", "--top-level"]
+      cli_args_absent: ["--parent"]
+
+  - id: rem-move-subtask-both
+    tool: reminder
+    description: "parentId and topLevel together are rejected"
+    input: { action: move_subtask, id: "R1", parentId: "P1", topLevel: true, private: true }
+    expect:
+      throws: "exactly one of parentId or topLevel"
+
+  - id: rem-set-section
+    tool: reminder
+    description: "set_section passes the section name"
+    input: { action: set_section, id: "R1", section: "Errands", private: true }
+    expect:
+      cli_args_pairs:
+        - ["--section", "Errands"]
+
+  - id: rem-set-tags
+    tool: reminder
+    description: "Each tag becomes its own --add / --remove"
+    input: { action: set_tags, id: "R1", addTags: ["work", "q4"], removeTags: ["home"], private: true }
+    expect:
+      cli_args_pairs:
+        - ["--add", "work"]
+        - ["--add", "q4"]
+        - ["--remove", "home"]
+
+  - id: rem-set-tags-empty
+    tool: reminder
+    description: "set_tags with nothing to change is rejected"
+    input: { action: set_tags, id: "R1", private: true }
+    expect:
+      throws: "addTags and/or removeTags"

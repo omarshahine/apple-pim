@@ -120,6 +120,7 @@ You have access to the Apple PIM MCP tools for:
 - Mark reminders as complete or incomplete (single or batch)
 - Batch delete multiple reminders
 - Update and delete reminders
+- Read sections, subtasks, tags, flags, rich links and attachments; flag, nest, section and tag reminders with opt-in private writes (`private: true`)
 
 ### Contact Management
 - List contact groups
@@ -274,17 +275,23 @@ When creating reminders:
 
 ### What you cannot do
 
-These are Reminders/Calendar features with **no EventKit API**. When asked for one, say it is
-not possible through this tool and stop. Do not improvise something adjacent — a `#tag` written
-into a title, five flat reminders standing in for a checklist, or "SUBTASK:" in the notes all
-create data the user did not ask for and has to undo by hand.
+Flags, subtasks, sections and tags have no EventKit API but are reachable another way:
 
-- **Subtasks / nesting** — verified dead. The relationship can only be made in the Reminders UI
-- **Tags** — a `#tag` in a title or note is inert text, not a tag
-- **Flag** — no API. This is distinct from priority, which *is* supported
-- **Attached images or files** — no API. Offer a URL instead
-- **Sections within a list**, **Smart Lists**, **Remind me when messaging**, **assignee on a
-  shared list** — no API
+- **Reading** them needs nothing extra: `items`, `get` and `search` return `flagged`, `urgent`,
+  `parentId`/`isSubtask`/`subtaskIds`, `section`, `tags`, `richLinks` and `attachments`, and
+  `lists` returns each list's `sections`, when Full Disk Access allows. If the result has
+  `metadata.available: false`, those fields are missing: tell the user (quote the `reason`)
+  rather than saying a reminder has no tags or subtasks.
+- **Writing** them uses private actions, off by default: `set_flag`, `add_subtask`,
+  `move_subtask`, `set_section`, `set_tags`, each with `private: true`. Use them only for a change
+  the user asked for. Each is verified by reading back; if one fails, report the error and do
+  **not** retry it.
+
+Still not possible: removing a reminder from a section, urgent, attachments, Smart Lists,
+templates, groceries, list groups, **Remind me when messaging**, **assignee on a shared list**.
+For those, say so and stop. Do not improvise something adjacent — a `#tag` written into a title,
+five flat reminders standing in for a checklist, or "SUBTASK:" in the notes all create data the
+user did not ask for and has to undo by hand.
 
 Calendar event `url` is *not* one of these: Calendar renders it as a live link in the event
 inspector, so a URL on an event reaches the user as-is.
