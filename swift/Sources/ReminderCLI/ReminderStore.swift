@@ -199,24 +199,36 @@ struct ReminderMetadata: Equatable {
     var tags: [String] = []
     var richLinks: [String] = []
     var attachments: [ReminderAttachmentInfo] = []
+    /// Fields this store's schema cannot supply (`flagged`, `urgent`, `parentId`, `tags`,
+    /// `section`). Their values above are placeholders, so they are left out of the JSON and
+    /// a private write that would have to verify one refuses to run.
+    var unreadable: Set<String> = []
 
     /// Fields merged into a reminder's JSON. `title` and `listId` stay internal: EventKit
-    /// already reports them.
+    /// already reports them. Unreadable fields are omitted rather than reported as false or
+    /// empty, and listed under `unreadableFields`.
     func toDict() -> [String: Any] {
         var dict: [String: Any] = [
-            "flagged": flagged,
-            "urgent": urgent,
-            "subtaskIds": subtaskIds,
-            "tags": tags,
             "richLinks": richLinks,
             "attachments": attachments.map { $0.toDict() },
-            "isSubtask": parentId != nil,
         ]
-        dict["parentId"] = parentId ?? NSNull()
-        dict["section"] = section?.toDict() ?? NSNull()
+        if !unreadable.contains("flagged") { dict["flagged"] = flagged }
+        if !unreadable.contains("urgent") { dict["urgent"] = urgent }
+        if !unreadable.contains("tags") { dict["tags"] = tags }
+        if !unreadable.contains("parentId") {
+            dict["parentId"] = parentId ?? NSNull()
+            dict["isSubtask"] = parentId != nil
+            dict["subtaskIds"] = subtaskIds
+        }
+        if !unreadable.contains("section") { dict["section"] = section?.toDict() ?? NSNull() }
+        if !unreadable.isEmpty { dict["unreadableFields"] = unreadable.sorted() }
         return dict
     }
 }
+
+/// Stands in, under strict resolution, for a membership whose entries disagree and cannot be
+/// ordered. It is not a section ID, so a verification comparing memberships sees it change.
+let undecidedSectionMembership = "?undecided"
 
 // MARK: - Section memberships
 
@@ -232,8 +244,9 @@ struct SectionMembershipEntry {
 ///
 /// ReminderKit keeps one membership per member; when entries for the same member disagree
 /// the newest `modifiedOn` wins, and a newest obsolete entry means "no section". When dates
-/// cannot order a disagreement, `strict` (write verification) returns nil rather than a
-/// guess, and display keeps the last live entry. Keys are uppercased member IDs.
+/// cannot order a disagreement, `strict` (write verification) returns
+/// `undecidedSectionMembership` rather than a guess, and display keeps the last live entry.
+/// Keys are uppercased member IDs.
 func effectiveSectionMemberships(_ data: Data?, strict: Bool = false) -> [String: String?] {
     guard let data,
           let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -262,7 +275,7 @@ func effectiveSectionMemberships(_ data: Data?, strict: Bool = false) -> [String
         Set(entries.map { (group($0) ?? "").uppercased() }).count == 1
     }
     func undecided(_ entries: [SectionMembershipEntry]) -> String? {
-        strict ? nil : entries.reversed().compactMap(group).first
+        strict ? undecidedSectionMembership : entries.reversed().compactMap(group).first
     }
 
     var resolved: [String: String?] = [:]
@@ -384,6 +397,14 @@ final class ReminderMetadataStore {
 
     private func metadata(in db: ReminderStoreDatabase, ids: [String]) throws -> [String: ReminderMetadata] {
         let t = "ZREMCDREMINDER"
+        var unreadable: Set<String> = []
+        if !db.columns(t).contains("ZFLAGGED") { unreadable.insert("flagged") }
+        if !db.columns(t).contains("ZISURGENTSTATEENABLEDFORCURRENTUSER") { unreadable.insert("urgent") }
+        if !db.columns(t).contains("ZPARENTREMINDER") { unreadable.insert("parentId") }
+        if db.entity("REMCDHashtag") == nil { unreadable.insert("tags") }
+        if !db.hasTable("ZREMCDBASESECTION") || !db.columns("ZREMCDBASELIST").contains("ZMEMBERSHIPSOFREMINDERSINSECTIONSASDATA") {
+            unreadable.insert("section")
+        }
         var rowsByPK: [Int64: ReminderMetadata] = [:]
         var listPKByReminderPK: [Int64: Int64] = [:]
 
@@ -408,6 +429,7 @@ final class ReminderMetadataStore {
                 meta.flagged = (row["flagged"] as? Int64 ?? 0) != 0
                 meta.urgent = (row["urgent"] as? Int64 ?? 0) != 0
                 meta.parentId = row["parentckid"] as? String
+                meta.unreadable = unreadable
                 rowsByPK[pk] = meta
                 if let listPK = row["listpk"] as? Int64 { listPKByReminderPK[pk] = listPK }
             }

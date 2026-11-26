@@ -157,7 +157,7 @@ Override path with `trustedSenders` parameter: `apple_pim_mail({ action: "auth_c
 2. **Use filters**: `overdue` for urgent, `today` for daily planning, `week` for review
 3. **Use batch operations** (`batch_complete`, `batch_delete`) for multiple items
 4. **Sections, subtasks, tags, flags** appear on reads when Full Disk Access allows; `metadata.available: false` means they are missing, not empty — tell the user the `reason`
-5. **Private writes** (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`) use Apple's unsupported ReminderKit and are off by default: pass `private: true` only for a change the user asked for. Each is read back and verified; if one fails, report it and do not retry
+5. **Private writes** (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`) use Apple's unsupported ReminderKit and work only when the user has turned on `reminders.privateWrites` in the PIM config (off by default; with per-agent config dirs, in that agent's config). If the switch is off, the error says how to turn it on. Do not turn it on yourself; that is the user's decision. Use them only for a change the user asked for. Each is read back and verified; if one fails, report it and do not retry
 
 ### Contact Management
 1. **Preserve existing data** when updating (only modify changed fields)

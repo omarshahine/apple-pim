@@ -72,11 +72,12 @@ Write the config file as JSON to `~/.config/apple-pim/config.json`:
 - **enabled**: `true`/`false` to enable/disable an entire domain
 - **default_calendar**: Name of the calendar for new events when none specified
 - **default_reminder_list**: Name of the list for new reminders when none specified
+- **reminders.privateWrites**: `true` allows flag, subtask, section and tag writes through Apple's private ReminderKit framework (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`). Omitted or `false` (the default) blocks them. Each such write is read back and verified, needs Full Disk Access, and is never retried. Only set it when the user explicitly chooses it
 
 ## Workflow
 
 1. Call `apple-pim` with action `config_show` and action `config_init` in parallel to get current config AND available items
-2. Read `~/.config/apple-pim/config.json` if it exists (for preserving user choices)
+2. Read `~/.config/apple-pim/config.json` if it exists (for preserving user choices, including keys you do not recognize)
 3. **Ask domain enable/disable first** using AskUserQuestion with multi-select:
    - Present all 4 domains: Calendars, Reminders, Contacts, Mail
    - Default to all enabled (or preserve existing settings)
@@ -94,6 +95,7 @@ Write the config file as JSON to `~/.config/apple-pim/config.json`:
      - Present ALL reminder lists across multiple questions (multi-select)
      - Which calendar should be the default for new events?
      - Which list should be the default for new reminders?
+   - If Reminders is enabled, ask whether to allow **private Reminders writes** (flags, subtasks, sections, tags). Default "No". Explain that they use an unsupported Apple framework that a macOS update can break, and that every write is verified. Preserve an existing `privateWrites` value unless the user changes it
 5. **Verify before writing:** Double-check that user was asked about every calendar and reminder list
 6. Write JSON to `~/.config/apple-pim/config.json` using the Write tool
 7. Display a summary (changes take effect immediately — CLIs read config on every invocation)

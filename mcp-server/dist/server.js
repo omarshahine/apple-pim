@@ -49375,6 +49375,15 @@ function markToolResult(result, toolName) {
     if (marked.parent && typeof marked.parent === "object") {
       marked.parent = markItem(marked.parent, "reminder");
     }
+    if (Array.isArray(marked.lists)) {
+      marked.lists = marked.lists.map((list2) => {
+        if (!list2 || !Array.isArray(list2.sections)) return list2;
+        return {
+          ...list2,
+          sections: list2.sections.map((section) => section && typeof section.name === "string" ? { ...section, name: markUntrustedText(section.name, "reminder.section", "reminder") } : section)
+        };
+      });
+    }
     if (marked.title !== void 0 && !marked.events) {
       return markItem(marked, "reminder");
     }
@@ -50020,7 +50029,7 @@ var tools = [
   },
   {
     name: "reminder",
-    description: "Manage macOS reminders. Actions: lists (all lists, with sections), items (list reminders with optional filter), get (by ID), search (by text), create, complete, update, delete, batch_create, batch_complete, batch_delete, schema (show input schema). Reads include sections, subtasks (parentId/subtaskIds), tags, flagged, urgent, rich links and attachment metadata when the Reminders database is readable (Full Disk Access); the `metadata` object in the result says whether it was. Private writes, off by default and only with private: true: set_flag, add_subtask, move_subtask, set_section, set_tags. They use Apple's unsupported ReminderKit framework, are read back and verified, and are never retried.",
+    description: "Manage macOS reminders. Actions: lists (all lists, with sections), items (list reminders with optional filter), get (by ID), search (by text), create, complete, update, delete, batch_create, batch_complete, batch_delete, schema (show input schema). Reads include sections, subtasks (parentId/subtaskIds), tags, flagged, urgent, rich links and attachment metadata when the Reminders database is readable (Full Disk Access); the `metadata` object in the result says whether it was. Private writes: set_flag, add_subtask, move_subtask, set_section, set_tags. They use Apple's unsupported ReminderKit framework and work only when the user has turned on reminders.privateWrites in the PIM config (off by default; the error says how). Each is read back and verified and never retried.",
     inputSchema: {
       type: "object",
       properties: {
@@ -50051,10 +50060,6 @@ var tools = [
           type: "string",
           enum: ["auto", "off", "required"],
           description: "Reminders database metadata on reads (lists/items/get/search): auto (default) adds sections, subtasks, tags, flags, urgent, rich links and attachments when Full Disk Access allows and says why when it does not; off skips it; required fails without it."
-        },
-        private: {
-          type: "boolean",
-          description: "Required true for set_flag, add_subtask, move_subtask, set_section and set_tags. Confirms the write may use Apple's private ReminderKit framework, which is unsupported and can change in any macOS update."
         },
         flagged: { type: "boolean", description: "set_flag: true to flag (default), false to unflag" },
         parentId: {
@@ -50828,14 +50833,6 @@ function metadataArgs(args) {
   }
   return ["--metadata", args.metadata];
 }
-function privateArgs(args, action) {
-  if (args.private !== true) {
-    throw new Error(
-      `reminder ${action} writes through Apple's private ReminderKit framework and is off by default. Pass private: true to confirm. It needs Full Disk Access so the result can be read back and verified.`
-    );
-  }
-  return ["--private"];
-}
 function requireId(args, action) {
   if (!args.id) throw new Error(`Reminder ID is required for reminder ${action}`);
   return args.id;
@@ -50906,8 +50903,7 @@ async function handleReminder(args, runCLI2) {
       ]);
     case "set_flag": {
       const id = requireId(args, "set_flag");
-      const gate = privateArgs(args, "set_flag");
-      cliArgs.push("set-flag", "--id", id, ...gate);
+      cliArgs.push("set-flag", "--id", id);
       if (args.flagged === false) cliArgs.push("--unflag");
       return await runCLI2("reminder-cli", cliArgs);
     }
@@ -50915,16 +50911,14 @@ async function handleReminder(args, runCLI2) {
       const parent = args.parentId;
       if (!parent) throw new Error("parentId is required for reminder add_subtask");
       if (!args.title) throw new Error("title is required for reminder add_subtask");
-      const gate = privateArgs(args, "add_subtask");
-      return await runCLI2("reminder-cli", ["add-subtask", "--parent", parent, "--title", args.title, ...gate]);
+      return await runCLI2("reminder-cli", ["add-subtask", "--parent", parent, "--title", args.title]);
     }
     case "move_subtask": {
       const id = requireId(args, "move_subtask");
       if (Boolean(args.parentId) === Boolean(args.topLevel)) {
         throw new Error("Pass exactly one of parentId or topLevel: true for reminder move_subtask");
       }
-      const gate = privateArgs(args, "move_subtask");
-      cliArgs.push("move-subtask", "--id", id, ...gate);
+      cliArgs.push("move-subtask", "--id", id);
       if (args.parentId) cliArgs.push("--parent", args.parentId);
       else cliArgs.push("--top-level");
       return await runCLI2("reminder-cli", cliArgs);
@@ -50932,8 +50926,7 @@ async function handleReminder(args, runCLI2) {
     case "set_section": {
       const id = requireId(args, "set_section");
       if (!args.section) throw new Error("section (name or ID) is required for reminder set_section");
-      const gate = privateArgs(args, "set_section");
-      return await runCLI2("reminder-cli", ["set-section", "--id", id, "--section", args.section, ...gate]);
+      return await runCLI2("reminder-cli", ["set-section", "--id", id, "--section", args.section]);
     }
     case "set_tags": {
       const id = requireId(args, "set_tags");
@@ -50942,8 +50935,7 @@ async function handleReminder(args, runCLI2) {
       if (!Array.isArray(add) || !Array.isArray(remove) || add.length + remove.length === 0) {
         throw new Error("addTags and/or removeTags (arrays of tag names) are required for reminder set_tags");
       }
-      const gate = privateArgs(args, "set_tags");
-      cliArgs.push("set-tags", "--id", id, ...gate);
+      cliArgs.push("set-tags", "--id", id);
       for (const tag of add) cliArgs.push("--add", String(tag));
       for (const tag of remove) cliArgs.push("--remove", String(tag));
       return await runCLI2("reminder-cli", cliArgs);

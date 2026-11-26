@@ -47,7 +47,7 @@ Each Swift CLI is a standalone binary that reads from macOS frameworks, validate
 | `swift/Sources/PIMConfig` | Shared config library (filtering, profiles, validation) |
 | `swift/Sources/CalendarCLI` | EventKit calendar CLI |
 | `swift/Sources/ReminderCLI` | EventKit reminders CLI, plus read-only Reminders store metadata and verified private writes |
-| `swift/Sources/ReminderKitShim` | ObjC bridge to private ReminderKit (dlopen), used only by `reminder-cli --private` writes |
+| `swift/Sources/ReminderKitShim` | ObjC bridge to private ReminderKit (dlopen), used only by reminder-cli's private writes (gated by `reminders.privateWrites`) |
 | `swift/Sources/ContactsCLI` | Contacts framework CLI |
 | `swift/Sources/MailCLI` | Mail.app JXA-based CLI |
 | `mcp-server/server.js` | MCP adapter (imports lib/, thin pass-through) |
@@ -261,7 +261,7 @@ Durable memory promoted from `~/.claude/projects/-Users-omarshahine-GitHub-apple
 ## Subtask/Parent Relationships, Sections, Tags, Flags
 - **EventKit cannot do it.** `EKReminder`'s undocumented KVC `parentID` (`EKObjectID`) accepts `setValue` in memory but does not survive `eventStore.save()`; object IDs come back temporary; AppleScript `container` is read-only. Do not retry that route.
 - **Reads:** `swift/Sources/ReminderCLI/ReminderStore.swift` reads the Reminders Core Data store read-only (`Container_v1/Stores/Data-*.sqlite`, Full Disk Access). EventKit `calendarItemIdentifier` == `ZREMCDREMINDER.ZCKIDENTIFIER`, and `calendarIdentifier` == `ZREMCDBASELIST.ZCKIDENTIFIER`. Entity numbers come from `Z_PRIMARYKEY` and the `ZREMINDERn` relationship column is probed per entity, never hardcoded (both drift between macOS versions). Sections come from the list's `ZMEMBERSHIPSOFREMINDERSINSECTIONSASDATA` JSON (newest `modifiedOn` wins, obsolete = no section).
-- **Writes:** `swift/Sources/ReminderKitShim` (ObjC, ReminderKit via dlopen, no link-time dependency) + `PrivateWrites.swift`. Off by default (`--private`), PIMConfig-checked, one save, read back and verified, never retried. Selector shapes follow remctl (MIT); only paths remctl tests live are used. Section removal, smart lists, templates, groceries, groups and cross-list moves are deliberately unsupported.
+- **Writes:** `swift/Sources/ReminderKitShim` (ObjC, ReminderKit via dlopen, no link-time dependency) + `PrivateWrites.swift`. Off by default: one per-Mac PIMConfig switch `reminders.privateWrites` (`reminder-cli config private-writes --on`), no per-call opt-in; allow-list checked, one save, read back and verified, never retried. Selector shapes follow remctl (MIT); only paths remctl tests live are used. Section removal, smart lists, templates, groceries, groups and cross-list moves are deliberately unsupported.
 - Never write the Reminders SQLite store directly, and never exercise private writes against the user's real lists in tests: unit tests use fixture stores and fakes.
 
 ## Build

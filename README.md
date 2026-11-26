@@ -638,7 +638,18 @@ reminder, and `lists` adds each list's `sections`:
   skips the store; `--metadata required` fails without it. MCP/OpenClaw: `metadata`.
 
 **Private writes (off by default).** Five commands write through ReminderKit, the
-framework Reminders.app itself uses, so changes sync through iCloud normally:
+framework Reminders.app itself uses, so changes sync through iCloud normally. They
+work only after you turn on one switch for this Mac:
+
+```bash
+reminder-cli config private-writes --on    # or --off; no flag shows the state
+```
+
+That sets `"privateWrites": true` in the `reminders` section of
+`~/.config/apple-pim/config.json` (or `$APPLE_PIM_CONFIG_DIR`), leaving every other
+key as it was; you can also edit the file by hand or use `/apple-pim:configure`. A
+profile with its own `reminders` section replaces the base one, so set it there too.
+There is no per-call opt-in, and the tools cannot change the switch.
 
 | CLI | Tool action | Does |
 |-----|-------------|------|
@@ -651,7 +662,8 @@ framework Reminders.app itself uses, so changes sync through iCloud normally:
 ReminderKit is a private, unsupported framework that can change in any macOS
 update, so each write is guarded:
 
-1. Every command refuses to run without `--private` (tool calls: `private: true`).
+1. With `reminders.privateWrites` off (the default), every command stops before
+   touching Reminders and says how to turn it on.
 2. PIMConfig list filtering applies to the reminder and, for subtasks, the parent.
 3. Preconditions are checked first (one level of subtasks, same list, section
    exists and is unambiguous). A write that would change nothing is skipped.

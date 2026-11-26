@@ -70,7 +70,7 @@ describe("Reminders store routing", () => {
 
   it("stays direct when the host can read the store", async () => {
     const r = runner({ host: { authorization: "authorized", remindersStore: { readable: true } } });
-    await expect(r.runCLI("reminder-cli", ["set-tags", "--private"])).resolves.toMatchObject({ via: "direct" });
+    await expect(r.runCLI("reminder-cli", ["set-tags", "--id", "X"])).resolves.toMatchObject({ via: "direct" });
     expect(r.helperCalls).toEqual([]);
   });
 
@@ -86,7 +86,7 @@ describe("Reminders store routing", () => {
 
   it("never retries a failed private write direct", async () => {
     const r = runner({ helperRun: async () => { throw new Error("verification failed"); } });
-    await expect(r.runCLI("reminder-cli", ["set-flag", "--id", "X", "--private"])).rejects.toThrow("verification failed");
+    await expect(r.runCLI("reminder-cli", ["set-flag", "--id", "X"])).rejects.toThrow("verification failed");
     expect(r.directCalls).toEqual([["auth-status"]]);
   });
 });

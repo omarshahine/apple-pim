@@ -1,4 +1,5 @@
 import Foundation
+import PIMConfig
 import XCTest
 @testable import ReminderCLI
 
@@ -288,8 +289,89 @@ final class PrivateWriteTests: XCTestCase {
         XCTAssertEqual(fake.calls, [])
     }
 
+    // MARK: review follow-ups
+
+    func testUnreadableFieldRefusesWrite() {
+        fake.items[a]?.unreadable = ["flagged"]
+        XCTAssertThrowsError(try coordinator().setFlag(id: a, flagged: false)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("could not be verified"), error.localizedDescription)
+        }
+        XCTAssertEqual(fake.calls, [], "an unreadable false must not short-circuit as already unflagged")
+    }
+
+    func testTitleOrLinkDriftFailsVerification() {
+        fake.sideEffect = { fake, id in fake.items[id]?.richLinks = ["https://example.com/x"] }
+        XCTAssertThrowsError(try coordinator().setTags(id: a, add: ["work"], remove: [])) { error in
+            XCTAssertTrue(error.localizedDescription.contains("richLinks"), error.localizedDescription)
+        }
+    }
+
+    func testUndecidedMembershipSettlingFailsVerification() {
+        let x = "DDDDDDDD-0000-0000-0000-00000000000D"
+        fake.otherMemberships[list] = [x: .some(undecidedSectionMembership)]
+        fake.sideEffect = { fake, _ in fake.otherMemberships[self.list] = [:] }
+        XCTAssertThrowsError(try coordinator().setSection(id: a, section: "Work")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("other reminders' sections"), error.localizedDescription)
+        }
+    }
+
+    func testAddSubtaskThatDropsAnExistingChildFails() {
+        fake.items[b]?.parentId = a
+        fake.sideEffect = { fake, _ in fake.items[self.b]?.parentId = nil }
+        XCTAssertThrowsError(try coordinator().addSubtask(parentID: a, title: "x")) { error in
+            XCTAssertTrue(error.localizedDescription.contains("parent's subtasks"), error.localizedDescription)
+        }
+    }
+
+    func testMoveChecksOldParent() throws {
+        let d = "DDDDDDDD-0000-0000-0000-00000000000D"
+        var meta = ReminderMetadata(id: d); meta.listId = list; meta.parentId = a
+        fake.items[d] = meta
+        fake.items[b]?.parentId = a
+        fake.sideEffect = { fake, _ in fake.items[d]?.parentId = nil }  // collateral: sibling leaves too
+        XCTAssertThrowsError(try coordinator().moveSubtask(id: b, parentID: nil)) { error in
+            XCTAssertTrue(error.localizedDescription.contains("parent's subtasks"), error.localizedDescription)
+        }
+    }
+
     func testComputeTags() {
         XCTAssertEqual(computeTags(current: ["A", "b"], add: ["a", "c"], remove: ["B"]), ["A", "c"])
         XCTAssertEqual(try normalizeTag("  ##groceries "), "groceries")
+    }
+}
+
+final class PrivateWriteSwitchTests: XCTestCase {
+    func testOffByDefaultWithHowToTurnOn() {
+        XCTAssertThrowsError(try requirePrivateWritesEnabled(PIMConfiguration(), command: "set-tags")) { error in
+            guard case PrivateWriteError.notEnabled(let message) = error else { return XCTFail("\(error)") }
+            XCTAssertTrue(message.contains("reminder-cli config private-writes --on"))
+            XCTAssertTrue(message.contains("\"privateWrites\": true"))
+        }
+    }
+
+    func testOnWhenConfigured() throws {
+        var config = PIMConfiguration()
+        config.reminders.privateWrites = true
+        XCTAssertNoThrow(try requirePrivateWritesEnabled(config, command: "set-flag"))
+    }
+
+    func testSettingKeepsEveryOtherKey() {
+        let original: [String: Any] = [
+            "trusted_senders": ["a@example.com"],
+            "reminders": ["mode": "allowlist", "items": ["Errands"]],
+        ]
+        let on = settingPrivateWrites(true, in: original)
+        let reminders = on["reminders"] as? [String: Any]
+        XCTAssertEqual(reminders?["privateWrites"] as? Bool, true)
+        XCTAssertEqual(reminders?["items"] as? [String], ["Errands"])
+        XCTAssertEqual(on["trusted_senders"] as? [String], ["a@example.com"])
+
+        let off = settingPrivateWrites(false, in: on)
+        XCTAssertNil((off["reminders"] as? [String: Any])?["privateWrites"], "off removes the key")
+        XCTAssertEqual((off["reminders"] as? [String: Any])?["mode"] as? String, "allowlist")
+    }
+
+    func testSettingCreatesRemindersSection() {
+        XCTAssertEqual((settingPrivateWrites(true, in: [:])["reminders"] as? [String: Any])?["privateWrites"] as? Bool, true)
     }
 }

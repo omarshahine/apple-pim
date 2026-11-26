@@ -32,4 +32,11 @@ describe("reminder metadata datamarking", () => {
     const out = markToolResult({ reminders: [{ id: "1", flagged: true, subtaskIds: ["2"], parentId: null, section: null }] }, "reminder");
     expect(out.reminders[0]).toMatchObject({ id: "1", flagged: true, subtaskIds: ["2"], parentId: null, section: null });
   });
+
+  it("marks section names returned by lists", () => {
+    const out = markToolResult({ lists: [{ id: "L", title: "Home", sections: [{ id: "S", name: "Errands" }] }] }, "reminder");
+    expect(out.lists[0].sections[0].name).toContain("Errands");
+    expect(out.lists[0].sections[0].name).not.toBe("Errands");
+    expect(out.lists[0].sections[0].id).toBe("S");
+  });
 });

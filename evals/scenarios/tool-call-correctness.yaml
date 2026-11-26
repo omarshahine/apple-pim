@@ -153,34 +153,35 @@ cases:
     expect:
       throws: "metadata must be one of"
 
-  - id: rem-set-flag-requires-private
+  - id: rem-set-flag-no-per-call-opt-in
     tool: reminder
-    description: "Private writes are off by default"
+    description: "The opt-in is the reminders.privateWrites config switch, not a per-call flag"
     input: { action: set_flag, id: "R1" }
     expect:
-      throws: "off by default"
+      cli_args_contain: ["set-flag", "--id", "R1"]
+      cli_args_absent: ["--private"]
 
   - id: rem-set-flag-unflag
     tool: reminder
-    description: "flagged:false maps to --unflag, private:true to --private"
-    input: { action: set_flag, id: "R1", flagged: false, private: true }
+    description: "flagged:false maps to --unflag"
+    input: { action: set_flag, id: "R1", flagged: false }
     expect:
-      cli_args_contain: ["set-flag", "--private", "--unflag"]
+      cli_args_contain: ["set-flag", "--unflag"]
 
   - id: rem-add-subtask
     tool: reminder
     description: "add_subtask maps parentId and title"
-    input: { action: add_subtask, parentId: "P1", title: "Step one", private: true }
+    input: { action: add_subtask, parentId: "P1", title: "Step one" }
     expect:
       cli_args_pairs:
         - ["--parent", "P1"]
         - ["--title", "Step one"]
-      cli_args_contain: ["add-subtask", "--private"]
+      cli_args_contain: ["add-subtask"]
 
   - id: rem-move-subtask-top-level
     tool: reminder
     description: "topLevel maps to --top-level"
-    input: { action: move_subtask, id: "R1", topLevel: true, private: true }
+    input: { action: move_subtask, id: "R1", topLevel: true }
     expect:
       cli_args_contain: ["move-subtask", "--top-level"]
       cli_args_absent: ["--parent"]
@@ -188,14 +189,14 @@ cases:
   - id: rem-move-subtask-both
     tool: reminder
     description: "parentId and topLevel together are rejected"
-    input: { action: move_subtask, id: "R1", parentId: "P1", topLevel: true, private: true }
+    input: { action: move_subtask, id: "R1", parentId: "P1", topLevel: true }
     expect:
       throws: "exactly one of parentId or topLevel"
 
   - id: rem-set-section
     tool: reminder
     description: "set_section passes the section name"
-    input: { action: set_section, id: "R1", section: "Errands", private: true }
+    input: { action: set_section, id: "R1", section: "Errands" }
     expect:
       cli_args_pairs:
         - ["--section", "Errands"]
@@ -203,7 +204,7 @@ cases:
   - id: rem-set-tags
     tool: reminder
     description: "Each tag becomes its own --add / --remove"
-    input: { action: set_tags, id: "R1", addTags: ["work", "q4"], removeTags: ["home"], private: true }
+    input: { action: set_tags, id: "R1", addTags: ["work", "q4"], removeTags: ["home"] }
     expect:
       cli_args_pairs:
         - ["--add", "work"]
@@ -213,6 +214,6 @@ cases:
   - id: rem-set-tags-empty
     tool: reminder
     description: "set_tags with nothing to change is rejected"
-    input: { action: set_tags, id: "R1", private: true }
+    input: { action: set_tags, id: "R1" }
     expect:
       throws: "addTags and/or removeTags"

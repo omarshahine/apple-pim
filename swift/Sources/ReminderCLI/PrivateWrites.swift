@@ -11,7 +11,8 @@ import ReminderKitShim
 //
 // ReminderKit is unsupported and can change in any macOS update, so every write is gated and
 // checked:
-//   1. Off by default. Each command refuses to run without --private.
+//   1. Off by default. Each command refuses to run unless PIMConfig has
+//      `reminders.privateWrites: true` (one switch per Mac, see `config private-writes`).
 //   2. PIMConfig: the reminder (and parent, for subtasks) must be in an allowed list.
 //   3. Preconditions are checked against the store before anything is sent.
 //   4. Exactly one write. A write that throws is reported, never retried.
@@ -151,15 +152,43 @@ struct PrivateWriteCoordinator {
         }
     }
 
-    private func unchanged(_ a: ReminderMetadata, _ b: ReminderMetadata,
-                           flag: Bool = true, tags: Bool = true, parent: Bool = true, section: Bool = true) -> [String] {
-        var drift: [String] = []
-        if a.listId?.uppercased() != b.listId?.uppercased() { drift.append("list") }
-        if flag && a.flagged != b.flagged { drift.append("flagged") }
-        if tags && !sameTagSet(a.tags, b.tags) { drift.append("tags") }
-        if parent && a.parentId?.uppercased() != b.parentId?.uppercased() { drift.append("parent") }
-        if section && a.section?.id.uppercased() != b.section?.id.uppercased() { drift.append("section") }
-        return drift
+    /// Every field the store reads, compared between two snapshots of one reminder, except
+    /// the ones the operation is meant to change. Returns the names of fields that moved.
+    func unchanged(_ a: ReminderMetadata, _ b: ReminderMetadata, except: Set<String> = []) -> [String] {
+        func upper(_ ids: [String]) -> Set<String> { Set(ids.map { $0.uppercased() }) }
+        let checks: [(String, Bool)] = [
+            ("list", a.listId?.uppercased() == b.listId?.uppercased()),
+            ("title", a.title == b.title),
+            ("flagged", a.flagged == b.flagged),
+            ("urgent", a.urgent == b.urgent),
+            ("tags", sameTagSet(a.tags, b.tags)),
+            ("parent", a.parentId?.uppercased() == b.parentId?.uppercased()),
+            ("section", a.section?.id.uppercased() == b.section?.id.uppercased()),
+            ("richLinks", a.richLinks == b.richLinks),
+            ("attachments", a.attachments == b.attachments),
+            ("subtasks", upper(a.subtaskIds) == upper(b.subtaskIds)),
+        ]
+        return checks.filter { !except.contains($0.0) && !$0.1 }.map(\.0)
+    }
+
+    /// Refuses a write whose result this store cannot read back.
+    private func requireReadable(_ meta: ReminderMetadata, _ field: String, for what: String) throws {
+        guard !meta.unreadable.contains(field) else {
+            throw PrivateWriteError.precondition(
+                "The Reminders database on this macOS version does not expose \(field), so a \(what) "
+                + "could not be verified. Nothing was written.")
+        }
+    }
+
+    /// Checks a parent after a child joined or left it: its subtasks are exactly `expected`
+    /// and nothing else about it changed.
+    private func verifyParent(_ id: String, before: ReminderMetadata, expectedSubtasks: Set<String>, what: String) throws {
+        let after = try current(id)
+        var drift = unchanged(before, after, except: ["subtasks"])
+        if Set(after.subtaskIds.map { $0.uppercased() }) != expectedSubtasks { drift.append("parent's subtasks") }
+        guard drift.isEmpty else {
+            throw verificationFailure(what, expected: "parent \(id) otherwise unchanged", observed: after, drift: drift)
+        }
     }
 
     private func verificationFailure(_ what: String, expected: String, observed: ReminderMetadata?, drift: [String] = []) -> PrivateWriteError {
@@ -194,12 +223,13 @@ struct PrivateWriteCoordinator {
 
     func setFlag(id: String, flagged: Bool) throws -> [String: Any] {
         let before = try current(id)
+        try requireReadable(before, "flagged", for: "flag update")
         if before.flagged == flagged { return result("set_flag", changed: false, meta: before) }
         try write("flag update") { try writer.setFlagged(flagged, reminderID: id) }
         var drift: [String] = []
         let (ok, after) = try waitFor(id) { meta in
             guard let meta, meta.flagged == flagged else { return false }
-            drift = unchanged(before, meta, flag: false)
+            drift = unchanged(before, meta, except: ["flagged"])
             return drift.isEmpty
         }
         guard ok, let after else {
@@ -212,6 +242,7 @@ struct PrivateWriteCoordinator {
         let trimmed = title.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { throw PrivateWriteError.precondition("A subtask title is required") }
         let parent = try current(parentID)
+        try requireReadable(parent, "parentId", for: "subtask creation")
         guard parent.parentId == nil else {
             throw PrivateWriteError.precondition(
                 "Reminder \(parentID) is itself a subtask; Reminders allows one level of subtasks")
@@ -227,12 +258,10 @@ struct PrivateWriteCoordinator {
         guard ok, let child else {
             throw verificationFailure("subtask creation", expected: "a subtask '\(trimmed)' under \(parentID)", observed: child)
         }
+        try verifyParent(parentID, before: parent,
+                         expectedSubtasks: Set((parent.subtaskIds + [newID]).map { $0.uppercased() }),
+                         what: "subtask creation")
         let parentAfter = try current(parentID)
-        let drift = unchanged(parent, parentAfter)
-        guard drift.isEmpty, parentAfter.subtaskIds.contains(where: { $0.uppercased() == newID.uppercased() }) else {
-            throw verificationFailure("subtask creation", expected: "parent \(parentID) otherwise unchanged",
-                                      observed: parentAfter, drift: drift)
-        }
         return result("add_subtask", changed: true, meta: child, extra: ["parent": {
             var dict = parentAfter.toDict(); dict["id"] = parentAfter.id; return dict
         }()])
@@ -240,11 +269,14 @@ struct PrivateWriteCoordinator {
 
     func moveSubtask(id: String, parentID: String?) throws -> [String: Any] {
         let before = try current(id)
+        try requireReadable(before, "parentId", for: "subtask move")
+        var newParentBefore: ReminderMetadata?
         if let parentID {
             guard parentID.uppercased() != id.uppercased() else {
                 throw PrivateWriteError.precondition("A reminder cannot be its own parent")
             }
             let parent = try current(parentID)
+            newParentBefore = parent
             guard parent.parentId == nil else {
                 throw PrivateWriteError.precondition(
                     "Reminder \(parentID) is itself a subtask; Reminders allows one level of subtasks")
@@ -262,15 +294,28 @@ struct PrivateWriteCoordinator {
         } else if before.parentId == nil {
             return result("move_subtask", changed: false, meta: before)
         }
+        let oldParentBefore = try before.parentId.map { try current($0) }
         try write("subtask move") { try writer.move(reminderID: id, parentID: parentID) }
         var drift: [String] = []
         let (ok, after) = try waitFor(id) { meta in
             guard let meta, meta.parentId?.uppercased() == parentID?.uppercased() else { return false }
-            drift = unchanged(before, meta, parent: false, section: false)
+            // Leaving or joining a parent can change the section a reminder shows under.
+            drift = unchanged(before, meta, except: ["parent", "section"])
             return drift.isEmpty
         }
         guard ok, let after else {
             throw verificationFailure("subtask move", expected: "parent=\(parentID ?? "none")", observed: after, drift: drift)
+        }
+        let moved = id.uppercased()
+        if let parentID, let newParentBefore {
+            try verifyParent(parentID, before: newParentBefore,
+                             expectedSubtasks: Set(newParentBefore.subtaskIds.map { $0.uppercased() }).union([moved]),
+                             what: "subtask move")
+        }
+        if let oldParentBefore {
+            try verifyParent(oldParentBefore.id, before: oldParentBefore,
+                             expectedSubtasks: Set(oldParentBefore.subtaskIds.map { $0.uppercased() }).subtracting([moved]),
+                             what: "subtask move")
         }
         return result("move_subtask", changed: true, meta: after)
     }
@@ -295,6 +340,7 @@ struct PrivateWriteCoordinator {
 
     func setSection(id: String, section: String) throws -> [String: Any] {
         let before = try current(id)
+        try requireReadable(before, "section", for: "section assignment")
         guard let listId = before.listId else {
             throw PrivateWriteError.precondition("Reminder \(id) has no list in the store")
         }
@@ -302,6 +348,8 @@ struct PrivateWriteCoordinator {
         if before.section?.id.uppercased() == target.id.uppercased() {
             return result("set_section", changed: false, meta: before)
         }
+        // Reminders with no section drop out; an undecided membership stays in as
+        // `undecidedSectionMembership`, so it settling either way counts as a change.
         func others(_ map: [String: String?]) -> [String: String] {
             var out: [String: String] = [:]
             for (key, value) in map where key != id.uppercased() {
@@ -314,7 +362,7 @@ struct PrivateWriteCoordinator {
         var drift: [String] = []
         let (ok, after) = try waitFor(id) { meta in
             guard let meta, meta.section?.id.uppercased() == target.id.uppercased() else { return false }
-            drift = unchanged(before, meta, section: false)
+            drift = unchanged(before, meta, except: ["section"])
             if others(try reader.strictSectionMemberships(forList: listId)) != othersBefore {
                 drift.append("other reminders' sections")
             }
@@ -333,13 +381,14 @@ struct PrivateWriteCoordinator {
             throw PrivateWriteError.precondition("Pass at least one tag to add or remove")
         }
         let before = try current(id)
+        try requireReadable(before, "tags", for: "tag update")
         let expected = computeTags(current: before.tags, add: addTags, remove: removeTags)
         if sameTagSet(before.tags, expected) { return result("set_tags", changed: false, meta: before) }
         try write("tag update") { try writer.replaceTags(expected, reminderID: id) }
         var drift: [String] = []
         let (ok, after) = try waitFor(id) { meta in
             guard let meta, sameTagSet(meta.tags, expected) else { return false }
-            drift = unchanged(before, meta, tags: false)
+            drift = unchanged(before, meta, except: ["tags"])
             return drift.isEmpty
         }
         guard ok, let after else {
@@ -351,26 +400,26 @@ struct PrivateWriteCoordinator {
 
 // MARK: - Command plumbing
 
-struct PrivateWriteOptions: ParsableArguments {
-    @Flag(name: .customLong("private"), help: ArgumentHelp(
-        "Required. Confirms this write may use Apple's private ReminderKit framework, which is "
-        + "unsupported and can change in any macOS update. The result is read back from the "
-        + "Reminders database (needs Full Disk Access) and the command fails if it does not match."))
-    var enabled: Bool = false
+/// The one switch for private writes: `reminders.privateWrites` in the resolved PIMConfig.
+func requirePrivateWritesEnabled(_ config: PIMConfiguration, command: String) throws {
+    guard config.reminders.privateWrites else {
+        throw PrivateWriteError.notEnabled(
+            "\(command) writes through Apple's private ReminderKit framework, and private Reminders "
+            + "writes are turned off on this Mac. To turn them on, run "
+            + "`reminder-cli config private-writes --on` (or set \"privateWrites\": true in the "
+            + "\"reminders\" section of ~/.config/apple-pim/config.json). A profile with its own "
+            + "\"reminders\" section must set it there too.")
+    }
 }
 
 /// Gates, checks PIMConfig for every reminder involved, then runs `body` with a coordinator.
-func runPrivateWrite(_ options: PrivateWriteOptions, pimOptions: PIMOptions, command: String,
+func runPrivateWrite(pimOptions: PIMOptions, command: String,
                      reminderIDs: [String],
                      _ body: (PrivateWriteCoordinator) throws -> [String: Any]) async throws {
-    guard options.enabled else {
-        throw PrivateWriteError.notEnabled(
-            "\(command) writes through Apple's private ReminderKit framework and is off by default. "
-            + "Pass --private to confirm.")
-    }
-    try await requestReminderAccess()
     let config = pimOptions.loadConfig()
     try checkRemindersEnabled(config: config)
+    try requirePrivateWritesEnabled(config, command: command)
+    try await requestReminderAccess()
     for id in reminderIDs {
         guard let reminder = eventStore.calendarItem(withIdentifier: id) as? EKReminder else {
             throw CLIError.notFound("Reminder not found: \(id)")
@@ -394,11 +443,10 @@ func runPrivateWrite(_ options: PrivateWriteOptions, pimOptions: PIMOptions, com
 struct SetFlag: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "set-flag",
-        abstract: "Flag or unflag a reminder (private ReminderKit write; requires --private)"
+        abstract: "Flag or unflag a reminder (private ReminderKit write; needs reminders.privateWrites)"
     )
 
     @OptionGroup var pimOptions: PIMOptions
-    @OptionGroup var privateOptions: PrivateWriteOptions
 
     @Option(name: .long, help: "Reminder ID")
     var id: String
@@ -407,7 +455,7 @@ struct SetFlag: AsyncParsableCommand {
     var unflag: Bool = false
 
     func run() async throws {
-        try await runPrivateWrite(privateOptions, pimOptions: pimOptions, command: "set-flag", reminderIDs: [id]) {
+        try await runPrivateWrite(pimOptions: pimOptions, command: "set-flag", reminderIDs: [id]) {
             try $0.setFlag(id: id, flagged: !unflag)
         }
     }
@@ -416,12 +464,11 @@ struct SetFlag: AsyncParsableCommand {
 struct AddSubtask: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "add-subtask",
-        abstract: "Create a subtask under a reminder (private ReminderKit write; requires --private)",
+        abstract: "Create a subtask under a reminder (private ReminderKit write; needs reminders.privateWrites)",
         discussion: "Only the title is set here. Use `update --id <new id>` for a due date or notes."
     )
 
     @OptionGroup var pimOptions: PIMOptions
-    @OptionGroup var privateOptions: PrivateWriteOptions
 
     @Option(name: .long, help: "Parent reminder ID (must be a top-level reminder)")
     var parent: String
@@ -430,7 +477,7 @@ struct AddSubtask: AsyncParsableCommand {
     var title: String
 
     func run() async throws {
-        try await runPrivateWrite(privateOptions, pimOptions: pimOptions, command: "add-subtask", reminderIDs: [parent]) {
+        try await runPrivateWrite(pimOptions: pimOptions, command: "add-subtask", reminderIDs: [parent]) {
             try $0.addSubtask(parentID: parent, title: title)
         }
     }
@@ -439,11 +486,10 @@ struct AddSubtask: AsyncParsableCommand {
 struct MoveSubtask: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "move-subtask",
-        abstract: "Make a reminder a subtask of another in the same list, or top-level again (private ReminderKit write; requires --private)"
+        abstract: "Make a reminder a subtask of another in the same list, or top-level again (private ReminderKit write; needs reminders.privateWrites)"
     )
 
     @OptionGroup var pimOptions: PIMOptions
-    @OptionGroup var privateOptions: PrivateWriteOptions
 
     @Option(name: .long, help: "Reminder ID to move")
     var id: String
@@ -462,7 +508,7 @@ struct MoveSubtask: AsyncParsableCommand {
 
     func run() async throws {
         let ids = [id] + (parent.map { [$0] } ?? [])
-        try await runPrivateWrite(privateOptions, pimOptions: pimOptions, command: "move-subtask", reminderIDs: ids) {
+        try await runPrivateWrite(pimOptions: pimOptions, command: "move-subtask", reminderIDs: ids) {
             try $0.moveSubtask(id: id, parentID: parent)
         }
     }
@@ -471,12 +517,11 @@ struct MoveSubtask: AsyncParsableCommand {
 struct SetSection: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "set-section",
-        abstract: "Put a reminder into a section of its list (private ReminderKit write; requires --private)",
+        abstract: "Put a reminder into a section of its list (private ReminderKit write; needs reminders.privateWrites)",
         discussion: "Sections are listed by `lists` (needs Full Disk Access). Removing a reminder from a section is not supported."
     )
 
     @OptionGroup var pimOptions: PIMOptions
-    @OptionGroup var privateOptions: PrivateWriteOptions
 
     @Option(name: .long, help: "Reminder ID")
     var id: String
@@ -485,7 +530,7 @@ struct SetSection: AsyncParsableCommand {
     var section: String
 
     func run() async throws {
-        try await runPrivateWrite(privateOptions, pimOptions: pimOptions, command: "set-section", reminderIDs: [id]) {
+        try await runPrivateWrite(pimOptions: pimOptions, command: "set-section", reminderIDs: [id]) {
             try $0.setSection(id: id, section: section)
         }
     }
@@ -494,11 +539,10 @@ struct SetSection: AsyncParsableCommand {
 struct SetTags: AsyncParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "set-tags",
-        abstract: "Add or remove a reminder's tags (private ReminderKit write; requires --private)"
+        abstract: "Add or remove a reminder's tags (private ReminderKit write; needs reminders.privateWrites)"
     )
 
     @OptionGroup var pimOptions: PIMOptions
-    @OptionGroup var privateOptions: PrivateWriteOptions
 
     @Option(name: .long, help: "Reminder ID")
     var id: String
@@ -510,8 +554,73 @@ struct SetTags: AsyncParsableCommand {
     var remove: [String] = []
 
     func run() async throws {
-        try await runPrivateWrite(privateOptions, pimOptions: pimOptions, command: "set-tags", reminderIDs: [id]) {
+        try await runPrivateWrite(pimOptions: pimOptions, command: "set-tags", reminderIDs: [id]) {
             try $0.setTags(id: id, add: add, remove: remove)
         }
+    }
+}
+
+// MARK: - The switch
+
+/// Sets `reminders.privateWrites` in a config JSON object, leaving every other key as it was.
+/// Edits the raw JSON rather than round-tripping PIMConfiguration, which would drop keys the
+/// Swift model does not know about.
+func settingPrivateWrites(_ enabled: Bool, in json: [String: Any]) -> [String: Any] {
+    var root = json
+    var reminders = root["reminders"] as? [String: Any] ?? [:]
+    if enabled {
+        reminders["privateWrites"] = true
+    } else {
+        reminders.removeValue(forKey: "privateWrites")
+    }
+    root["reminders"] = reminders
+    return root
+}
+
+struct ConfigPrivateWrites: ParsableCommand {
+    static let configuration = CommandConfiguration(
+        commandName: "private-writes",
+        abstract: "Turn private Reminders writes (set-flag, add-subtask, move-subtask, set-section, set-tags) on or off for this Mac",
+        discussion: """
+            Writes `reminders.privateWrites` in the base config (~/.config/apple-pim/config.json, \
+            or $APPLE_PIM_CONFIG_DIR). Off by default. These writes use Apple's private ReminderKit \
+            framework, which is unsupported and can change in any macOS update; each one is read \
+            back and verified, and never retried. A profile with its own "reminders" section \
+            replaces the base one, so set "privateWrites" there too if you use profiles.
+            """
+    )
+
+    @Flag(exclusivity: .exclusive, help: "Turn on, or turn off, or (default) show the current state")
+    var state: SwitchState?
+
+    enum SwitchState: String, EnumerableFlag {
+        case on, off
+    }
+
+    func run() throws {
+        let path = ConfigLoader.defaultConfigPath
+        var json: [String: Any] = [:]
+        if FileManager.default.fileExists(atPath: path.path) {
+            let data = try Data(contentsOf: path)
+            guard let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] else {
+                throw CLIError.invalidInput("\(path.path) is not a JSON object; fix it before changing settings")
+            }
+            json = object
+        }
+        if let state {
+            json = settingPrivateWrites(state == .on, in: json)
+            try FileManager.default.createDirectory(at: path.deletingLastPathComponent(), withIntermediateDirectories: true)
+            let data = try JSONSerialization.data(withJSONObject: json, options: [.prettyPrinted, .sortedKeys])
+            try data.write(to: path, options: .atomic)
+        }
+        let enabled = ((json["reminders"] as? [String: Any])?["privateWrites"] as? Bool) ?? false
+        outputJSON([
+            "success": true,
+            "configPath": path.path,
+            "privateWrites": enabled,
+            "message": enabled
+                ? "Private Reminders writes are on for the base config."
+                : "Private Reminders writes are off.",
+        ])
     }
 }

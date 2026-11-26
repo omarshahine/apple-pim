@@ -1705,7 +1705,7 @@ struct ConfigCommand: ParsableCommand {
     static let configuration = CommandConfiguration(
         commandName: "config",
         abstract: "Manage PIM configuration",
-        subcommands: [ConfigShow.self, ConfigInit.self]
+        subcommands: [ConfigShow.self, ConfigInit.self, ConfigPrivateWrites.self]
     )
 }
 

@@ -251,9 +251,10 @@ what to grant) instead of concluding a reminder has no tags or subtasks. EventKi
 `parentID` route is still dead (it does not survive `eventStore.save()`); the writes above go
 through Apple's private ReminderKit framework instead.
 
-**Private writes** (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`) are off
-by default and need `private: true` on each call. Only use them when the user asked for that
-change. Each is read back and verified; on failure the error says what was observed and the
+**Private writes** (`set_flag`, `add_subtask`, `move_subtask`, `set_section`, `set_tags`) work only
+when the user has turned on `reminders.privateWrites` for this Mac (`reminder-cli config
+private-writes --on`, or `/apple-pim:configure`). It is off by default. If the switch is off, the error says how to turn it on. Do not turn it on yourself; that is the user's decision. Only use them
+when the user asked for that change. Each is read back and verified; on failure the error says what was observed and the
 write was **not** retried, so do not retry it yourself either: report it and let the user check
 Reminders.app. Subtasks are one level deep and stay in the parent's list.
 

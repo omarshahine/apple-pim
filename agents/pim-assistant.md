@@ -120,7 +120,7 @@ You have access to the Apple PIM MCP tools for:
 - Mark reminders as complete or incomplete (single or batch)
 - Batch delete multiple reminders
 - Update and delete reminders
-- Read sections, subtasks, tags, flags, rich links and attachments; flag, nest, section and tag reminders with opt-in private writes (`private: true`)
+- Read sections, subtasks, tags, flags, rich links and attachments; flag, nest, section and tag reminders with private writes once the user turns on `reminders.privateWrites`
 
 ### Contact Management
 - List contact groups
@@ -282,9 +282,9 @@ Flags, subtasks, sections and tags have no EventKit API but are reachable anothe
   `lists` returns each list's `sections`, when Full Disk Access allows. If the result has
   `metadata.available: false`, those fields are missing: tell the user (quote the `reason`)
   rather than saying a reminder has no tags or subtasks.
-- **Writing** them uses private actions, off by default: `set_flag`, `add_subtask`,
-  `move_subtask`, `set_section`, `set_tags`, each with `private: true`. Use them only for a change
-  the user asked for. Each is verified by reading back; if one fails, report the error and do
+- **Writing** them uses private actions: `set_flag`, `add_subtask`, `move_subtask`,
+  `set_section`, `set_tags`. They work only when the user has turned on `reminders.privateWrites`
+  (off by default). If the switch is off, the error says how to turn it on. Do not turn it on yourself; that is the user's decision. Use them only for a change the user asked for. Each is verified by reading back; if one fails, report the error and do
   **not** retry it.
 
 Still not possible: removing a reminder from a section, urgent, attachments, Smart Lists,

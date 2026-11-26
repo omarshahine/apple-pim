@@ -171,8 +171,12 @@ final class ReminderStoreTests: XCTestCase {
             INSERT INTO ZREMCDOBJECT (Z_PK, Z_ENT, ZREMINDER3, ZNAME) VALUES (10, 32, 1, 'inline');
             """)
         let meta = try XCTUnwrap(f.open().metadata(for: [parentID])[parentID])
-        XCTAssertFalse(meta.flagged)
         XCTAssertEqual(meta.tags, ["inline"], "falls back to the object's own name")
+        XCTAssertEqual(meta.unreadable, ["flagged", "urgent"])
+        let dict = meta.toDict()
+        XCTAssertNil(dict["flagged"], "an unreadable flag is omitted, not reported as false")
+        XCTAssertEqual(dict["unreadableFields"] as? [String], ["flagged", "urgent"])
+        XCTAssertNotNil(dict["tags"])
     }
 
     func testRelationshipColumnIsProbedNotHardcoded() throws {
@@ -264,7 +268,7 @@ final class SectionMembershipTests: XCTestCase {
     func testUndatedDisagreementIsNilWhenStrict() {
         let json = #"{"memberships":[{"memberID":"a","groupID":"S1"},{"memberID":"a","groupID":"S2"}]}"#
         XCTAssertEqual(map(json)["A"], .some("S2"), "display keeps the last live entry")
-        XCTAssertEqual(map(json, strict: true)["A"], .some(nil), "verification refuses to guess")
+        XCTAssertEqual(map(json, strict: true)["A"], .some(undecidedSectionMembership), "verification refuses to guess")
     }
 
     func testMissingGroupIsNoSection() {
